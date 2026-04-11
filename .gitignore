@@ -1,0 +1,56 @@
+# Runtime data
+logs/
+worktrees/
+
+# ── Secrets ──────────────────────────────────────────────
+# Never commit any .env variant. The only env file that SHOULD be
+# tracked is config/.env.example (sanitised placeholders only).
+.env
+.env.*
+!.env.example
+docker/.env
+config/devserver.env
+
+# ── Node.js ──────────────────────────────────────────────
+node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/server.js
+
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+apps/worker/.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── IDE / editor ─────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+.zed/
+
+# ── OS ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Docker ───────────────────────────────────────────────
+postgres_data/
+
+# ── Temp / build artefacts ───────────────────────────────
+/tmp/
+*.tmp
+*.tsbuildinfo
+dist/
+build/
+coverage/
+
+# ── Claude Code session state ────────────────────────────
+.claude/settings.local.json
+.claude/projects/

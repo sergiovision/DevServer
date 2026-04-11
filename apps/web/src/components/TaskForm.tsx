@@ -1,0 +1,374 @@
+'use client';
+
+import React, { useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  CForm,
+  CFormLabel,
+  CFormInput,
+  CFormTextarea,
+  CFormSelect,
+  CFormCheck,
+  CButton,
+  CCard,
+  CCardBody,
+  CCardHeader,
+  CRow,
+  CCol,
+  CAlert,
+} from '@coreui/react-pro';
+import type { Repo, Task, GitFlow } from '@/lib/types';
+import { ModelCombobox } from '@/components/ModelCombobox';
+import { MaxTurnsInput } from '@/components/MaxTurnsInput';
+
+interface TaskFormProps {
+  repos: Repo[];
+  task?: Task;
+}
+
+export function TaskForm({ repos, task }: TaskFormProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const isEdit = !!task;
+  const ideaId = !isEdit ? searchParams.get('ideaId') : null;
+  const prefillDescription = !isEdit ? searchParams.get('description') : null;
+
+  const [formData, setFormData] = useState({
+    repo_id: task?.repo_id?.toString() || '',
+    task_key: task?.task_key || '',
+    title: task?.title || '',
+    description: task?.description || prefillDescription || '',
+    acceptance: task?.acceptance || '',
+    priority: task?.priority?.toString() || '3',
+    labels: task?.labels?.join(', ') || '',
+    mode: task?.mode || 'autonomous',
+    git_flow: (task?.git_flow || 'branch') as GitFlow,
+    claude_mode: task?.claude_mode || 'max',
+    claude_model: task?.claude_model || '',
+    max_turns: (task?.max_turns ?? 50) as number | null,
+    skip_verify: task?.skip_verify ?? false,
+  });
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [filling, setFilling] = useState(false);
+  const [fillError, setFillError] = useState('');
+
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
+  ) => {
+    setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+  };
+
+  const handleCheck = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setFormData((prev) => ({ ...prev, [e.target.name]: e.target.checked }));
+  };
+
+  const handleFillTask = async () => {
+    if (!formData.description.trim()) return;
+    setFilling(true);
+    setFillError('');
+    try {
+      const res = await fetch('/api/tasks/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: formData.description }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'devtask skill failed');
+      }
+      const task = await res.json();
+      setFormData((prev) => ({
+        ...prev,
+        task_key: task.task_key ?? prev.task_key,
+        title: task.title ?? prev.title,
+        description: task.description ?? prev.description,
+        acceptance: task.acceptance ?? prev.acceptance,
+        priority: task.priority?.toString() ?? prev.priority,
+        labels: Array.isArray(task.labels) ? task.labels.join(', ') : prev.labels,
+        mode: task.mode ?? prev.mode,
+        git_flow: task.git_flow ?? prev.git_flow,
+        claude_mode: task.claude_mode ?? prev.claude_mode,
+        claude_model: task.claude_model ?? prev.claude_model,
+        max_turns: task.max_turns ?? prev.max_turns,
+        skip_verify: task.skip_verify ?? prev.skip_verify,
+      }));
+    } catch (err) {
+      setFillError(err instanceof Error ? err.message : 'devtask skill failed');
+    } finally {
+      setFilling(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError('');
+
+    try {
+      const body = {
+        ...formData,
+        repo_id: parseInt(formData.repo_id),
+        priority: parseInt(formData.priority),
+        labels: formData.labels
+          .split(',')
+          .map((l) => l.trim())
+          .filter(Boolean),
+        claude_model: formData.claude_model.trim() || null,
+        max_turns: formData.max_turns,
+      };
+
+      const url = isEdit ? `/api/tasks/${task!.id}` : '/api/tasks';
+      const method = isEdit ? 'PATCH' : 'POST';
+
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to save task');
+      }
+
+      const data = await res.json();
+
+      if (!isEdit && ideaId) {
+        await fetch(`/api/ideas/${ideaId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tasked: true, task_id: data.id }),
+        }).catch((e) => console.error('Failed to mark idea tasked:', e));
+      }
+
+      router.push(`/tasks/${data.id}`);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <CCard>
+      <CCardHeader>
+        <strong>{isEdit ? 'Edit Task' : 'Create Task'}</strong>
+      </CCardHeader>
+      <CCardBody>
+        {error && <CAlert color="danger">{error}</CAlert>}
+        <CForm onSubmit={handleSubmit}>
+          <CRow className="mb-3">
+            <CCol md={6}>
+              <CFormLabel>Repository</CFormLabel>
+              <CFormSelect
+                name="repo_id"
+                value={formData.repo_id}
+                onChange={handleChange}
+                required
+              >
+                <option value="">Select a repository...</option>
+                {repos.map((repo) => (
+                  <option key={repo.id} value={repo.id}>
+                    {repo.name}
+                  </option>
+                ))}
+              </CFormSelect>
+            </CCol>
+            <CCol md={6}>
+              <CFormLabel>Task Key</CFormLabel>
+              <CFormInput
+                name="task_key"
+                value={formData.task_key}
+                onChange={handleChange}
+                placeholder="e.g. FIX-auth-login (no spaces)"
+                required
+              />
+            </CCol>
+          </CRow>
+
+          <div className="mb-3">
+            <CFormLabel>Title</CFormLabel>
+            <CFormInput
+              name="title"
+              value={formData.title}
+              onChange={handleChange}
+              placeholder="Brief task description"
+              required
+            />
+          </div>
+
+          <div className="mb-3">
+            <div className="d-flex align-items-center gap-2 mb-1">
+              <CFormLabel className="mb-0">Description</CFormLabel>
+              <CButton
+                type="button"
+                color="info"
+                variant="outline"
+                size="sm"
+                disabled={filling || !formData.description.trim()}
+                onClick={handleFillTask}
+              >
+                {filling ? 'Filling...' : 'Fill Task'}
+              </CButton>
+              {fillError && (
+                <span className="text-danger small">{fillError}</span>
+              )}
+            </div>
+            <CFormTextarea
+              name="description"
+              value={formData.description}
+              onChange={handleChange}
+              rows={4}
+              placeholder="Detailed task description..."
+            />
+          </div>
+
+          <div className="mb-3">
+            <CFormLabel>Acceptance Criteria</CFormLabel>
+            <CFormTextarea
+              name="acceptance"
+              value={formData.acceptance}
+              onChange={handleChange}
+              rows={3}
+              placeholder="What conditions must be met for this task to be considered done?"
+            />
+          </div>
+
+          <CRow className="mb-3">
+            <CCol md={3}>
+              <CFormLabel>Priority</CFormLabel>
+              <CFormSelect
+                name="priority"
+                value={formData.priority}
+                onChange={handleChange}
+              >
+                <option value="1">Critical</option>
+                <option value="2">High</option>
+                <option value="3">Medium</option>
+                <option value="4">Low</option>
+              </CFormSelect>
+            </CCol>
+            <CCol md={3}>
+              <CFormLabel>Mode</CFormLabel>
+              <CFormSelect
+                name="mode"
+                value={formData.mode}
+                onChange={handleChange}
+              >
+                <option value="autonomous">Autonomous</option>
+                <option value="interactive">Interactive</option>
+              </CFormSelect>
+            </CCol>
+            <CCol md={3}>
+              <CFormLabel>Claude billing</CFormLabel>
+              <CFormSelect
+                name="claude_mode"
+                value={formData.claude_mode}
+                onChange={handleChange}
+              >
+                <option value="api">API (platform)</option>
+                <option value="max">Max subscription</option>
+              </CFormSelect>
+            </CCol>
+            <CCol md={3}>
+              <CFormLabel>Labels (comma separated)</CFormLabel>
+              <CFormInput
+                name="labels"
+                value={formData.labels}
+                onChange={handleChange}
+                placeholder="bug, frontend, test, urgent"
+              />
+            </CCol>
+          </CRow>
+
+          <div className="mb-3">
+            <CFormLabel>Git flow</CFormLabel>
+            <div className="btn-group w-100" role="group">
+              {(
+                [
+                  { value: 'branch', label: 'Branch + PR',     title: 'Create agent/… branch and open a pull request (default)' },
+                  { value: 'commit', label: 'Direct commit',   title: 'Squash-merge directly onto the default branch — no PR' },
+                  { value: 'patch',  label: 'Patch only',      title: 'Generate a combined.mbox patch file — no push, no PR' },
+                ] as { value: GitFlow; label: string; title: string }[]
+              ).map(({ value, label, title }) => (
+                <React.Fragment key={value}>
+                  <input
+                    type="radio"
+                    className="btn-check"
+                    name="git_flow"
+                    id={`git_flow_${value}`}
+                    value={value}
+                    checked={formData.git_flow === value}
+                    onChange={handleChange}
+                    autoComplete="off"
+                  />
+                  <label
+                    className={`btn btn-outline-secondary`}
+                    htmlFor={`git_flow_${value}`}
+                    title={title}
+                  >
+                    {label}
+                  </label>
+                </React.Fragment>
+              ))}
+            </div>
+          </div>
+
+          <CRow className="mb-3">
+            <CCol md={6}>
+              <CFormLabel>
+                Claude Model{' '}
+                <small className="text-body-secondary">
+                  (leave blank to use repo default
+                  {formData.repo_id
+                    ? `: ${repos.find((r) => r.id === parseInt(formData.repo_id))?.claude_model ?? '—'}`
+                    : ''}
+                  )
+                </small>
+              </CFormLabel>
+              <ModelCombobox
+                name="claude_model"
+                value={formData.claude_model}
+                onChange={(v) => setFormData((prev) => ({ ...prev, claude_model: v }))}
+                placeholder="Leave blank to use repo default"
+              />
+            </CCol>
+            <CCol md={3}>
+              <CFormLabel>Max Turns</CFormLabel>
+              <MaxTurnsInput
+                value={formData.max_turns}
+                onChange={(v) => setFormData((prev) => ({ ...prev, max_turns: v }))}
+              />
+              <small className="text-body-secondary">Blank or empty = unlimited</small>
+            </CCol>
+          </CRow>
+
+          <div className="mb-3">
+            <CFormCheck
+              name="skip_verify"
+              id="skip_verify"
+              label="Skip verification (no build/test/lint — go straight to PR)"
+              checked={formData.skip_verify}
+              onChange={handleCheck}
+            />
+          </div>
+
+          <div className="d-flex gap-2">
+            <CButton type="submit" color="primary" disabled={saving}>
+              {saving ? 'Saving...' : isEdit ? 'Update Task' : 'Create Task'}
+            </CButton>
+            <CButton
+              type="button"
+              color="secondary"
+              variant="outline"
+              onClick={() => router.back()}
+            >
+              Cancel
+            </CButton>
+          </div>
+        </CForm>
+      </CCardBody>
+    </CCard>
+  );
+}

@@ -1,0 +1,41 @@
+[project]
+name = "devserver-worker"
+version = "0.1.0"
+description = "DevServer autonomous coding agent worker"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "asyncpg>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "pydantic-settings>=2.7",
+    "pgqueuer[asyncpg]>=0.26",
+    "httpx>=0.28",
+    "pgvector>=0.3",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+]
+
+[project.scripts]
+devserver-worker = "main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+]

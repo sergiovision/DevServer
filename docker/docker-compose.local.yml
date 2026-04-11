@@ -1,0 +1,29 @@
+version: '3.9'
+
+# Local DB override — uses host network mode
+# Usage: docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# Uses the host's PostgreSQL. Both services bind to 127.0.0.1
+# so containers use host networking to reach it directly.
+
+services:
+  postgres:
+    entrypoint: ["echo", "disabled"]
+    restart: "no"
+    deploy:
+      replicas: 0
+
+  web:
+    network_mode: host
+    ports: !reset []
+    environment:
+      DATABASE_URL: postgresql://devserver:${PGPASSWORD:-changeme}@127.0.0.1:${PGPORT:-5432}/devserver
+      WORKER_URL: http://127.0.0.1:8000
+    depends_on: {}
+
+  worker:
+    network_mode: host
+    ports: !reset []
+    environment:
+      DATABASE_URL: postgresql+asyncpg://devserver:${PGPASSWORD:-changeme}@127.0.0.1:${PGPORT:-5432}/devserver
+    depends_on: {}

@@ -1,0 +1,37 @@
+FROM python:3.12-slim
+
+# ── System deps ──────────────────────────────────────────────────────────────
+# Node.js 22 is required to install and run Claude Code CLI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git curl ca-certificates gnupg build-essential \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Claude Code CLI ──────────────────────────────────────────────────────────
+RUN npm install -g @anthropic-ai/claude-code
+
+# ── Git global identity ──────────────────────────────────────────────────────
+# Defaults that work out of the box. Override via GIT_USER_EMAIL / GIT_USER_NAME
+# in your .env and the worker will reapply the identity to each worktree.
+RUN git config --global user.email "devserver@devserver.local" \
+ && git config --global user.name "DevServer Agent" \
+ && git config --global init.defaultBranch main \
+ && git config --global safe.directory '*'
+# ── Python app ───────────────────────────────────────────────────────────────
+WORKDIR /app
+
+COPY apps/worker/pyproject.toml ./
+RUN pip install --no-cache-dir .
+
+COPY apps/worker/src/ ./src/
+COPY .claude/skills/ ./.claude/skills/
+
+# ── Runtime dirs ─────────────────────────────────────────────────────────────
+RUN mkdir -p worktrees/.bare logs/tasks
+
+ENV PYTHONPATH=/app/src
+
+EXPOSE 8000
+
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

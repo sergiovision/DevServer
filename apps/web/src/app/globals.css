@@ -1,0 +1,197 @@
+@import '@coreui/coreui-pro/dist/css/coreui.min.css';
+
+/* Dashboard custom styles */
+
+/* Sidebar branding */
+.sidebar-brand-text {
+  letter-spacing: -0.02em;
+}
+
+/* Custom responsive sidebar (replaces CoreUI CSidebar which was broken on mobile) */
+.app-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 256px;
+  flex-shrink: 0;
+  background-color: var(--cui-body-bg);
+  color: var(--cui-body-color);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  z-index: 1030;
+  transition: transform 0.2s ease;
+}
+
+.app-sidebar-header {
+  height: 4rem;
+  flex-shrink: 0;
+}
+
+.app-sidebar-nav {
+  flex: 1 1 auto;
+  padding: 0.5rem 0;
+  overflow-y: auto;
+}
+
+.app-sidebar-nav-title {
+  padding: 0.75rem 1rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--cui-secondary-color);
+}
+
+.app-sidebar-nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.app-sidebar-nav-item {
+  margin: 0;
+}
+
+.app-sidebar-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  color: var(--cui-body-color);
+  text-decoration: none;
+  border-left: 3px solid transparent;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.app-sidebar-nav-link:hover {
+  background-color: var(--cui-tertiary-bg);
+  color: var(--cui-body-color);
+}
+
+.app-sidebar-nav-link.active {
+  background-color: var(--cui-tertiary-bg);
+  color: var(--cui-primary);
+  font-weight: 600;
+  border-left-color: var(--cui-primary);
+}
+
+.app-sidebar-nav-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex-shrink: 0;
+}
+
+.app-sidebar-footer {
+  height: 3rem;
+  flex-shrink: 0;
+}
+
+.app-sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 1029;
+}
+
+/* Hamburger button - hidden on desktop */
+.app-sidebar-toggler {
+  display: none;
+}
+
+/* Mobile: sidebar becomes an off-canvas drawer */
+@media (max-width: 767.98px) {
+  .app-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    transform: translateX(-100%);
+    box-shadow: 0 0 20px rgba(0, 0, 0, 0.15);
+  }
+
+  .app-sidebar.show {
+    transform: translateX(0);
+  }
+
+  .app-sidebar-backdrop.show {
+    display: block;
+  }
+
+  .app-sidebar-toggler {
+    display: inline-flex;
+    align-items: center;
+  }
+}
+
+/* Smooth theme transitions */
+[data-coreui-theme] {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Header refinements */
+.header {
+  backdrop-filter: blur(8px);
+}
+
+/* Widget stat cards */
+.card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  border: 1px solid var(--cui-border-color);
+}
+
+[data-coreui-theme="dark"] .card {
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+/* Stat widget hover */
+.widget-stats-a,
+.widget-stats-f {
+  transition: transform 0.15s ease;
+}
+
+.widget-stats-a:hover,
+.widget-stats-f:hover {
+  transform: translateY(-2px);
+}
+
+/* Smart table refinements */
+.table {
+  font-size: 0.875rem;
+}
+
+/* Footer */
+.footer {
+  font-size: 0.8rem;
+}
+
+/* Badge improvements */
+.badge {
+  font-weight: 500;
+}
+
+/* Scrollbar styling for dark mode */
+[data-coreui-theme="dark"] ::-webkit-scrollbar {
+  width: 8px;
+}
+
+[data-coreui-theme="dark"] ::-webkit-scrollbar-track {
+  background: var(--cui-body-bg);
+}
+
+[data-coreui-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: var(--cui-border-color);
+  border-radius: 4px;
+}
+
+/* Nav link active indicator */
+.sidebar-nav .nav-link.active {
+  font-weight: 600;
+}
+
+/* Page heading consistency */
+h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
