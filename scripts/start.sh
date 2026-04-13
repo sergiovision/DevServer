@@ -113,7 +113,13 @@ start_web() {
 # ── Docker ────────────────────────────────────────────────────────────────────
 start_docker() {
   echo "Starting docker stack..."
-  (cd "$DOCKER_DIR" && docker compose up -d --build)
+  if docker_use_host_db; then
+    yellow "  Using host PostgreSQL (override: docker-compose.host-db.yml)"
+  else
+    echo "  Using bundled PostgreSQL container"
+  fi
+  # shellcheck disable=SC2046
+  (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) up -d --build)
   green "  Docker stack up"
 }
 

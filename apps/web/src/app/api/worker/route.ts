@@ -1,13 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import path from 'path';
+import { existsSync } from 'fs';
 import { query } from '@/lib/db';
 
 const execAsync = promisify(exec);
 
 import { WORKER_URL } from '@/lib/worker-url';
-const WORKER_DIR = '/home/serg/devserver/apps/worker';
-const WORKER_LOG = '/tmp/worker.log';
+
+// Resolve the worker directory from env first, then fall back to a path
+// derived from DEVSERVER_ROOT, then to a path relative to the Next.js cwd
+// (which is apps/web/ in dev). Hardcoding an absolute path here previously
+// caused Force Reopen to silently kill the worker without restarting it on
+// every host except the original prod box.
+const WORKER_DIR =
+  process.env.WORKER_DIR ||
+  (process.env.DEVSERVER_ROOT
+    ? path.join(process.env.DEVSERVER_ROOT, 'apps', 'worker')
+    : path.resolve(process.cwd(), '..', 'worker'));
+const WORKER_LOG = process.env.WORKER_LOG || '/tmp/worker.log';
+const WORKER_UVICORN = path.join(WORKER_DIR, '.venv', 'bin', 'uvicorn');
 
 async function isWorkerRunning(): Promise<boolean> {
   try {
@@ -46,22 +59,33 @@ async function cleanupStaleQueue(): Promise<{ resetTasks: number; locksReleased:
   return { resetTasks, locksReleased };
 }
 
+async function getWorkerPid(): Promise<string | null> {
+  try {
+    const { stdout } = await execAsync(`pgrep -f "uvicorn src.main" | head -n 1`);
+    const pid = stdout.trim();
+    return pid || null;
+  } catch {
+    return null;
+  }
+}
+
 export async function GET() {
   try {
     const running = await isWorkerRunning();
 
     if (!running) {
-      return NextResponse.json({ running: false, status: null });
+      return NextResponse.json({ running: false, status: null, pid: null });
     }
 
-    const res = await fetch(`${WORKER_URL}/internal/status`, {
-      signal: AbortSignal.timeout(5000),
-    });
+    const [res, pid] = await Promise.all([
+      fetch(`${WORKER_URL}/internal/status`, { signal: AbortSignal.timeout(5000) }),
+      getWorkerPid(),
+    ]);
     const status = await res.json();
-    return NextResponse.json({ running: true, status });
+    return NextResponse.json({ running: true, status, pid });
   } catch (err) {
     console.error('GET /api/worker error:', err);
-    return NextResponse.json({ running: false, status: null });
+    return NextResponse.json({ running: false, status: null, pid: null });
   }
 }
 
@@ -70,6 +94,22 @@ export async function POST(request: NextRequest) {
 
   if (action === 'restart' || action === 'start') {
     try {
+      // Preflight: refuse to kill the running worker if we can't start the new
+      // one. Force Reopen used to leave the system in a half-broken state when
+      // WORKER_DIR pointed to a path that didn't exist on this host.
+      if (!existsSync(WORKER_DIR)) {
+        return NextResponse.json(
+          { success: false, error: `WORKER_DIR does not exist: ${WORKER_DIR}. Set WORKER_DIR or DEVSERVER_ROOT in env.` },
+          { status: 500 },
+        );
+      }
+      if (!existsSync(WORKER_UVICORN)) {
+        return NextResponse.json(
+          { success: false, error: `uvicorn not found at ${WORKER_UVICORN}. Run \`uv sync\` in apps/worker.` },
+          { status: 500 },
+        );
+      }
+
       // 1. Clean up stale queue jobs and locks before killing the old process
       const cleanup = await cleanupStaleQueue();
       console.log('Queue cleanup:', cleanup);
@@ -77,8 +117,9 @@ export async function POST(request: NextRequest) {
       // 2. Kill existing worker
       await execAsync(`pkill -f "uvicorn src.main" 2>/dev/null; sleep 1; true`).catch(() => {});
 
-      // 3. Start new worker
-      const cmd = `cd ${WORKER_DIR} && find src -name "*.pyc" -delete 2>/dev/null; PYTHONPATH=src .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 >> ${WORKER_LOG} 2>&1 & echo $!`;
+      // 3. Start new worker — nohup + stdin from /dev/null so it survives the
+      //    Next.js parent (HMR reload, dev-server restart, etc.).
+      const cmd = `cd ${WORKER_DIR} && find src -name "*.pyc" -delete 2>/dev/null; nohup env PYTHONPATH=src ${WORKER_UVICORN} src.main:app --host 0.0.0.0 --port 8000 < /dev/null >> ${WORKER_LOG} 2>&1 & echo $!`;
       const { stdout } = await execAsync(cmd);
       const pid = stdout.trim();
 

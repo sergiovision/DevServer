@@ -7,12 +7,12 @@ import CIcon from '@coreui/icons-react';
 import {
   cilSpeedometer,
   cilTask,
-  cilPeople,
   cilStorage,
   cilSettings,
   cilCode,
   cilClock,
   cilListRich,
+  cilDescription,
 } from '@coreui/icons';
 
 interface SidebarProps {
@@ -25,9 +25,9 @@ const navItems = [
   { name: 'Tasks', href: '/tasks', icon: cilTask },
   { name: 'Ideas', href: '/ideas', icon: cilListRich },
   { name: 'Jobs', href: '/jobs', icon: cilClock },
-  { name: 'Agents', href: '/agents', icon: cilPeople },
   { name: 'Repos', href: '/repos', icon: cilStorage },
   { name: 'Settings', href: '/settings', icon: cilSettings },
+  { name: 'Logs', href: '/logs', icon: cilDescription },
 ];
 
 export function Sidebar({ visible, onVisibleChange }: SidebarProps) {

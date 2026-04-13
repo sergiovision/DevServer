@@ -1,0 +1,40 @@
+# Override for Linux/macOS hosts that already run PostgreSQL on the host.
+# Skips the bundled postgres service and points web + worker at the host DB
+# via host.docker.internal. On Linux, this is mapped to the docker bridge
+# gateway; on macOS Docker Desktop it resolves natively.
+#
+# Usage:
+#   cd docker
+#   docker compose -f docker-compose.yml -f docker-compose.host-db.yml up -d --build
+#
+# Prerequisites (one-time, on the host):
+#   1. postgresql.conf: listen_addresses = 'localhost,172.17.0.1'
+#      (172.17.0.1 is the default docker0 gateway — check with `ip addr show docker0`)
+#   2. pg_hba.conf: host devserver devserver 172.16.0.0/12 scram-sha-256
+#   3. sudo systemctl reload postgresql
+#
+# Not recommended on Windows or macOS — Docker Desktop already bridges
+# host.docker.internal transparently, but those platforms typically don't
+# run a host Postgres in the first place. Stick with the default compose
+# file there.
+
+services:
+  postgres: !reset null
+
+  web:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql://devserver:${PGPASSWORD:-changeme}@host.docker.internal:${PGPORT:-5432}/devserver
+      PGHOST: host.docker.internal
+      PGPORT: "${PGPORT:-5432}"
+    depends_on: !override
+      worker:
+        condition: service_healthy
+
+  worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://devserver:${PGPASSWORD:-changeme}@host.docker.internal:${PGPORT:-5432}/devserver
+    depends_on: !reset []

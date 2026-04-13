@@ -28,5 +28,8 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# tsx executes server.ts directly — handles both Next.js requests and WebSocket
-CMD ["npx", "tsx", "server.ts"]
+# tsx executes server.ts directly — handles both Next.js requests and WebSocket.
+# Output is tee'd into /app/logs/web.log so the in-app /logs viewer (which
+# tails the file) works inside docker too. The worker_logs volume is shared
+# with the worker container so both logs are visible from one place.
+CMD ["sh", "-c", "mkdir -p /app/logs && npx tsx server.ts 2>&1 | tee -a /app/logs/web.log"]

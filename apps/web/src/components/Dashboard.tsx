@@ -14,10 +14,12 @@ import {
   CListGroupItem,
 } from '@coreui/react-pro';
 import CIcon from '@coreui/icons-react';
-import { cilPeople, cilTask, cilCheckAlt, cilXCircle, cilDollar } from '@coreui/icons';
+import { cilPeople, cilTask, cilCheckAlt, cilXCircle } from '@coreui/icons';
 import { AgentCard } from './AgentCard';
-import type { Task, TaskPriority, QueueStatsResponse } from '@/lib/types';
-import { PRIORITY_LABELS, PRIORITY_COLORS, STATUS_COLORS } from '@/lib/types';
+import { WorkerToolbar } from './WorkerToolbar';
+import { NightCyclePanel } from './pro-loader';
+import type { Task, QueueStatsResponse } from '@/lib/types';
+import { STATUS_COLORS } from '@/lib/types';
 
 interface DashboardProps {
   runningTasks: Task[];
@@ -65,7 +67,70 @@ export function Dashboard({ runningTasks, queuedTasks, todayStats }: DashboardPr
 
   return (
     <>
-      <CRow className="mb-4">
+      {/* Worker status + controls */}
+      <WorkerToolbar />
+      <NightCyclePanel />
+
+      {/* Running Agents */}
+      <CCard className="mb-4">
+        <CCardHeader className="d-flex justify-content-between align-items-center">
+          <strong>Running Agents ({running.length})</strong>
+        </CCardHeader>
+        <CCardBody>
+          {running.length === 0 ? (
+            <p className="text-body-secondary mb-0">No agents currently running.</p>
+          ) : (
+            running.map((task) => (
+              <AgentCard key={task.id} task={task} />
+            ))
+          )}
+        </CCardBody>
+      </CCard>
+
+      {/* Queue Backlog */}
+      <CCard className="mb-4">
+        <CCardHeader className="d-flex justify-content-between align-items-center">
+          <div>
+            <CButton color="primary" size="sm" className="me-2" href="/tasks/new">
+              + Add Task
+            </CButton>
+            <CButton color="warning" size="sm" className="me-2" onClick={handlePauseQueue}>
+              Pause Queue
+            </CButton>
+            <CButton color="success" size="sm" onClick={handleResumeQueue}>
+              Resume Queue
+            </CButton>
+          </div>
+          <strong>Backlog ({queued.length} pending)</strong>
+        </CCardHeader>
+        <CCardBody>
+          {queued.length === 0 ? (
+            <p className="text-body-secondary mb-0">Queue is empty.</p>
+          ) : (
+            <CListGroup>
+              {queued.map((task) => (
+                <CListGroupItem
+                  key={task.id}
+                  as="a"
+                  href={`/tasks/${task.id}`}
+                  className="d-flex justify-content-between align-items-center"
+                >
+                  <div>
+                    <strong>{task.task_key}</strong>
+                    <span className="ms-2 text-body-secondary">{task.title}</span>
+                  </div>
+                  <CBadge color={STATUS_COLORS[task.status]}>
+                    {task.status}
+                  </CBadge>
+                </CListGroupItem>
+              ))}
+            </CListGroup>
+          )}
+        </CCardBody>
+      </CCard>
+
+      {/* Statistics */}
+      <CRow>
         <CCol sm={6} lg={3}>
           <CWidgetStatsA
             className="mb-3"
@@ -104,90 +169,13 @@ export function Dashboard({ runningTasks, queuedTasks, todayStats }: DashboardPr
             className="mb-3"
             color="danger"
             value={
-              <>{stats.failed} <span className="fs-6 fw-normal">failed</span></>
+              <>{stats.failed} <span className="fs-6 fw-normal">today</span></>
             }
             title="Failed"
             action={<CIcon icon={cilXCircle} height={36} />}
           />
         </CCol>
       </CRow>
-
-      {/* Running Agents */}
-      <CCard className="mb-4">
-        <CCardHeader className="d-flex justify-content-between align-items-center">
-          <strong>Running Agents ({running.length})</strong>
-        </CCardHeader>
-        <CCardBody>
-          {running.length === 0 ? (
-            <p className="text-body-secondary mb-0">No agents currently running.</p>
-          ) : (
-            <>
-              {running.map((task) => (
-                <AgentCard key={task.id} task={task} />
-              ))}
-            </>
-          )}
-        </CCardBody>
-      </CCard>
-
-      {/* Queue Backlog */}
-      <CCard className="mb-4">
-        <CCardHeader className="d-flex justify-content-between align-items-center">
-          <div>
-            <CButton
-              color="primary"
-              size="sm"
-              className="me-2"
-              href="/tasks/new"
-            >
-              + Add Job
-            </CButton>
-            <CButton
-              color="warning"
-              size="sm"
-              className="me-2"
-              onClick={handlePauseQueue}
-            >
-              Pause Queue
-            </CButton>
-            <CButton
-              color="success"
-              size="sm"
-              onClick={handleResumeQueue}
-            >
-              Resume Queue
-            </CButton>
-          </div>
-          <strong>Backlog ({queued.length} pending)</strong>
-        </CCardHeader>
-        <CCardBody>
-          {queued.length === 0 ? (
-            <p className="text-body-secondary mb-0">Queue is empty.</p>
-          ) : (
-            <CListGroup>
-              {queued.map((task) => (
-                <CListGroupItem
-                  key={task.id}
-                  as="a"
-                  href={`/tasks/${task.id}`}
-                  className="d-flex justify-content-between align-items-center"
-                >
-                  <div>
-                    <CBadge color={PRIORITY_COLORS[task.priority as TaskPriority]} className="me-2">
-                      {PRIORITY_LABELS[task.priority as TaskPriority]}
-                    </CBadge>
-                    <strong>{task.task_key}</strong>
-                    <span className="ms-2 text-body-secondary">{task.title}</span>
-                  </div>
-                  <CBadge color={STATUS_COLORS[task.status]}>
-                    {task.status}
-                  </CBadge>
-                </CListGroupItem>
-              ))}
-            </CListGroup>
-          )}
-        </CCardBody>
-      </CCard>
     </>
   );
 }

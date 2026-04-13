@@ -1,5 +1,5 @@
 # Runtime data
-logs/
+/logs/
 worktrees/
 
 # ── Secrets ──────────────────────────────────────────────
@@ -46,7 +46,6 @@ postgres_data/
 # ── Temp / build artefacts ───────────────────────────────
 /tmp/
 *.tmp
-*.tsbuildinfo
 dist/
 build/
 coverage/

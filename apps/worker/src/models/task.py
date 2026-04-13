@@ -26,6 +26,10 @@ class Task(Base):
     queue_job_id: Mapped[str | None] = mapped_column(String(128))
     skip_verify: Mapped[bool] = mapped_column(Boolean, default=False)
     claude_mode: Mapped[str] = mapped_column(String(8), default="max")
+    # Phase 2+ — AgentBackend abstraction (migration 006).
+    # 'anthropic' | 'google' | 'openai' | 'qwen'. Defaults to 'anthropic' so
+    # every existing task keeps running on Claude Code CLI unchanged.
+    agent_vendor: Mapped[str] = mapped_column(String(16), default="anthropic")
     claude_model: Mapped[str | None] = mapped_column(String(32), default=None)
     max_turns: Mapped[int | None] = mapped_column(Integer, default=None)
     # Phase 2 — per-task budget circuit breaker (services/agent_runner.py).
@@ -40,6 +44,8 @@ class Task(Base):
     plan_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     plan_rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     git_flow: Mapped[str] = mapped_column(String(16), default="branch")
+    backup_model: Mapped[str | None] = mapped_column(String(32), default="claude-sonnet-4-6")
+    is_continuation: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

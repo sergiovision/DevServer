@@ -90,7 +90,8 @@ build_docker() {
     exit 1
   fi
   echo "Building docker images..."
-  (cd "$DOCKER_DIR" && docker compose build)
+  # shellcheck disable=SC2046
+  (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) build)
   green "  Docker images built"
 }
 

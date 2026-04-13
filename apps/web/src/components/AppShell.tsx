@@ -54,7 +54,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </CContainer>
         </CHeader>
         <div className="body flex-grow-1">
-          <CContainer lg className="py-4">
+          <CContainer fluid className="py-4 px-4">
             {children}
           </CContainer>
         </div>

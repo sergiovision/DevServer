@@ -16,6 +16,7 @@ import { cilReload, cilMediaPlay, cilMediaStop, cilSync } from '@coreui/icons';
 
 interface WorkerStatus {
   running: boolean;
+  pid?: string | null;
   status: {
     mode?: string;
     paused?: boolean;
@@ -37,6 +38,7 @@ export function WorkerToolbar() {
   const [worker, setWorker] = useState<WorkerStatus>({ running: false, status: null });
   const [queue, setQueue] = useState<QueueStats | null>(null);
   const [loading, setLoading] = useState(false);
+  const [pendingAction, setPendingAction] = useState<'start' | 'restart' | 'stop' | null>(null);
   const [actionMsg, setActionMsg] = useState('');
 
   const refresh = useCallback(async () => {
@@ -56,6 +58,7 @@ export function WorkerToolbar() {
 
   const doAction = useCallback(async (action: 'start' | 'restart' | 'stop') => {
     setLoading(true);
+    setPendingAction(action);
     setActionMsg('');
     try {
       const res = await fetch('/api/worker', {
@@ -65,7 +68,7 @@ export function WorkerToolbar() {
       });
       const data = await res.json();
       if (data.success) {
-        setActionMsg(action === 'stop' ? 'Worker stopped.' : `Worker started (PID ${data.pid}).`);
+        setActionMsg('');
         await refresh();
       } else {
         setActionMsg(`Failed: ${data.error}`);
@@ -74,14 +77,17 @@ export function WorkerToolbar() {
       setActionMsg('Request failed.');
     } finally {
       setLoading(false);
+      setPendingAction(null);
     }
   }, [refresh]);
 
-  const workerBadge = worker.running
-    ? <CBadge color="success">Online</CBadge>
-    : <CBadge color="danger">Offline</CBadge>;
+  const isStarting = loading && (pendingAction === 'start' || pendingAction === 'restart');
+  const workerBadge = isStarting
+    ? <CBadge color="warning">Worker starting…</CBadge>
+    : worker.running
+      ? <CBadge color="success">Online {worker.pid ? `(PID ${worker.pid})` : ''}</CBadge>
+      : <CBadge color="danger">Offline</CBadge>;
 
-  const mode = worker.status?.mode ?? '—';
   const paused = worker.status?.paused;
 
   return (
@@ -136,17 +142,11 @@ export function WorkerToolbar() {
             </CButtonGroup>
           </CCol>
 
-          {/* Divider */}
-          <CCol xs="auto" className="text-body-secondary">|</CCol>
-
-          {/* Mode */}
-          <CCol xs="auto">
-            <span className="text-body-secondary small me-1">Mode:</span>
-            <CBadge color={mode === 'autonomous' ? 'primary' : 'secondary'}>
-              {mode}
-            </CBadge>
-            {paused && <CBadge color="warning" className="ms-1">Paused</CBadge>}
-          </CCol>
+          {paused && (
+            <CCol xs="auto">
+              <CBadge color="warning">Paused</CBadge>
+            </CCol>
+          )}
 
           {/* Queue stats */}
           {queue && (

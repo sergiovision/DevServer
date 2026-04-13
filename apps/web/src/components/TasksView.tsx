@@ -12,6 +12,7 @@ interface TasksViewProps {
 
 export function TasksView({ tasks }: TasksViewProps) {
   const [showRetired, setShowRetired] = useState(false);
+  const [groupByRepo, setGroupByRepo] = useState(false);
 
   return (
     <>
@@ -26,10 +27,16 @@ export function TasksView({ tasks }: TasksViewProps) {
             checked={showRetired}
             onChange={(e) => setShowRetired(e.target.checked)}
           />
+          <CFormCheck
+            id="groupByRepo"
+            label="Group by Repository"
+            checked={groupByRepo}
+            onChange={(e) => setGroupByRepo(e.target.checked)}
+          />
         </div>
         <h2 className="mb-0">Tasks</h2>
       </div>
-      <TaskTable tasks={tasks} showRetired={showRetired} />
+      <TaskTable tasks={tasks} showRetired={showRetired} groupByRepo={groupByRepo} />
     </>
   );
 }

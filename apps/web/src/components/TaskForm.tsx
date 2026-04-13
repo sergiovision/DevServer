@@ -17,9 +17,14 @@ import {
   CCol,
   CAlert,
 } from '@coreui/react-pro';
-import type { Repo, Task, GitFlow } from '@/lib/types';
-import { ModelCombobox } from '@/components/ModelCombobox';
+import type { Repo, Task, GitFlow, AgentVendor } from '@/lib/types';
+import {
+  AGENT_VENDORS,
+  defaultModelForVendor,
+  modelsForVendor,
+} from '@/lib/agent-vendors';
 import { MaxTurnsInput } from '@/components/MaxTurnsInput';
+import { VendorModelPicker } from '@/components/VendorModelPicker';
 
 interface TaskFormProps {
   repos: Repo[];
@@ -39,12 +44,12 @@ export function TaskForm({ repos, task }: TaskFormProps) {
     title: task?.title || '',
     description: task?.description || prefillDescription || '',
     acceptance: task?.acceptance || '',
-    priority: task?.priority?.toString() || '3',
-    labels: task?.labels?.join(', ') || '',
-    mode: task?.mode || 'autonomous',
     git_flow: (task?.git_flow || 'branch') as GitFlow,
     claude_mode: task?.claude_mode || 'max',
+    agent_vendor: (task?.agent_vendor || 'anthropic') as AgentVendor,
     claude_model: task?.claude_model || '',
+    backup_vendor: 'anthropic' as AgentVendor,
+    backup_model: task?.backup_model || 'claude-sonnet-4-6',
     max_turns: (task?.max_turns ?? 50) as number | null,
     skip_verify: task?.skip_verify ?? false,
   });
@@ -61,6 +66,24 @@ export function TaskForm({ repos, task }: TaskFormProps) {
 
   const handleCheck = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData((prev) => ({ ...prev, [e.target.name]: e.target.checked }));
+  };
+
+  // Swapping the vendor combobox auto-resets the model to the vendor's
+  // default unless the current model string already belongs to the new
+  // vendor's suggested list (i.e. the user typed something valid for both).
+  const handleVendorChange = (next: AgentVendor) => {
+    setFormData((prev) => {
+      const belongsToNextVendor = modelsForVendor(next).some(
+        (m) => m.id === prev.claude_model,
+      );
+      return {
+        ...prev,
+        agent_vendor: next,
+        claude_model: belongsToNextVendor
+          ? prev.claude_model
+          : defaultModelForVendor(next),
+      };
+    });
   };
 
   const handleFillTask = async () => {
@@ -84,11 +107,9 @@ export function TaskForm({ repos, task }: TaskFormProps) {
         title: task.title ?? prev.title,
         description: task.description ?? prev.description,
         acceptance: task.acceptance ?? prev.acceptance,
-        priority: task.priority?.toString() ?? prev.priority,
-        labels: Array.isArray(task.labels) ? task.labels.join(', ') : prev.labels,
-        mode: task.mode ?? prev.mode,
         git_flow: task.git_flow ?? prev.git_flow,
         claude_mode: task.claude_mode ?? prev.claude_mode,
+        agent_vendor: task.agent_vendor ?? prev.agent_vendor,
         claude_model: task.claude_model ?? prev.claude_model,
         max_turns: task.max_turns ?? prev.max_turns,
         skip_verify: task.skip_verify ?? prev.skip_verify,
@@ -109,12 +130,11 @@ export function TaskForm({ repos, task }: TaskFormProps) {
       const body = {
         ...formData,
         repo_id: parseInt(formData.repo_id),
-        priority: parseInt(formData.priority),
-        labels: formData.labels
-          .split(',')
-          .map((l) => l.trim())
-          .filter(Boolean),
+        priority: 3,
+        labels: [],
+        mode: 'autonomous',
         claude_model: formData.claude_model.trim() || null,
+        backup_model: formData.backup_model.trim() || null,
         max_turns: formData.max_turns,
       };
 
@@ -235,53 +255,6 @@ export function TaskForm({ repos, task }: TaskFormProps) {
             />
           </div>
 
-          <CRow className="mb-3">
-            <CCol md={3}>
-              <CFormLabel>Priority</CFormLabel>
-              <CFormSelect
-                name="priority"
-                value={formData.priority}
-                onChange={handleChange}
-              >
-                <option value="1">Critical</option>
-                <option value="2">High</option>
-                <option value="3">Medium</option>
-                <option value="4">Low</option>
-              </CFormSelect>
-            </CCol>
-            <CCol md={3}>
-              <CFormLabel>Mode</CFormLabel>
-              <CFormSelect
-                name="mode"
-                value={formData.mode}
-                onChange={handleChange}
-              >
-                <option value="autonomous">Autonomous</option>
-                <option value="interactive">Interactive</option>
-              </CFormSelect>
-            </CCol>
-            <CCol md={3}>
-              <CFormLabel>Claude billing</CFormLabel>
-              <CFormSelect
-                name="claude_mode"
-                value={formData.claude_mode}
-                onChange={handleChange}
-              >
-                <option value="api">API (platform)</option>
-                <option value="max">Max subscription</option>
-              </CFormSelect>
-            </CCol>
-            <CCol md={3}>
-              <CFormLabel>Labels (comma separated)</CFormLabel>
-              <CFormInput
-                name="labels"
-                value={formData.labels}
-                onChange={handleChange}
-                placeholder="bug, frontend, test, urgent"
-              />
-            </CCol>
-          </CRow>
-
           <div className="mb-3">
             <CFormLabel>Git flow</CFormLabel>
             <div className="btn-group w-100" role="group">
@@ -316,24 +289,6 @@ export function TaskForm({ repos, task }: TaskFormProps) {
           </div>
 
           <CRow className="mb-3">
-            <CCol md={6}>
-              <CFormLabel>
-                Claude Model{' '}
-                <small className="text-body-secondary">
-                  (leave blank to use repo default
-                  {formData.repo_id
-                    ? `: ${repos.find((r) => r.id === parseInt(formData.repo_id))?.claude_model ?? '—'}`
-                    : ''}
-                  )
-                </small>
-              </CFormLabel>
-              <ModelCombobox
-                name="claude_model"
-                value={formData.claude_model}
-                onChange={(v) => setFormData((prev) => ({ ...prev, claude_model: v }))}
-                placeholder="Leave blank to use repo default"
-              />
-            </CCol>
             <CCol md={3}>
               <CFormLabel>Max Turns</CFormLabel>
               <MaxTurnsInput
@@ -342,7 +297,85 @@ export function TaskForm({ repos, task }: TaskFormProps) {
               />
               <small className="text-body-secondary">Blank or empty = unlimited</small>
             </CCol>
+            <CCol md={3}>
+              <CFormLabel>Billing</CFormLabel>
+              <CFormSelect
+                name="claude_mode"
+                value={formData.claude_mode}
+                onChange={handleChange}
+              >
+                <option value="api">API Platform</option>
+                <option value="max">Max (subscription)</option>
+              </CFormSelect>
+            </CCol>
           </CRow>
+
+          <CRow className="mb-3">
+            <CCol md={3}>
+              <CFormLabel>Vendor</CFormLabel>
+              <CFormSelect
+                name="agent_vendor"
+                value={formData.agent_vendor}
+                onChange={(e) => handleVendorChange(e.target.value as AgentVendor)}
+              >
+                {AGENT_VENDORS.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.label}
+                  </option>
+                ))}
+              </CFormSelect>
+            </CCol>
+            <CCol md={6}>
+              <CFormLabel>
+                Model{' '}
+                <small className="text-body-secondary">
+                  (blank = repo default
+                  {formData.repo_id
+                    ? `: ${repos.find((r) => r.id === parseInt(formData.repo_id))?.claude_model ?? '—'}`
+                    : ''}
+                  )
+                </small>
+              </CFormLabel>
+              <CFormInput
+                name="claude_model"
+                value={formData.claude_model}
+                onChange={(e) =>
+                  setFormData((prev) => ({ ...prev, claude_model: e.target.value }))
+                }
+                list={`task-model-datalist-${formData.agent_vendor}`}
+                placeholder="Leave blank to use repo default"
+                autoComplete="off"
+              />
+              <datalist id={`task-model-datalist-${formData.agent_vendor}`}>
+                {modelsForVendor(formData.agent_vendor).map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </datalist>
+            </CCol>
+          </CRow>
+
+          <div className="mb-3">
+            <CFormLabel>Backup Model</CFormLabel>
+            <VendorModelPicker
+              vendor={formData.backup_vendor}
+              model={formData.backup_model}
+              onVendorChange={(v) => setFormData((prev) => ({
+                ...prev,
+                backup_vendor: v,
+                backup_model: modelsForVendor(v).some((m) => m.id === prev.backup_model)
+                  ? prev.backup_model
+                  : defaultModelForVendor(v),
+              }))}
+              onModelChange={(m) => setFormData((prev) => ({ ...prev, backup_model: m }))}
+              modelLabel="Backup Model"
+              modelPlaceholder="Auto-fallback model (default: claude-sonnet-4-6)"
+              vendorName="backup_vendor"
+              modelName="backup_model"
+            />
+            <small className="text-body-secondary">Used automatically if the primary model fails after all retries.</small>
+          </div>
 
           <div className="mb-3">
             <CFormCheck

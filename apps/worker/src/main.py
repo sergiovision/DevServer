@@ -20,9 +20,21 @@ from config import settings
 from routes.health import router as health_router
 from routes.internal import router as internal_router
 from services.queue_consumer import start_consumer, stop_consumer
-from services.night_cycle import resume_if_active
 from services.scheduler import start_scheduler, stop_scheduler
 from services.telegram_polling import start_polling, stop_polling
+
+# Pro features: conditionally import night cycle + pro routes.
+# If services/pro/ is absent (free version), these gracefully degrade.
+try:
+    from services.pro.night_cycle import resume_if_active
+except ImportError:
+    async def resume_if_active(): pass  # type: ignore[misc]
+
+try:
+    from routes.pro_internal import router as pro_router
+    _has_pro_routes = True
+except ImportError:
+    _has_pro_routes = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,6 +72,8 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(internal_router)
+if _has_pro_routes:
+    app.include_router(pro_router)
 
 
 def run():

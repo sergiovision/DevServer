@@ -81,12 +81,16 @@ kill_port() {
 
 port_busy() {
   local port="$1"
-  if command -v lsof >/dev/null 2>&1; then
+  # Prefer `ss` — it lists listeners across all users without sudo. `lsof`
+  # without root only sees the caller's own sockets, which hides host
+  # PostgreSQL (running as the `postgres` user) from our detection.
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk -v p=":${port}\$" '$4 ~ p { found=1 } END { exit !found }'
+  elif command -v lsof >/dev/null 2>&1; then
     lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1
-  elif command -v ss >/dev/null 2>&1; then
-    ss -ltn 2>/dev/null | awk -v p=":${port} " '$0 ~ p { found=1 } END { exit !found }'
   else
-    return 1
+    # Last-resort probe via bash TCP
+    (exec 3<>/dev/tcp/127.0.0.1/"${port}") 2>/dev/null && exec 3<&- 3>&-
   fi
 }
 
@@ -127,10 +131,44 @@ docker_running() {
   docker ps --format '{{.Names}}' 2>/dev/null | grep -qE '^devserver-(web|worker|postgres)$'
 }
 
+# Decide whether to bring in the host-db override. Rules:
+#   1. DEVSERVER_HOST_DB=1 forces host-db (explicit opt-in).
+#   2. DEVSERVER_HOST_DB=0 forces bundled DB (explicit opt-out).
+#   3. Otherwise, on Linux/macOS auto-detect: if something is already
+#      listening on port 5432 on the host (not our own containers),
+#      the bundled postgres would collide, so fall back to host-db.
+#   4. Windows (Git Bash / WSL) always uses bundled.
+docker_use_host_db() {
+  case "${DEVSERVER_HOST_DB:-}" in
+    1|true|yes) return 0 ;;
+    0|false|no) return 1 ;;
+  esac
+  [[ "$IS_LINUX" == 1 || "$IS_MACOS" == 1 ]] || return 1
+  local port="${PGPORT:-5432}"
+  # Skip the detection if our own bundled-DB container is the one holding
+  # the port — tearing down will free it and the user probably wants the
+  # bundled DB back.
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'devserver-postgres'; then
+    return 1
+  fi
+  port_busy "$port"
+}
+
+# Echoes the `-f` arguments for `docker compose` with the host-db override
+# appended when appropriate. Call sites use:
+#   docker compose $(docker_compose_files) up -d --build
+docker_compose_files() {
+  printf -- '-f %s ' "${DOCKER_DIR}/docker-compose.yml"
+  if [[ -f "${DOCKER_DIR}/docker-compose.host-db.yml" ]] && docker_use_host_db; then
+    printf -- '-f %s ' "${DOCKER_DIR}/docker-compose.host-db.yml"
+  fi
+}
+
 docker_down() {
   if docker_running; then
     echo "Stopping docker stack..."
-    (cd "$DOCKER_DIR" && docker compose down) || return 1
+    # shellcheck disable=SC2046
+    (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) down) || return 1
     green "  Docker stack stopped"
   fi
 }

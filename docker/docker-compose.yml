@@ -1,14 +1,22 @@
 version: '3.9'
 
-# DevServer v2
+# DevServer v2 — cross-platform stack (Linux, macOS, Windows).
+#
 # Usage:
 #   cd docker && cp ../.env.example .env   # fill in credentials
 #   docker compose up -d --build
 #
-# For Max subscription (Claude OAuth): mount your host ~/.claude directory.
-# Uncomment the claude_auth lines in the worker service below.
+# This default stack runs PostgreSQL inside Docker so it works out of the
+# box on every platform — Windows users in particular must use this mode
+# because Docker Desktop has no host Postgres to talk to.
 #
-# For API subscription: set ANTHROPIC_API_KEY in .env — nothing else needed.
+# Linux users who already run PostgreSQL on the host can skip the bundled
+# DB and point containers at host.docker.internal instead:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.host-db.yml up -d --build
+#
+# For Max subscription (Claude OAuth): mount your host Claude config dir.
+# Uncomment the claude_auth line in the worker service below.
 
 services:
 
@@ -42,12 +50,21 @@ services:
       dockerfile: docker/Dockerfile.web
     container_name: devserver-web
     environment:
-      # Database — connects via service name
+      # Database — connects via service name. Both DATABASE_URL and the
+      # PG* discrete vars are set because different code paths read
+      # different forms (server.ts uses DATABASE_URL, lib/db.ts uses PG*).
       DATABASE_URL: postgresql://devserver:${PGPASSWORD:-changeme}@postgres:5432/devserver
+      PGHOST:     postgres
+      PGPORT:     "5432"
+      PGUSER:     devserver
+      PGPASSWORD: ${PGPASSWORD:-changeme}
+      PGDATABASE: devserver
       # Worker — internal service URL (not localhost)
       WORKER_URL: http://worker:8000
       # Deploy mode for versioning
       DEPLOY_MODE: docker
+      # /logs viewer reads files from this dir. Shared volume with the worker.
+      DS_LOG_DIR: /app/logs
       # Public URLs for browser clients
       NEXT_PUBLIC_WS_URL:  ${NEXT_PUBLIC_WS_URL:-ws://localhost:3000/api/ws}
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000/api}
@@ -58,6 +75,9 @@ services:
         condition: service_healthy
       worker:
         condition: service_healthy
+    volumes:
+      # Shared with the worker so the /logs viewer can read both files
+      - worker_logs:/app/logs
     restart: unless-stopped
 
   # ── DevServer Worker (Python FastAPI + PgQueuer consumer + Claude CLI) ───
@@ -92,7 +112,8 @@ services:
       # ── Max subscription (Claude OAuth) ──────────────────────────────────
       # Uncomment to use Claude Max instead of API key.
       # Requires `claude login` to have been run on the HOST machine first.
-      # - ${HOME}/.claude:/root/.claude:ro
+      # Windows (Docker Desktop) path looks like: C:\Users\<you>\.claude
+      # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 15s

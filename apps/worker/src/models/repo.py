@@ -24,7 +24,7 @@ class Repo(Base):
     pre_cmd: Mapped[str] = mapped_column(Text, default="")
     claude_model: Mapped[str] = mapped_column(String(32), default="sonnet")
     claude_allowed_tools: Mapped[str] = mapped_column(Text, default="Read,Write,Edit,Glob,Grep,Bash")
-    max_retries: Mapped[int] = mapped_column(Integer, default=3)
+    max_retries: Mapped[int] = mapped_column(Integer, default=2)
     timeout_minutes: Mapped[int] = mapped_column(Integer, default=60)
     claude_md_path: Mapped[str] = mapped_column(String(256), default="CLAUDE.md")
     gitea_token: Mapped[str] = mapped_column(String(256), default="")

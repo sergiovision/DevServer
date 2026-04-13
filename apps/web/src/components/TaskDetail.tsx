@@ -25,10 +25,10 @@ import {
 import { AgentLog } from './AgentLog';
 import { TaskLog } from './TaskLog';
 import { MaxTurnsInput } from './MaxTurnsInput';
-import { ModelCombobox } from './ModelCombobox';
-import { PatchesPanel } from './PatchesPanel';
-import type { Task, TaskRun, TaskEvent, TaskPriority, TaskStatus, GhostJobInfo, GitFlow } from '@/lib/types';
-import { PRIORITY_LABELS, PRIORITY_COLORS, STATUS_COLORS } from '@/lib/types';
+import { VendorModelPicker } from './VendorModelPicker';
+import { PatchesPanel } from './pro-loader';
+import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
+import { STATUS_COLORS } from '@/lib/types';
 
 interface TaskDetailProps {
   task: Task;
@@ -82,8 +82,12 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
 
   // Agent settings local edit state
   const [agentMaxTurns, setAgentMaxTurns] = useState<number | null>(task.max_turns ?? 50);
+  const [agentVendor, setAgentVendor] = useState<AgentVendor>((task.agent_vendor ?? 'anthropic') as AgentVendor);
   const [agentModel, setAgentModel] = useState<string>(task.claude_model ?? '');
+  const [agentBilling, setAgentBilling] = useState<ClaudeMode>((task.claude_mode ?? 'max') as ClaudeMode);
   const [agentGitFlow, setAgentGitFlow] = useState<GitFlow>((task.git_flow ?? 'branch') as GitFlow);
+  const [backupVendor, setBackupVendor] = useState<AgentVendor>('anthropic');
+  const [backupModel, setBackupModel] = useState<string>(task.backup_model ?? 'claude-sonnet-4-6');
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentError, setAgentError] = useState('');
   const [agentSaved, setAgentSaved] = useState(false);
@@ -98,8 +102,11 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           max_turns: agentMaxTurns,
+          agent_vendor: agentVendor,
           claude_model: agentModel.trim() || null,
+          claude_mode: agentBilling,
           git_flow: agentGitFlow,
+          backup_model: backupModel.trim() || null,
         }),
       });
       if (!res.ok) {
@@ -113,7 +120,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     } finally {
       setAgentSaving(false);
     }
-  }, [task.id, agentMaxTurns, agentModel, agentGitFlow, router]);
+  }, [task.id, agentMaxTurns, agentVendor, agentModel, agentBilling, agentGitFlow, backupModel, router]);
 
   const handleDelete = useCallback(async () => {
     if (!confirm(`Delete task "${task.task_key}"? This cannot be undone.`)) return;
@@ -151,6 +158,26 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const handleCancel = useCallback(async () => {
     await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
     router.refresh();
+  }, [task.id, router]);
+
+  const [continuing, setContinuing] = useState(false);
+  const handleContinue = useCallback(async () => {
+    if (!confirm('Continue this task with the current primary model? The in-flight run will be stopped and a new session will resume from where it left off.')) return;
+    setContinuing(true);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/continue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: null, mode: null }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert(d.error || 'Continue failed');
+      }
+      router.refresh();
+    } finally {
+      setContinuing(false);
+    }
   }, [task.id, router]);
 
   const handleRetire = useCallback(async () => {
@@ -198,11 +225,8 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
         body: JSON.stringify({
           description: generated.description || undefined,
           acceptance: generated.acceptance || undefined,
-          priority: generated.priority || undefined,
-          labels: generated.labels || undefined,
           claude_model: generated.claude_model,
           max_turns: generated.max_turns,
-          mode: generated.mode || undefined,
           claude_mode: generated.claude_mode || undefined,
           skip_verify: generated.skip_verify,
         }),
@@ -230,9 +254,6 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
       <div className="mb-4">
         <h2 className="mb-1">{task.task_key}: {task.title}</h2>
         <div className="mb-2">
-          <CBadge color={PRIORITY_COLORS[task.priority as TaskPriority]} className="me-2">
-            {PRIORITY_LABELS[task.priority as TaskPriority]}
-          </CBadge>
           <CBadge color={STATUS_COLORS[task.status as TaskStatus]}>
             {task.status}
           </CBadge>
@@ -260,6 +281,11 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
           {(task.status === 'running' || task.status === 'queued') && (
             <CButton color="danger" onClick={handleCancel}>
               Cancel
+            </CButton>
+          )}
+          {(['running', 'queued', 'failed', 'blocked', 'cancelled'].includes(task.status)) && (
+            <CButton color="info" disabled={continuing} onClick={handleContinue}>
+              {continuing ? 'Continuing…' : 'Continue'}
             </CButton>
           )}
           {(task.status === 'running' || task.status === 'verifying' || task.status === 'failed' || task.status === 'queued') && (
@@ -364,12 +390,8 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
             <CCardHeader><strong>Details</strong></CCardHeader>
             <CCardBody>
               <dl className="mb-0">
-                <dt>Mode</dt>
-                <dd>{task.mode}</dd>
-                <dt>Claude billing</dt>
-                <dd>{task.claude_mode === 'max' ? 'Max subscription' : 'API (platform)'}</dd>
-                <dt>Labels</dt>
-                <dd>{task.labels?.length ? task.labels.join(', ') : '-'}</dd>
+                <dt>Billing</dt>
+                <dd>{task.claude_mode === 'max' ? 'Max (subscription)' : 'API Platform'}</dd>
                 <dt>Queue Job ID</dt>
                 <dd className="text-break">{task.queue_job_id || '-'}</dd>
                 <dt>Created</dt>
@@ -395,16 +417,52 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                 </small>
               </div>
               <div className="mb-3">
-                <CFormLabel className="mb-1">Claude Model</CFormLabel>
-                <ModelCombobox
-                  name="claude_model"
-                  value={agentModel}
-                  onChange={setAgentModel}
-                  placeholder="Leave blank to use repo default"
+                <CFormLabel className="mb-1">Billing</CFormLabel>
+                <CFormSelect
+                  value={agentBilling}
+                  onChange={(e) => setAgentBilling(e.target.value as ClaudeMode)}
+                >
+                  <option value="api">API Platform</option>
+                  <option value="max">Max (subscription)</option>
+                </CFormSelect>
+                <small className="text-body-secondary">
+                  {agentBilling === 'max'
+                    ? 'Uses vendor OAuth / subscription login (Claude Max, ChatGPT Plus, Google OAuth, Qwen OAuth).'
+                    : 'Uses the vendor API-key env var from .env.'}
+                </small>
+              </div>
+              <div className="mb-3">
+                <CFormLabel className="mb-1">Agent vendor &amp; model</CFormLabel>
+                <VendorModelPicker
+                  vendor={agentVendor}
+                  model={agentModel}
+                  onVendorChange={setAgentVendor}
+                  onModelChange={setAgentModel}
+                  modelLabel="Model"
+                  modelPlaceholder="Leave blank to use repo default"
                 />
                 {task.claude_model && (
-                  <small className="text-body-secondary">Current: {task.claude_model}</small>
+                  <small className="text-body-secondary">
+                    Current: {task.agent_vendor ?? 'anthropic'} · {task.claude_model}
+                  </small>
                 )}
+              </div>
+              <div className="mb-3">
+                <CFormLabel className="mb-1">Backup model</CFormLabel>
+                <VendorModelPicker
+                  vendor={backupVendor}
+                  model={backupModel}
+                  onVendorChange={setBackupVendor}
+                  onModelChange={setBackupModel}
+                  modelLabel="Backup Model"
+                  modelPlaceholder="Auto-fallback model (default: claude-sonnet-4-6)"
+                  vendorName="backup_vendor"
+                  modelName="backup_model"
+                />
+                <small className="text-body-secondary">
+                  Used automatically if the primary model fails after all retries.
+                  {task.backup_model ? ` Current: ${task.backup_model}` : ''}
+                </small>
               </div>
               <div className="mb-3">
                 <CFormLabel className="mb-1">Git flow</CFormLabel>
@@ -458,16 +516,21 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                 <CTable small hover responsive className="mb-0">
                   <CTableHead>
                     <CTableRow>
-                      <CTableHeaderCell>#</CTableHeaderCell>
+                      <CTableHeaderCell>Time</CTableHeaderCell>
                       <CTableHeaderCell>Status</CTableHeaderCell>
                       <CTableHeaderCell>Duration</CTableHeaderCell>
                       <CTableHeaderCell>Cost</CTableHeaderCell>
                     </CTableRow>
                   </CTableHead>
                   <CTableBody>
-                    {runs.map((run) => (
+                    {[...runs].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).map((run) => (
                       <CTableRow key={run.id}>
-                        <CTableDataCell>{run.attempt}</CTableDataCell>
+                        <CTableDataCell suppressHydrationWarning>
+                          {new Date(run.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}{' '}
+                          <small className="text-body-secondary">
+                            {new Date(run.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
+                          </small>
+                        </CTableDataCell>
                         <CTableDataCell>
                           <CBadge color={
                             run.status === 'passed' ? 'success' :
@@ -481,7 +544,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                           {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : '-'}
                         </CTableDataCell>
                         <CTableDataCell>
-                          {run.cost_usd ? `$${Number(run.cost_usd).toFixed(4)}` : '-'}
+                          {run.cost_usd ? `$${Number(run.cost_usd).toFixed(2)}` : '-'}
                         </CTableDataCell>
                       </CTableRow>
                     ))}

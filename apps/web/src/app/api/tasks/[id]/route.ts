@@ -44,8 +44,18 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const body = await request.json();
     const allowed = [
       'task_key', 'title', 'description', 'acceptance',
-      'priority', 'labels', 'mode', 'claude_mode', 'claude_model', 'max_turns', 'skip_verify', 'git_flow', 'status', 'depends_on', 'queue_job_id',
+      'priority', 'labels', 'mode', 'claude_mode', 'agent_vendor', 'claude_model', 'max_turns', 'skip_verify', 'git_flow', 'backup_model', 'status', 'depends_on', 'queue_job_id',
     ];
+
+    if (body.agent_vendor !== undefined) {
+      const ALLOWED_VENDORS = ['anthropic', 'google', 'openai', 'glm'];
+      if (!ALLOWED_VENDORS.includes(body.agent_vendor)) {
+        return NextResponse.json(
+          { error: `agent_vendor must be one of: ${ALLOWED_VENDORS.join(', ')}` },
+          { status: 400 },
+        );
+      }
+    }
 
     if (body.max_turns !== undefined && body.max_turns !== null &&
         (!Number.isInteger(body.max_turns) || body.max_turns <= 0)) {

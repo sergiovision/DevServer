@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import random
-import re
 import time
 import traceback
 from datetime import datetime, timezone
@@ -29,47 +28,34 @@ from models.task import Task
 from models.task_event import TaskEvent
 from models.task_run import TaskRun
 from services import (
+    agent_backends,
     error_classifier,
     git_ops,
-    memory as memory_svc,
-    patch_ops,
-    plan_gate,
-    pr_preflight,
-    reality_gate,
     repo_map,
     telegram,
     verifier,
 )
+from services.agent_backends import AgentBackend
 
-# Budget circuit breaker — emit a warning event when cumulative cost or wall
-# time crosses this fraction of the task's hard limit, once per task.
-_BUDGET_WARN_THRESHOLD = 0.8
+# Pro features: if the services/pro/ folder exists, load real implementations.
+# If it's absent (public MIT repo), fall back to no-op stubs so the free
+# version compiles and runs without errors.
+try:
+    from services.pro import hooks as pro
+except ImportError:
+    from services._free_hooks import FreeHooks
+    pro = FreeHooks()
 
-# Rate-limit handling for the Anthropic API. When the Claude CLI subprocess
-# fails with a 429, we sleep and retry the SAME call without consuming a
-# task-level retry attempt — burning a full retry on a transient quota
-# error costs another ~5K tokens of context for nothing.
-_RATE_LIMIT_PATTERNS = re.compile(
-    r"rate_limit_error|rate limit of \d+\s*(?:input\s+)?tokens? per minute|429",
-    re.IGNORECASE,
-)
-# Backoff schedule (seconds) — for the 30K-tokens/minute default Anthropic
-# tier, the bucket clears in well under a minute, so 30/60/120 plus jitter
-# is plenty before we give up and surface the error.
+
+# Rate-limit handling applies to every vendor — when the agent CLI
+# subprocess fails with a 429, we sleep and retry the SAME call without
+# consuming a task-level retry attempt. Burning a full retry on a transient
+# quota error costs another ~5K tokens of context for nothing.
+#
+# Each vendor detects its OWN 429 shape via ``AgentBackend.is_rate_limit_error``.
+# This module only knows the generic backoff schedule.
 _RATE_LIMIT_BACKOFF_SCHEDULE = (30, 60, 120)
 _RATE_LIMIT_JITTER_SECONDS = 10
-
-
-def _is_rate_limit_error(stdout: str, stderr: str, exit_code: int) -> bool:
-    """True if the Claude CLI run looks like an Anthropic 429.
-
-    Checks both streams because the CLI sometimes prints the API error to
-    stdout (as part of its JSON output) and sometimes to stderr (as a raw
-    line). Exit code alone is not enough — every Claude failure is non-zero.
-    """
-    if exit_code == 0:
-        return False
-    return bool(_RATE_LIMIT_PATTERNS.search(stdout)) or bool(_RATE_LIMIT_PATTERNS.search(stderr))
 
 logger = logging.getLogger(__name__)
 
@@ -105,38 +91,6 @@ async def _release_lock(db: AsyncSession, repo_name: str, task_key: str) -> None
         "DELETE FROM repo_locks WHERE repo_name = :repo_name AND task_key = :task_key"
     ), {"repo_name": repo_name, "task_key": task_key})
     await db.commit()
-
-
-def _check_budget(
-    *,
-    cum_cost: Decimal,
-    cum_wall_ms: int,
-    max_cost_usd: Decimal | None,
-    max_wall_seconds: int | None,
-    claude_mode: str,
-) -> tuple[str, str]:
-    """Evaluate the budget circuit breaker state.
-
-    Returns ``(state, reason)`` where state is one of:
-      - ``"ok"``        — well under budget, no action
-      - ``"warn"``      — crossed the warn threshold, emit warning
-      - ``"exceeded"``  — over a hard limit, caller must stop the task
-    """
-    # Cost is always zero in Max mode — skip cost enforcement there.
-    if max_cost_usd is not None and claude_mode != "max":
-        if cum_cost >= max_cost_usd:
-            return "exceeded", f"cost ${cum_cost} exceeded budget ${max_cost_usd}"
-        if cum_cost >= max_cost_usd * Decimal(str(_BUDGET_WARN_THRESHOLD)):
-            return "warn", f"cost ${cum_cost} at {_BUDGET_WARN_THRESHOLD:.0%} of ${max_cost_usd}"
-
-    if max_wall_seconds is not None:
-        cum_wall_s = cum_wall_ms / 1000
-        if cum_wall_s >= max_wall_seconds:
-            return "exceeded", f"wall-clock {cum_wall_s:.0f}s exceeded budget {max_wall_seconds}s"
-        if cum_wall_s >= max_wall_seconds * _BUDGET_WARN_THRESHOLD:
-            return "warn", f"wall-clock {cum_wall_s:.0f}s at {_BUDGET_WARN_THRESHOLD:.0%} of {max_wall_seconds}s"
-
-    return "ok", ""
 
 
 async def _emit_event(
@@ -243,28 +197,11 @@ def _build_prompt(
     return "\n".join(parts)
 
 
-def _render_memory_recall(memories: list[dict]) -> str:
-    """Render a list of memory_svc.search_memory hits as a prompt block."""
-    if not memories:
-        return ""
-    lines = [
-        "## Prior Experience (from agent_memory)",
-        "Summaries of similar past tasks — hints, not ground truth.",
-    ]
-    # Hard-cap at 3 entries × 200 chars after the Phase 1+2 rate-limit
-    # incident; the upstream call site already requests limit=3 but we
-    # belt-and-braces here in case a caller passes a longer list.
-    for m in memories[:3]:
-        mtype = m.get("memory_type", "experience")
-        sim = m.get("similarity", 0.0)
-        content = (m.get("content") or "").strip().replace("\n", " ")
-        if len(content) > 200:
-            content = content[:200] + "..."
-        lines.append(f"- [{mtype} sim={sim:.2f}] {content}")
-    return "\n".join(lines)
+    # _render_memory_recall moved to services/pro/__init__.py (ProHooks.render_memory_recall)
 
 
-async def _run_claude(
+async def _run_agent(
+    backend: AgentBackend,
     worktree_path: str,
     prompt: str,
     model: str,
@@ -277,55 +214,70 @@ async def _run_claude(
     claude_mode: str = "max",
     max_turns: int | None = 100,
 ) -> dict:
-    """Execute Claude Code CLI and stream output.
+    """Execute a vendor-agnostic coding-agent CLI and collect its output.
 
-    Returns dict with keys: result, cost_usd, num_turns, session_id, exit_code.
-    claude_mode='max' (default) runs without ANTHROPIC_API_KEY so Claude CLI uses Max subscription.
-    claude_mode='api' uses the API key from the environment.
+    Delegates everything vendor-specific to ``backend`` (command
+    construction, environment, rate-limit detection, output parsing) and
+    keeps the shared machinery here: subprocess spawning, per-call timeout,
+    429-aware retry with backoff, and task-event emission.
 
-    On Anthropic 429 (rate_limit_error), retries the SAME subprocess call up
-    to ``len(_RATE_LIMIT_BACKOFF_SCHEDULE)`` times with backoff. This is
-    inside ``_run_claude`` on purpose: a 429 burns no agent progress, so we
-    must not consume a task-level retry attempt for it (which would re-build
-    the full prompt and double down on the rate-limit problem).
+    Returns the legacy dict shape that the existing retry loop consumes:
+    ``result``, ``cost_usd``, ``num_turns``, ``session_id``, ``exit_code``,
+    ``raw_output``, ``subtype``, ``errors``.
+
+    On a vendor-specific 429 (detected via ``backend.is_rate_limit_error``),
+    retries the SAME subprocess call up to ``len(_RATE_LIMIT_BACKOFF_SCHEDULE)``
+    times with jittered backoff. A 429 burns no agent progress, so we must
+    not consume a task-level retry attempt for it.
+
+    The ``claude_mode`` parameter stays named that way for backwards
+    compatibility with the job payload — it's passed through as the
+    ``billing_mode`` argument to the backend's ``build_env`` and only the
+    Claude backend does anything meaningful with it.
     """
-    cmd = [
-        settings.claude_bin,
-        "-p", prompt,
-        "--permission-mode", "auto",
-        "--output-format", "json",
-        "--model", model,
-    ]
-    if max_turns is not None:
-        cmd.extend(["--max-turns", str(max_turns)])
+    cmd = backend.build_command(
+        prompt=prompt,
+        model=model,
+        allowed_tools=allowed_tools,
+        session_id=session_id,
+        max_turns=max_turns,
+    )
+    env = backend.build_env(billing_mode=claude_mode)
 
-    if allowed_tools:
-        cmd.extend(["--allowedTools", allowed_tools])
-    if session_id:
-        cmd.extend(["--resume", session_id])
+    if backend.vendor == "google":
+        gemini_dir = os.path.join(worktree_path, ".gemini")
+        os.makedirs(gemini_dir, exist_ok=True)
+        settings_path = os.path.join(gemini_dir, "settings.json")
+        try:
+            with open(settings_path, "w", encoding="utf-8") as f:
+                json.dump({"model": {"maxSessionTurns": max_turns if max_turns is not None else -1}}, f)
+        except Exception as e:
+            logger.warning("Failed to write .gemini/settings.json: %s", e)
 
     timeout_seconds = timeout_minutes * 60
 
-    # Build subprocess environment
-    if claude_mode == "max":
-        # Strip API key so Claude CLI falls back to Max subscription (OAuth login)
-        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        logger.info("Running Claude CLI in %s (model=%s, timeout=%dm, billing=Max)", worktree_path, model, timeout_minutes)
-    else:
-        env = None  # inherit full environment (includes ANTHROPIC_API_KEY)
-        logger.info("Running Claude CLI in %s (model=%s, timeout=%dm, billing=API)", worktree_path, model, timeout_minutes)
+    logger.info(
+        "Running %s CLI in %s (model=%s, timeout=%dm, billing=%s)",
+        backend.label, worktree_path, model, timeout_minutes, claude_mode,
+    )
 
     async def _spawn_once() -> tuple[int, str, str]:
-        """Spawn the Claude CLI subprocess one time and collect its output.
+        """Spawn the agent CLI subprocess one time and collect its output.
 
         Returns (exit_code, stdout_text, stderr_text). Raises on timeout —
         the outer function maps timeouts to a structured failure dict so the
         rate-limit retry loop never sees them.
         """
+        # stdin=DEVNULL is required for true headless operation. Without it
+        # asyncio inherits the worker's stdin — when the worker runs in a
+        # terminal (dev mode) the agent CLI inherits the TTY and may either
+        # block on a read or, in Gemini's case, merge stray TTY bytes into
+        # the prompt (per `gemini --help`: "Appended to input on stdin if any").
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=worktree_path,
             env=env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -361,16 +313,16 @@ async def _run_claude(
                 "num_turns": 0,
                 "session_id": session_id,
                 "exit_code": -1,
-                "error": f"Claude CLI timed out after {timeout_minutes}m",
+                "error": f"{backend.label} CLI timed out after {timeout_minutes}m",
             }
 
-        if not _is_rate_limit_error(raw_output, stderr_text, exit_code):
+        if not backend.is_rate_limit_error(raw_output, stderr_text, exit_code):
             break
 
         if rate_limit_attempts >= len(_RATE_LIMIT_BACKOFF_SCHEDULE):
             logger.error(
-                "Claude CLI rate-limited %d times in a row, giving up",
-                rate_limit_attempts,
+                "%s CLI rate-limited %d times in a row, giving up",
+                backend.label, rate_limit_attempts,
             )
             break
 
@@ -380,10 +332,12 @@ async def _run_claude(
         sleep_for = backoff + jitter
         rate_limit_attempts += 1
         logger.warning(
-            "Anthropic 429 (attempt %d/%d) — sleeping %.0fs before retrying",
-            rate_limit_attempts, len(_RATE_LIMIT_BACKOFF_SCHEDULE), sleep_for,
+            "%s 429 (attempt %d/%d) — sleeping %.0fs before retrying",
+            backend.label, rate_limit_attempts,
+            len(_RATE_LIMIT_BACKOFF_SCHEDULE), sleep_for,
         )
         await _emit_event(db, task_id, run_id, "rate_limit_backoff", {
+            "vendor": backend.vendor,
             "attempt": rate_limit_attempts,
             "max_attempts": len(_RATE_LIMIT_BACKOFF_SCHEDULE),
             "sleep_seconds": round(sleep_for, 1),
@@ -396,157 +350,13 @@ async def _run_claude(
             if line.strip():
                 await _emit_event(db, task_id, run_id, "log_line", {"line": line, "stream": "stderr"})
 
-    # Parse JSON output
-    result_text = ""
-    cost_usd = 0
-    num_turns = 0
-    new_session_id = session_id
-
-    subtype = ""
-    errors: list[str] = []
-    try:
-        data = json.loads(raw_output)
-        result_text = data.get("result", "")
-        cost_usd = data.get("cost_usd", 0)
-        num_turns = data.get("num_turns", 0)
-        new_session_id = data.get("session_id", session_id) or session_id
-        subtype = data.get("subtype", "")
-        errors = data.get("errors", [])
-    except (json.JSONDecodeError, TypeError):
-        result_text = raw_output
-        logger.warning("Claude output was not valid JSON, using raw text")
-
-    return {
-        "result": result_text,
-        "cost_usd": cost_usd,
-        "num_turns": num_turns,
-        "session_id": new_session_id,
-        "exit_code": exit_code,
-        "raw_output": raw_output,
-        "subtype": subtype,
-        "errors": errors,
-    }
+    # Parse vendor-specific JSON output into the normalised result shape.
+    result = backend.parse_output(raw_output, session_id)
+    result.exit_code = exit_code
+    return result.to_dict()
 
 
-async def _run_plan_gate(
-    *,
-    db: AsyncSession,
-    task_id: int,
-    task_key: str,
-    title: str,
-    description: str,
-    acceptance: str,
-    repo: Repo,
-    worktree_path: str,
-    claude_mode: str,
-    task_log,
-) -> str | None:
-    """Run the plan → approve → implement gate for interactive-mode tasks.
-
-    Returns the rendered approved-plan prompt block on success.
-    Returns None if the plan was rejected, timed out, or failed to generate —
-    in which case the task has already been marked blocked/failed and the
-    caller should stop.
-    """
-    # Clear any prior approval state in case the task is being re-run.
-    await plan_gate.reset_approval(db, task_id)
-
-    # Insert a dedicated run row for the plan phase so the dashboard has
-    # somewhere to hang the plan_json column.
-    plan_run = TaskRun(
-        task_id=task_id,
-        attempt=0,
-        branch=None,
-        status="planning",
-    )
-    db.add(plan_run)
-    await db.commit()
-    await db.refresh(plan_run)
-    plan_run_id = plan_run.id
-
-    task_log.write(f"\n[plan_gate] generating plan for {task_key}...\n")
-    task_log.flush()
-
-    # Run Claude in plan-only mode. Cap turns hard so this phase is cheap.
-    plan_prompt = plan_gate.build_plan_prompt(
-        repo_name=repo.name,
-        task_key=task_key,
-        title=title,
-        description=description,
-        acceptance=acceptance,
-    )
-    plan_result = await _run_claude(
-        worktree_path=worktree_path,
-        prompt=plan_prompt,
-        model=repo.claude_model,
-        allowed_tools="Read,Glob,Grep",  # read-only tools — no edits during planning
-        session_id=None,
-        timeout_minutes=min(repo.timeout_minutes, 15),
-        task_id=task_id,
-        run_id=plan_run_id,
-        db=db,
-        claude_mode=claude_mode,
-        max_turns=30,
-    )
-
-    raw_plan_output = plan_result.get("result") or plan_result.get("raw_output", "")
-    plan = plan_gate.parse_plan_output(raw_plan_output)
-
-    await plan_gate.save_plan(db, plan_run_id, plan)
-
-    if plan.get("_parse_error"):
-        await _emit_event(db, task_id, plan_run_id, "plan_pending", {
-            "plan": plan,
-            "parse_error": plan.get("_parse_error"),
-        })
-        task_log.write(
-            f"\n[plan_gate] plan failed to parse: {plan.get('_parse_error')}\n"
-        )
-        task_log.flush()
-    else:
-        await _emit_event(db, task_id, plan_run_id, "plan_pending", {
-            "plan": plan,
-            "files_to_touch": plan.get("files_to_touch", []),
-        })
-        task_log.write(
-            f"\n[plan_gate] plan ready ({len(plan.get('files_to_touch', []))} files, "
-            f"{len(plan.get('steps', []))} steps) — awaiting approval\n"
-        )
-        task_log.flush()
-
-    await telegram.tg_send(
-        f"\U0001f4cb *{task_key}* plan ready for review\n"
-        f"Summary: {plan.get('summary', '(no summary)')[:200]}\n"
-        f"Files: {len(plan.get('files_to_touch', []))}"
-    )
-
-    # Mark the plan run as finished (it's not an implementation attempt).
-    await db.execute(
-        update(TaskRun).where(TaskRun.id == plan_run_id).values(
-            status="awaiting_approval",
-            finished_at=datetime.now(timezone.utc),
-        )
-    )
-    await db.commit()
-
-    # Poll for approval.
-    verdict, ts = await plan_gate.wait_for_approval(db, task_id)
-
-    if verdict == "approved":
-        await _emit_event(db, task_id, plan_run_id, "plan_approved", {"ts": str(ts)})
-        return plan_gate.render_plan_for_implementation(plan)
-
-    if verdict == "rejected":
-        await _emit_event(db, task_id, plan_run_id, "plan_rejected", {"ts": str(ts)})
-        await _update_task_status(db, task_id, "blocked")
-        await telegram.tg_send(f"\u26d4 *{task_key}* plan rejected")
-        return None
-
-    # timeout
-    await _emit_event(db, task_id, plan_run_id, "plan_rejected", {"reason": "timeout"})
-    await _update_task_status(db, task_id, "blocked")
-    await telegram.tg_send(f"\u23f0 *{task_key}* plan approval timed out")
-    return None
+    # _run_plan_gate moved to services/pro/__init__.py (ProHooks.run_plan_gate)
 
 
 async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None = None) -> bool:
@@ -568,6 +378,13 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         description = task.description or ""
         acceptance = task.acceptance or ""
         skip_verify = bool(task.skip_verify)
+        is_continuation = bool(getattr(task, "is_continuation", False))
+        backup_model = getattr(task, "backup_model", None)
+        # Resolve the agent backend for this task. Defaults to Anthropic
+        # when the column is missing or unknown (backwards compatible with
+        # every task created before migration 006).
+        agent_vendor = getattr(task, "agent_vendor", None) or agent_backends.DEFAULT_VENDOR
+        backend = agent_backends.get_backend(agent_vendor)
         # Per-task model overrides repo default
         effective_model = getattr(task, "claude_model", None) or repo.claude_model
         # Per-task turn budget: job payload → task field → default 50
@@ -583,10 +400,30 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         repo_name = repo.name
         branch_name = f"agent/{task_key}"
 
+        # Continuation: load session_id from the most recent run so the
+        # agent can resume its conversation, and clear the flag immediately.
+        continuation_session_id: str | None = None
+        if is_continuation:
+            last_run_row = await db.execute(text(
+                "SELECT session_id FROM task_runs "
+                "WHERE task_id = :tid AND session_id IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1"
+            ), {"tid": task_id})
+            row = last_run_row.fetchone()
+            continuation_session_id = row[0] if row else None
+            await db.execute(
+                update(Task).where(Task.id == task_id).values(is_continuation=False)
+            )
+            await db.commit()
+            logger.info(
+                "Continuation mode: session_id=%s", continuation_session_id,
+            )
+
         turns_label = str(effective_max_turns) if effective_max_turns is not None else "unlimited"
         logger.info(
-            "=== Starting task: %s - %s (repo: %s, model: %s, max_turns: %s) ===",
+            "=== Starting task: %s - %s (repo: %s, model: %s, max_turns: %s%s) ===",
             task_key, title, repo_name, effective_model, turns_label,
+            ", continuation" if is_continuation else "",
         )
 
         # Acquire repo lock
@@ -625,19 +462,35 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 default_branch=repo.default_branch,
                 task_key=task_key,
                 gitea_token=repo.gitea_token,
+                continuation=is_continuation,
             )
 
             # ─── Pre-execution evidence (Phase 1) ─────────────────────────
             # These blocks are generated once per task, before any Claude run.
             # Each is allowed to fail independently — never let context-gathering
             # crash the task itself.
+            # On continuation, skip Phase 1 entirely — the agent already has
+            # context from the previous session and we use --resume.
             repo_map_text = ""
             reality_signal_text = ""
             memory_recall_text = ""
             prior_memories: list[dict] = []
             reality_signal: dict = {}
 
-            try:
+            # Seed session_id from the continuation session so the first
+            # attempt in the retry loop uses --resume.
+            if is_continuation and continuation_session_id:
+                session_id = continuation_session_id
+                task_log.write(
+                    f"\n[continuation] resuming session {continuation_session_id}\n"
+                )
+                task_log.flush()
+
+            if is_continuation:
+                task_log.write("\n[continuation] skipping Phase 1 evidence pipeline\n")
+                task_log.flush()
+            else:
+              try:
                 rm_text, rm_stats = repo_map.build_repo_map(worktree_path)
                 repo_map_text = rm_text
                 await _emit_event(db, task_id, None, "repo_map_built", rm_stats)
@@ -647,11 +500,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     f"{rm_stats.get('chars', 0)} chars\n"
                 )
                 task_log.flush()
-            except Exception:
+              except Exception:
                 logger.exception("repo_map generation failed for %s", task_key)
 
-            try:
-                reality_signal = await reality_gate.run_reality_gate(
+              try:
+                reality_signal = reality_signal, reality_signal_text_raw = await pro.run_reality_gate(
                     db=db,
                     repo_id=repo.id,
                     worktree_path=worktree_path,
@@ -666,7 +519,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     gitea_repo=repo.gitea_repo,
                     gitea_token=repo.gitea_token,
                 )
-                reality_signal_text = reality_gate.render_for_prompt(reality_signal)
+                reality_signal_text = reality_signal_text_raw
                 await _emit_event(db, task_id, None, "reality_signal", {
                     "score": reality_signal.get("score"),
                     "confidence": reality_signal.get("confidence"),
@@ -680,21 +533,19 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     f" warnings={len(reality_signal.get('warnings', []))}\n"
                 )
                 task_log.flush()
-            except Exception:
+              except Exception:
                 logger.exception("reality_gate failed for %s", task_key)
 
-            # Memory recall — Tier 2 #5. Query once, inject into the prompt.
-            # Limit dropped from 5 → 3 to reduce per-prompt token bloat after
-            # the Phase 1+2 rate-limit incident.
-            try:
+              # Memory recall — Tier 2 #5. Query once, inject into the prompt.
+              try:
                 memory_query = f"{task_key} {title}\n{description}"
-                prior_memories = await memory_svc.search_memory(
+                prior_memories = await pro.search_memory(
                     session=db,
                     repo_id=repo.id,
                     query=memory_query,
                     limit=3,
                 )
-                memory_recall_text = _render_memory_recall(prior_memories)
+                memory_recall_text = pro.render_memory_recall(prior_memories)
                 if prior_memories:
                     await _emit_event(db, task_id, None, "memory_recall", {
                         "count": len(prior_memories),
@@ -705,13 +556,13 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         f"top sim={prior_memories[0].get('similarity', 0.0):.2f}\n"
                     )
                     task_log.flush()
-            except Exception:
+              except Exception:
                 logger.exception("memory_recall failed for %s", task_key)
 
             # ─── Interactive mode: plan → approve → implement ─────────────
             approved_plan_text = ""
-            if task.mode == "interactive":
-                approved_plan_text = await _run_plan_gate(
+            if not is_continuation and task.mode == "interactive":
+                approved_plan_text = await pro.run_plan_gate(
                     db=db,
                     task_id=task_id,
                     task_key=task_key,
@@ -722,6 +573,14 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     worktree_path=worktree_path,
                     claude_mode=claude_mode,
                     task_log=task_log,
+                    backend=backend,
+                    model=effective_model,
+                    # Pass helper functions so ProHooks can call them
+                    _run_agent=_run_agent,
+                    _emit_event=_emit_event,
+                    _update_task_status=_update_task_status,
+                    telegram=telegram,
+                    TaskRun=TaskRun,
                 )
                 if approved_plan_text is None:
                     # plan was rejected or timed out — task already marked blocked
@@ -744,25 +603,14 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
 
             # Phase 2 #7 — extract plan allow-list for PR preflight, if this
             # is an interactive task with an approved plan.
-            preflight_allowlist: list[str] | None = None
-            if task.mode == "interactive" and approved_plan_text:
-                # Read the latest plan_json from the task_runs row we just created.
-                plan_row = await db.execute(text(
-                    "SELECT plan_json FROM task_runs "
-                    "WHERE task_id = :tid AND plan_json IS NOT NULL "
-                    "ORDER BY id DESC LIMIT 1"
-                ), {"tid": task_id})
-                row = plan_row.fetchone()
-                if row and row[0]:
-                    plan_obj = row[0] if isinstance(row[0], dict) else json.loads(row[0])
-                    files = plan_obj.get("files_to_touch") or []
-                    if files:
-                        preflight_allowlist = list(files)
+            preflight_allowlist = await pro.get_preflight_allowlist(
+                db=db, task_id=task_id, task=task, approved_plan_text=approved_plan_text,
+            )
 
             # Retry loop
             for attempt in range(1, repo.max_retries + 1):
                 # Phase 2 #6 — check budget before spending another retry.
-                state, reason = _check_budget(
+                state, reason = pro.check_budget(
                     cum_cost=cum_cost,
                     cum_wall_ms=cum_wall_ms,
                     max_cost_usd=max_cost_usd,
@@ -828,11 +676,16 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     is_resume=is_resume,
                 )
 
-                # Run Claude
+                # Run the agent via the resolved backend. The variable is
+                # still named ``claude_result`` for continuity with the
+                # downstream code that reads ``.get("result")`` etc, but
+                # the actual backend can be any of Claude / Gemini / OpenAI
+                # / Qwen as determined by ``task.agent_vendor``.
                 await _extend_lock(db, repo_name)
                 start_ms = time.monotonic_ns() // 1_000_000
 
-                claude_result = await _run_claude(
+                claude_result = await _run_agent(
+                    backend=backend,
                     worktree_path=worktree_path,
                     prompt=prompt,
                     model=effective_model,
@@ -883,6 +736,10 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
 
                 if exit_code != 0:
                     subtype = claude_result.get("subtype", "")
+                    
+                    if backend.vendor == "google" and exit_code == 53:
+                        subtype = "error_max_turns"
+                        
                     claude_errors = claude_result.get("errors", [])
                     failure_reason = "; ".join(claude_errors) if claude_errors else f"exit code {exit_code}"
                     if subtype:
@@ -1039,12 +896,12 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     # mode), secret leaks, oversize files. Hard failures mark
                     # the task blocked. Scope creep is treated as a verifier-
                     # style retry with a targeted hint.
-                    preflight = await pr_preflight.run_preflight(
+                    preflight = await pro.run_preflight(
                         worktree_path=worktree_path,
                         base_branch=repo.default_branch,
                         allowlist=preflight_allowlist,
                     )
-                    preflight_summary = pr_preflight.summarise(preflight)
+                    preflight_summary = pro.summarise_preflight(preflight)
                     if preflight.ok:
                         await _emit_event(db, task_id, run_id, "pr_preflight_pass", preflight_summary)
                         task_log.write(
@@ -1129,7 +986,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             logger.warning("PR creation failed for %s, branch was pushed", task_key)
 
                     elif git_flow == "commit":
-                        ok = await git_ops.commit_to_default_branch(
+                        commit_ok = await git_ops.commit_to_default_branch(
                             worktree_path=worktree_path,
                             branch_name=branch_name,
                             default_branch=repo.default_branch,
@@ -1137,10 +994,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             title=title,
                         )
                         pr_url = None
-                        if not ok:
+                        if not commit_ok:
                             logger.warning("Direct commit failed for %s", task_key)
 
                     else:  # patch — no push, no PR
+                        commit_ok = True  # patch is always "ok"
                         pr_url = None
                         logger.info("git_flow=patch: skipping push for %s", task_key)
 
@@ -1172,9 +1030,14 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         ))
                     await db.commit()
 
+                    commit_label = (
+                        f"Committed directly to {repo.default_branch}"
+                        if commit_ok
+                        else f"Direct commit to {repo.default_branch} FAILED"
+                    )
                     git_flow_labels = {
                         "branch": f"PR: {pr_url or 'push failed'}",
-                        "commit": "Committed directly to " + repo.default_branch,
+                        "commit": commit_label,
                         "patch": "Patch generated (no push)",
                     }
                     await telegram.tg_send(
@@ -1191,7 +1054,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     # best-effort: a failure is logged but does not demote
                     # the successful task.
                     try:
-                        patchset = await patch_ops.generate_patches(
+                        patchset = await pro.generate_patches(
                             task_key=task_key,
                             repo_name=repo_name,
                             base_branch=repo.default_branch,
@@ -1217,7 +1080,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             )
                         task_log.flush()
                     except Exception:
-                        logger.exception("patch_ops.generate_patches failed for %s", task_key)
+                        logger.exception("pro.generate_patches failed for %s", task_key)
 
                     # Tier 2 #5 (write side): persist this successful run as an
                     # experience memory so future similar tasks benefit from
@@ -1231,7 +1094,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             f"{num_turns} turns, PR: {pr_url or 'none'}\n"
                             f"Result: {(result_text or '')[:600]}"
                         )
-                        await memory_svc.store_memory(
+                        await pro.store_memory(
                             session=db,
                             repo_id=repo.id,
                             content=summary,
@@ -1286,6 +1149,350 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             cls.key, error_class_counts[cls.key], cls.severity,
                         )
                         break
+
+            # ── Auto-fallback to backup model ────────────────────────
+            # If primary model exhausted retries and a backup model is
+            # configured, switch and run another full retry loop.
+            if (
+                not success
+                and not budget_blocked
+                and backup_model
+                and backup_model != effective_model
+            ):
+                logger.info(
+                    "Primary model %s exhausted — falling back to backup model %s",
+                    effective_model, backup_model,
+                )
+                task_log.write(
+                    f"\n{'='*60}\n"
+                    f"[backup_model] switching {effective_model} → {backup_model}\n"
+                    f"{'='*60}\n"
+                )
+                task_log.flush()
+                await _emit_event(db, task_id, None, "backup_model_switch", {
+                    "from_model": effective_model,
+                    "to_model": backup_model,
+                })
+                await telegram.tg_send(
+                    f"\U0001f504 *{task_key}* primary model failed — switching to backup: {backup_model}"
+                )
+
+                effective_model = backup_model
+                error_class_counts.clear()
+                # Ensure any uncommitted work is preserved before backup run
+                if worktree_path:
+                    await git_ops.ensure_committed(worktree_path, task_key, f"WIP: {title}")
+
+                for attempt in range(1, repo.max_retries + 1):
+                    # Budget check
+                    state, reason = pro.check_budget(
+                        cum_cost=cum_cost,
+                        cum_wall_ms=cum_wall_ms,
+                        max_cost_usd=max_cost_usd,
+                        max_wall_seconds=max_wall_seconds,
+                        claude_mode=claude_mode,
+                    )
+                    if state == "exceeded":
+                        logger.warning("Budget exceeded before backup attempt %d: %s", attempt, reason)
+                        await _emit_event(db, task_id, None, "budget_exceeded", {
+                            "reason": reason,
+                            "cum_cost_usd": float(cum_cost),
+                            "cum_wall_seconds": cum_wall_ms / 1000,
+                        })
+                        budget_blocked = True
+                        break
+
+                    logger.info("--- Backup attempt %d/%d (%s) ---", attempt, repo.max_retries, effective_model)
+
+                    run = TaskRun(
+                        task_id=task_id,
+                        attempt=attempt,
+                        branch=branch_name,
+                        status="started",
+                    )
+                    db.add(run)
+                    await db.commit()
+                    await db.refresh(run)
+                    run_id = run.id
+
+                    await _emit_event(db, task_id, run_id, "progress", {
+                        "attempt": attempt,
+                        "max_retries": repo.max_retries,
+                        "backup_model": True,
+                    })
+
+                    is_resume = session_id is not None
+                    prompt = _build_prompt(
+                        repo_name, branch_name, task_key, title,
+                        description, acceptance, error_context,
+                        repo_map_text=repo_map_text,
+                        reality_signal_text=reality_signal_text,
+                        memory_recall_text=memory_recall_text,
+                        approved_plan_text=approved_plan_text,
+                        is_resume=is_resume,
+                    )
+
+                    await _extend_lock(db, repo_name)
+                    start_ms = time.monotonic_ns() // 1_000_000
+
+                    claude_result = await _run_agent(
+                        backend=backend,
+                        worktree_path=worktree_path,
+                        prompt=prompt,
+                        model=effective_model,
+                        allowed_tools=repo.claude_allowed_tools,
+                        session_id=session_id,
+                        timeout_minutes=repo.timeout_minutes,
+                        task_id=task_id,
+                        run_id=run_id,
+                        db=db,
+                        claude_mode=claude_mode,
+                        max_turns=effective_max_turns,
+                    )
+
+                    duration_ms = (time.monotonic_ns() // 1_000_000) - start_ms
+                    exit_code = claude_result["exit_code"]
+
+                    attempt_raw_cost = Decimal(str(
+                        claude_result.get("total_cost_usd")
+                        or claude_result.get("cost_usd")
+                        or 0
+                    ))
+                    if claude_mode != "max":
+                        cum_cost += attempt_raw_cost
+                    cum_wall_ms += duration_ms
+
+                    raw_output = claude_result.get("raw_output", "")
+                    result_text = claude_result.get("result", "")
+                    raw_cost_log = claude_result.get("total_cost_usd") or claude_result.get("cost_usd") or 0
+                    cost_label = f"~${raw_cost_log:.4f} (Max, not charged)" if claude_mode == "max" else f"${raw_cost_log:.4f}"
+                    task_log.write(
+                        f"\n{'─'*60}\n"
+                        f"Backup attempt {attempt} — exit={exit_code} "
+                        f"turns={claude_result.get('num_turns', '?')} "
+                        f"duration={duration_ms / 1000:.0f}s "
+                        f"cost={cost_label}\n"
+                        f"{'─'*60}\n"
+                    )
+                    if result_text:
+                        task_log.write(f"RESULT:\n{result_text}\n")
+                    else:
+                        task_log.write(f"RAW OUTPUT:\n{raw_output[:20_000]}\n")
+                    task_log.flush()
+
+                    if exit_code != 0:
+                        subtype = claude_result.get("subtype", "")
+                        if backend.vendor == "google" and exit_code == 53:
+                            subtype = "error_max_turns"
+                        claude_errors = claude_result.get("errors", [])
+                        failure_reason = "; ".join(claude_errors) if claude_errors else f"exit code {exit_code}"
+                        if subtype:
+                            failure_reason = f"{subtype}: {failure_reason}"
+
+                        if subtype == "error_max_turns":
+                            session_id = claude_result.get("session_id")
+                            await db.execute(
+                                update(TaskRun).where(TaskRun.id == run_id).values(
+                                    status="failed",
+                                    finished_at=datetime.now(timezone.utc),
+                                    error_log="max_turns reached, resuming",
+                                    duration_ms=duration_ms,
+                                )
+                            )
+                            await db.commit()
+                            continue
+
+                        cls = error_classifier.classify(raw_output)
+                        error_context = error_classifier.build_remediation_block(cls, raw_output)
+                        if cls is not None:
+                            error_class_counts[cls.key] = error_class_counts.get(cls.key, 0) + 1
+                        await db.execute(
+                            update(TaskRun).where(TaskRun.id == run_id).values(
+                                status="failed",
+                                finished_at=datetime.now(timezone.utc),
+                                error_log=failure_reason[:500],
+                                duration_ms=duration_ms,
+                            )
+                        )
+                        await db.commit()
+                        if cls is not None and (
+                            error_class_counts[cls.key] >= 2 or cls.severity == "hard"
+                        ):
+                            break
+                        continue
+
+                    # Success path — identical to primary loop
+                    session_id = claude_result.get("session_id")
+                    raw_cost = Decimal(str(claude_result.get("total_cost_usd") or claude_result.get("cost_usd") or 0))
+                    cost_usd = Decimal("0") if claude_mode == "max" else raw_cost
+                    num_turns = claude_result["num_turns"]
+
+                    await git_ops.ensure_committed(worktree_path, task_key, title)
+
+                    await db.execute(
+                        update(TaskRun).where(TaskRun.id == run_id).values(
+                            status="verifying",
+                            session_id=session_id,
+                            cost_usd=cost_usd,
+                            duration_ms=duration_ms,
+                            turns=num_turns,
+                            claude_output=raw_output[:50000],
+                        )
+                    )
+                    await db.commit()
+
+                    if skip_verify:
+                        verify_ok, verify_error = True, ""
+                    else:
+                        await _update_task_status(db, task_id, "verifying")
+                        await _extend_lock(db, repo_name)
+                        verify_start_ms = time.monotonic_ns() // 1_000_000
+                        verify_ok, verify_error = await verifier.run_verify(
+                            worktree_path=worktree_path,
+                            pre_cmd=repo.pre_cmd,
+                            build_cmd=repo.build_cmd,
+                            test_cmd=repo.test_cmd,
+                            lint_cmd=repo.lint_cmd,
+                            log_file=task_log,
+                        )
+                        cum_wall_ms += (time.monotonic_ns() // 1_000_000) - verify_start_ms
+
+                    if verify_ok:
+                        preflight = await pro.run_preflight(
+                            worktree_path=worktree_path,
+                            base_branch=repo.default_branch,
+                            allowlist=preflight_allowlist,
+                        )
+                        if not preflight.ok and preflight.has_hard_failure:
+                            await _update_task_status(db, task_id, "blocked")
+                            await db.commit()
+                            break
+
+                        if not preflight.ok:
+                            error_context = preflight.hint
+                            await db.execute(
+                                update(TaskRun).where(TaskRun.id == run_id).values(
+                                    status="failed",
+                                    finished_at=datetime.now(timezone.utc),
+                                    error_log="pr_preflight scope creep",
+                                )
+                            )
+                            await db.commit()
+                            continue
+
+                        git_flow = getattr(task, "git_flow", "branch") or "branch"
+                        verify_note = "Skipped" if skip_verify else "PASSED"
+
+                        if git_flow == "branch":
+                            pr_body = (
+                                f"## {task_key}: {title}\n\n"
+                                f"### Changes\n{claude_result['result'][:2000]}\n\n"
+                                f"### Verification\n- Build: {verify_note}\n- Tests: {verify_note}\n"
+                                f"### Metrics\n"
+                                f"- Backup model: {effective_model}\n"
+                                f"- Attempts: {attempt}\n"
+                                f"- Claude turns: {num_turns}\n"
+                                f"- Cost: ${cost_usd}\n"
+                                f"- Duration: {duration_ms // 1000}s\n\n"
+                                f"---\n*Generated by DevServer autonomous agent (backup model)*"
+                            )
+                            pr_url = await git_ops.create_gitea_pr(
+                                worktree_path=worktree_path,
+                                branch_name=branch_name,
+                                default_branch=repo.default_branch,
+                                title=f"[{task_key}] {title}",
+                                body=pr_body,
+                                gitea_url=repo.gitea_url,
+                                gitea_owner=repo.gitea_owner,
+                                gitea_repo=repo.gitea_repo,
+                                gitea_token=repo.gitea_token,
+                            )
+                        elif git_flow == "commit":
+                            await git_ops.commit_to_default_branch(
+                                worktree_path=worktree_path,
+                                branch_name=branch_name,
+                                default_branch=repo.default_branch,
+                                task_key=task_key,
+                                title=title,
+                            )
+                            pr_url = None
+                        else:
+                            pr_url = None
+
+                        await db.execute(
+                            update(TaskRun).where(TaskRun.id == run_id).values(
+                                status="success",
+                                finished_at=datetime.now(timezone.utc),
+                                pr_url=pr_url,
+                            )
+                        )
+                        await _update_task_status(db, task_id, "test")
+                        await db.commit()
+
+                        today = datetime.now(timezone.utc).date()
+                        stat = await db.get(DailyStat, today)
+                        if stat:
+                            stat.completed += 1
+                            stat.cost_usd += cost_usd
+                            stat.total_duration_ms += duration_ms
+                            stat.total_turns += num_turns
+                        else:
+                            db.add(DailyStat(
+                                date=today, completed=1, cost_usd=cost_usd,
+                                total_duration_ms=duration_ms, total_turns=num_turns,
+                            ))
+                        await db.commit()
+
+                        await telegram.tg_send(
+                            f"\u2705 *{task_key}* done (backup model: {effective_model})\n"
+                            f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
+                        )
+
+                        try:
+                            patchset = await pro.generate_patches(
+                                task_key=task_key, repo_name=repo_name,
+                                base_branch=repo.default_branch, branch_name=branch_name,
+                            )
+                            await _emit_event(db, task_id, run_id, "patches_generated", {
+                                "ok": patchset.ok, "commits": patchset.commits,
+                                "files": len(patchset.files),
+                            })
+                        except Exception:
+                            logger.exception("patch_ops failed for %s (backup)", task_key)
+
+                        try:
+                            summary = (
+                                f"Task {task_key}: {title}\n"
+                                f"Outcome: completed by backup model {effective_model}\n"
+                                f"Result: {(result_text or '')[:600]}"
+                            )
+                            await pro.store_memory(
+                                session=db, repo_id=repo.id, content=summary,
+                                memory_type="experience", task_id=task_id,
+                                metadata={"task_key": task_key, "backup_model": effective_model},
+                            )
+                        except Exception:
+                            logger.exception("Failed to store memory for %s (backup)", task_key)
+
+                        success = True
+                        break
+                    else:
+                        cls = error_classifier.classify(verify_error)
+                        error_context = error_classifier.build_remediation_block(cls, verify_error)
+                        if cls is not None:
+                            error_class_counts[cls.key] = error_class_counts.get(cls.key, 0) + 1
+                        await db.execute(
+                            update(TaskRun).where(TaskRun.id == run_id).values(
+                                status="failed",
+                                finished_at=datetime.now(timezone.utc),
+                                error_log=f"Verification failed: {verify_error[:5000]}",
+                            )
+                        )
+                        await db.commit()
+                        if cls is not None and (
+                            error_class_counts[cls.key] >= 2 or cls.severity == "hard"
+                        ):
+                            break
 
             # All attempts exhausted
             if not success:

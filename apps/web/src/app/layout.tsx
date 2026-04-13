@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import { AppShell } from '@/components/AppShell';
 import { ThemeProvider } from '@/components/ThemeProvider';
+import { NotificationProvider } from '@/components/NotificationProvider';
 
 export const metadata: Metadata = {
   title: 'DevServer Dashboard',
@@ -17,7 +18,9 @@ export default function RootLayout({
     <html lang="en" data-coreui-theme="light">
       <body>
         <ThemeProvider>
-          <AppShell>{children}</AppShell>
+          <NotificationProvider>
+            <AppShell>{children}</AppShell>
+          </NotificationProvider>
         </ThemeProvider>
       </body>
     </html>

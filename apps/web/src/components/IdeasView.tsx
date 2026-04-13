@@ -39,6 +39,7 @@ export function IdeasView() {
   const [ideas, setIdeas] = useState<Idea[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [convertingPlan, setConvertingPlan] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -120,6 +121,36 @@ export function IdeasView() {
     router.push(`/tasks/new?${qs.toString()}`);
   }, [selected, router]);
 
+  const convertToPlan = useCallback(async () => {
+    if (!selected || selected.kind !== 'idea' || !ideas) return;
+    // Derive project name from parent folder title
+    const parentFolder = selected.parent_id
+      ? ideas.find((i) => i.id === selected.parent_id)
+      : null;
+    const projectName = parentFolder?.title || 'project';
+    const desc = [selected.title, selected.content].filter(Boolean).join('\n\n');
+
+    setConvertingPlan(true);
+    try {
+      const res = await fetch('/api/ideas/generate-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_name: projectName, description: desc }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        alert(`Plan generation failed: ${data?.error || res.statusText}`);
+        return;
+      }
+      const plan = await res.json();
+      alert(`Plan saved: ${plan.plan_key}`);
+    } catch (e) {
+      alert(`Plan generation error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setConvertingPlan(false);
+    }
+  }, [selected, ideas]);
+
   return (
     <>
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -173,6 +204,8 @@ export function IdeasView() {
               idea={selected}
               onSave={saveSelected}
               onConvertToTask={convertToTask}
+              onConvertToPlan={convertToPlan}
+              convertingPlan={convertingPlan}
             />
           </div>
         </div>

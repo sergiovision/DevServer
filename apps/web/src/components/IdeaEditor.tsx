@@ -8,9 +8,11 @@ interface IdeaEditorProps {
   idea: Idea | null;
   onSave: (patch: Partial<Pick<Idea, 'title' | 'content'>>) => Promise<void>;
   onConvertToTask: () => void;
+  onConvertToPlan: () => void;
+  convertingPlan: boolean;
 }
 
-export function IdeaEditor({ idea, onSave, onConvertToTask }: IdeaEditorProps) {
+export function IdeaEditor({ idea, onSave, onConvertToTask, onConvertToPlan, convertingPlan }: IdeaEditorProps) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -84,14 +86,24 @@ export function IdeaEditor({ idea, onSave, onConvertToTask }: IdeaEditorProps) {
           {saving ? 'Saving…' : 'Save'}
         </CButton>
         {isIdea && (
-          <CButton
-            color="success"
-            onClick={onConvertToTask}
-            disabled={idea.tasked}
-            title={idea.tasked ? 'Already converted' : 'Open New Task dialog with this idea'}
-          >
-            Convert to Task
-          </CButton>
+          <>
+            <CButton
+              color="success"
+              onClick={onConvertToTask}
+              disabled={idea.tasked}
+              title={idea.tasked ? 'Already converted' : 'Open New Task dialog with this idea'}
+            >
+              Convert to Task
+            </CButton>
+            <CButton
+              color="info"
+              onClick={onConvertToPlan}
+              disabled={convertingPlan}
+              title="Generate implementation plan and save to Obsidian"
+            >
+              {convertingPlan ? 'Generating Plan…' : 'Convert to Plan'}
+            </CButton>
+          </>
         )}
       </div>
     </div>

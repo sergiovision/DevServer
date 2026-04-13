@@ -48,9 +48,18 @@ export async function POST(request: NextRequest) {
     const {
       repo_id, task_key, title, description, acceptance,
       priority = 3, labels = [], mode = 'autonomous', claude_mode = 'max',
+      agent_vendor = 'anthropic',
       claude_model = null, max_turns = null, skip_verify = false,
       git_flow = 'branch',
     } = body;
+
+    const ALLOWED_VENDORS = ['anthropic', 'google', 'openai', 'glm'];
+    if (!ALLOWED_VENDORS.includes(agent_vendor)) {
+      return NextResponse.json(
+        { error: `agent_vendor must be one of: ${ALLOWED_VENDORS.join(', ')}` },
+        { status: 400 },
+      );
+    }
 
     if (max_turns !== null && (!Number.isInteger(max_turns) || max_turns <= 0)) {
       return NextResponse.json({ error: 'max_turns must be a positive integer or null' }, { status: 400 });
@@ -71,10 +80,10 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await query(
-      `INSERT INTO tasks (repo_id, task_key, title, description, acceptance, priority, labels, mode, claude_mode, claude_model, max_turns, skip_verify, git_flow, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending')
+      `INSERT INTO tasks (repo_id, task_key, title, description, acceptance, priority, labels, mode, claude_mode, agent_vendor, claude_model, max_turns, skip_verify, git_flow, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'pending')
        RETURNING *`,
-      [repo_id, task_key, title, description || null, acceptance || null, priority, labels, mode, claude_mode, claude_model || null, max_turns, skip_verify, git_flow],
+      [repo_id, task_key, title, description || null, acceptance || null, priority, labels, mode, claude_mode, agent_vendor, claude_model || null, max_turns, skip_verify, git_flow],
     );
 
     return NextResponse.json(result.rows[0], { status: 201 });

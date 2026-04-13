@@ -13,7 +13,7 @@ export default async function DashboardPage() {
     const runningResult = await query<Task>(
       `SELECT t.*, r.name as repo_name FROM tasks t
        LEFT JOIN repos r ON r.id = t.repo_id
-       WHERE t.status = 'running'
+       WHERE t.status IN ('running', 'verifying')
        ORDER BY t.updated_at DESC`
     );
     runningTasks = runningResult.rows;

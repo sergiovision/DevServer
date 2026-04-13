@@ -48,11 +48,18 @@ async def setup_worktree(
     default_branch: str,
     task_key: str,
     gitea_token: str | None = None,
+    *,
+    continuation: bool = False,
 ) -> tuple[str, str]:
     """Prepare the per-repo worktree for a new task.
 
     - Creates bare repo + worktree on first use.
     - On subsequent tasks: fetches latest, resets to default branch, creates task branch.
+
+    When ``continuation`` is True the worktree is NOT reset to the default
+    branch — the existing task branch (with all its commits and working-tree
+    changes) is preserved so the next agent session can pick up exactly
+    where the previous one stopped.
 
     Returns (worktree_path, branch_name).
     """
@@ -99,6 +106,27 @@ async def setup_worktree(
     # Configure git identity
     await _run(["git", "-C", worktree_path, "config", "user.email", settings.git_user_email])
     await _run(["git", "-C", worktree_path, "config", "user.name", settings.git_user_name])
+
+    # --- Continuation mode: preserve existing branch state ---
+    if continuation:
+        # Just ensure we're on the task branch. Do NOT reset or clean.
+        rc_check, _, _ = await _run(
+            ["git", "-C", worktree_path, "rev-parse", "--verify", branch_name],
+        )
+        if rc_check == 0:
+            await _run(["git", "-C", worktree_path, "checkout", branch_name])
+            logger.info("Continuation: worktree on branch %s (preserved)", branch_name)
+        else:
+            # Branch doesn't exist yet — fall through to normal setup
+            logger.warning(
+                "Continuation requested but branch %s not found, "
+                "falling back to normal setup", branch_name,
+            )
+            return await setup_worktree(
+                repo_name, clone_url, default_branch, task_key,
+                gitea_token, continuation=False,
+            )
+        return worktree_path, branch_name
 
     # --- Reset worktree to a clean default branch state ---
     # Hard reset first to discard any modified tracked files (e.g. packages.lock.json),
@@ -207,44 +235,76 @@ async def commit_to_default_branch(
 ) -> bool:
     """Squash-merge the task branch directly onto default_branch and push.
 
-    Used by git_flow='commit' tasks that want a single clean commit on the
-    main branch without a pull request.  Returns True on success.
+    Uses git plumbing (commit-tree) to create a squash commit on top of the
+    latest default_branch WITHOUT checking it out.  This avoids the "branch
+    already checked out" error that occurs in bare-repo linked worktrees
+    when ``git checkout default_branch`` is attempted, and also sidesteps
+    the missing ``refs/remotes/origin/*`` issue (bare repos fetched with
+    ``+refs/heads/*:refs/heads/*`` have no remote-tracking refs).
+
+    Returns True on success.
     """
-    # Switch to default branch and pull latest
-    rc, _, err = await _run(["git", "checkout", default_branch], cwd=worktree_path)
-    if rc != 0:
-        logger.error("checkout %s failed: %s", default_branch, err)
-        return False
-
+    # Fetch latest default branch into the local ref.  The bare repo
+    # uses +refs/heads/*:refs/heads/* so we update the local branch
+    # directly.  Running fetch from the worktree is fine — it shares
+    # the same git dir.
     rc, _, err = await _run(
-        ["git", "pull", "--ff-only", "origin", default_branch], cwd=worktree_path
+        ["git", "fetch", "origin",
+         f"+refs/heads/{default_branch}:refs/heads/{default_branch}"],
+        cwd=worktree_path,
     )
     if rc != 0:
-        logger.warning("pull %s non-fast-forward, resetting to origin: %s", default_branch, err)
-        await _run(["git", "reset", "--hard", f"origin/{default_branch}"], cwd=worktree_path)
-
-    # Squash all task-branch commits into a single staged change
-    rc, _, err = await _run(
-        ["git", "merge", "--squash", branch_name], cwd=worktree_path
-    )
-    if rc != 0:
-        logger.error("squash merge %s failed: %s", branch_name, err)
+        logger.error("fetch %s failed: %s", default_branch, err)
         return False
 
+    # Resolve the tree of the task branch (all file content) and the
+    # commit of the default branch (parent for the new commit).
+    rc, tree_sha, err = await _run(
+        ["git", "rev-parse", f"{branch_name}^{{tree}}"], cwd=worktree_path,
+    )
+    if rc != 0:
+        logger.error("rev-parse %s^{tree} failed: %s", branch_name, err)
+        return False
+    tree_sha = tree_sha.strip()
+
+    rc, parent_sha, err = await _run(
+        ["git", "rev-parse", default_branch], cwd=worktree_path,
+    )
+    if rc != 0:
+        logger.error("rev-parse %s failed: %s", default_branch, err)
+        return False
+    parent_sha = parent_sha.strip()
+
+    # Check if the tree is identical to the parent's tree (nothing changed)
+    rc, parent_tree, _ = await _run(
+        ["git", "rev-parse", f"{default_branch}^{{tree}}"], cwd=worktree_path,
+    )
+    if rc == 0 and parent_tree.strip() == tree_sha:
+        logger.warning("git_flow=commit: task branch tree identical to %s — nothing to commit", default_branch)
+        return True  # no-op is not an error
+
+    # Create a squash commit whose tree is the task branch's snapshot
+    # and whose parent is the tip of the default branch.
     msg = f"[{task_key}] {title}\n\nGenerated by DevServer autonomous agent"
-    rc, _, err = await _run(["git", "commit", "-m", msg], cwd=worktree_path)
+    rc, commit_sha, err = await _run(
+        ["git", "commit-tree", tree_sha, "-p", parent_sha, "-m", msg],
+        cwd=worktree_path,
+    )
     if rc != 0:
-        logger.error("commit after squash merge failed: %s", err)
+        logger.error("commit-tree failed: %s", err)
         return False
+    commit_sha = commit_sha.strip()
 
+    # Fast-forward the default branch ref to the new commit and push.
     rc, _, err = await _run(
-        ["git", "push", "origin", default_branch], cwd=worktree_path
+        ["git", "push", "origin", f"{commit_sha}:refs/heads/{default_branch}"],
+        cwd=worktree_path,
     )
     if rc != 0:
         logger.error("push %s failed: %s", default_branch, err)
         return False
 
-    logger.info("git_flow=commit: squash-merged %s → %s", branch_name, default_branch)
+    logger.info("git_flow=commit: squash-merged %s → %s (%s)", branch_name, default_branch, commit_sha[:10])
     return True
 
 

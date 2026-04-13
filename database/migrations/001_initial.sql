@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS repos (
     pre_cmd             TEXT         DEFAULT '',
     claude_model        VARCHAR(32)  DEFAULT 'sonnet',
     claude_allowed_tools TEXT        DEFAULT 'Read,Write,Edit,Glob,Grep,Bash',
-    max_retries         INT          DEFAULT 3,
+    max_retries         INT          DEFAULT 2,
     timeout_minutes     INT          DEFAULT 60,
     claude_md_path      VARCHAR(256) DEFAULT 'CLAUDE.md',
     gitea_token         VARCHAR(256) DEFAULT '',
@@ -56,8 +56,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     queue_job_id        VARCHAR(128),
     skip_verify         BOOLEAN      DEFAULT FALSE,
     claude_mode         VARCHAR(8)   DEFAULT 'max',
+    agent_vendor        VARCHAR(16)  NOT NULL DEFAULT 'anthropic',
     claude_model        VARCHAR(32)  DEFAULT NULL,
+    backup_model        VARCHAR(32)  DEFAULT 'claude-sonnet-4-6',
     max_turns           INTEGER      DEFAULT NULL,
+    is_continuation     BOOLEAN      NOT NULL DEFAULT FALSE,
     -- Phase 2: per-task budget circuit breaker
     max_cost_usd        NUMERIC(10,4),
     max_wall_seconds    INTEGER,
@@ -224,6 +227,7 @@ CREATE TABLE IF NOT EXISTS ideas (
 CREATE INDEX IF NOT EXISTS idx_tasks_repo_status    ON tasks(repo_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status         ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority       ON tasks(priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent_vendor    ON tasks(agent_vendor);
 CREATE INDEX IF NOT EXISTS idx_tasks_plan_pending   ON tasks(id)
     WHERE plan_approved_at IS NULL
       AND plan_rejected_at IS NULL
@@ -366,6 +370,8 @@ INSERT INTO settings (key, value) VALUES
     ('night_mode_end',        '"08:00"'),
     ('auto_enqueue',          'false'),
     ('default_model',         '""'),
-    ('notifications_enabled', 'true')
+    ('notifications_enabled', 'true'),
+    ('system_llm_vendor',     '"glm"'),
+    ('system_llm_model',      '"glm-5.1"')
 ON CONFLICT (key) DO NOTHING;
 

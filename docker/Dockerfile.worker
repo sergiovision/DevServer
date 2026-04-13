@@ -34,4 +34,6 @@ ENV PYTHONPATH=/app/src
 
 EXPOSE 8000
 
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# tee stdout/stderr into /app/logs/worker.log so the in-app /logs viewer
+# (which tails the file) works inside docker too.
+CMD ["sh", "-c", "mkdir -p /app/logs && uvicorn src.main:app --host 0.0.0.0 --port 8000 2>&1 | tee -a /app/logs/worker.log"]

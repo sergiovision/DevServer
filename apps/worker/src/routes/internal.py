@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 
 from config import settings
 from models.base import async_session
@@ -23,8 +23,7 @@ from models.setting import Setting
 from models.task import Task
 from models.task_run import TaskRun
 from services.queue_consumer import is_consumer_running
-from services import night_cycle
-from services import patch_ops
+from services import llm_client
 from services import scheduler
 
 router = APIRouter(prefix="/internal")
@@ -40,8 +39,12 @@ class TaskKeyRequest(BaseModel):
     task_key: str
 
 
-class NightCycleStartRequest(BaseModel):
-    end_hour: int = 7
+class ContinueTaskRequest(BaseModel):
+    model: str | None = None
+    mode: str | None = None  # "max" or "api"
+
+
+    # NightCycleStartRequest moved to routes/pro_internal.py
 
 
 # ─── Status ─────────────────────────────────────────────────────────────────
@@ -258,32 +261,77 @@ async def cancel_task(task_id: int):
     return {"task_id": task_id, "old_status": old_status, "new_status": "cancelled"}
 
 
-# ─── Night cycle ─────────────────────────────────────────────────────────────
+# ─── Task continuation ──────────────────────────────────────────────────────
 
-@router.post("/night-cycle/start")
-async def start_night_cycle(req: NightCycleStartRequest):
-    """Start the night cycle with a given end hour (UTC)."""
-    if req.end_hour < 0 or req.end_hour > 23:
-        raise HTTPException(status_code=400, detail="end_hour must be 0\u201323")
-    result = await night_cycle.start(end_hour=req.end_hour)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    return result
+@router.post("/tasks/{task_key}/continue")
+async def continue_task(task_key: str, req: ContinueTaskRequest):
+    """Prepare a task for continuation with an optional model/mode switch.
 
+    If the task is currently running, in-flight runs are marked failed
+    (same as cancel) but git state and session are preserved.  The repo
+    lock is released so the re-enqueued job can acquire it immediately.
+    The caller (web API) is expected to re-enqueue the task after this
+    returns.
+    """
+    async with async_session() as db:
+        res = await db.execute(select(Task).where(Task.task_key == task_key))
+        task = res.scalar_one_or_none()
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_key} not found")
+        if task.status in ("done", "test", "retired"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Task is {task.status}, cannot continue",
+            )
 
-@router.post("/night-cycle/stop")
-async def stop_night_cycle():
-    """Stop the night cycle."""
-    return await night_cycle.stop()
+        old_status = task.status
 
+        # If running, mark in-flight runs as failed (preserves session_id).
+        if old_status in ("running", "verifying"):
+            await db.execute(
+                update(TaskRun)
+                .where(TaskRun.task_id == task.id)
+                .where(TaskRun.status.in_(["started", "verifying"]))
+                .values(
+                    status="failed",
+                    finished_at=datetime.now(timezone.utc),
+                    error_log="Interrupted for continuation",
+                )
+            )
 
-@router.get("/night-cycle/status")
-async def night_cycle_status():
-    """Return current night cycle state."""
-    status = await night_cycle.get_status()
-    if status is None:
-        return {"active": False}
-    return status
+        # Release the repo lock held by the current run so that the
+        # re-enqueued job can acquire it immediately. The old run_task
+        # finally-block will attempt to release the same lock later but
+        # that is a harmless no-op (DELETE … WHERE task_key = :key).
+        repo = await db.get(Repo, task.repo_id)
+        if repo:
+            await db.execute(text(
+                "DELETE FROM repo_locks WHERE repo_name = :repo_name"
+            ), {"repo_name": repo.name})
+
+        # Apply optional model/mode overrides.
+        updates: dict = {
+            "is_continuation": True,
+            "status": "pending",
+            "updated_at": datetime.now(timezone.utc),
+        }
+        if req.model is not None:
+            updates["claude_model"] = req.model or None
+        if req.mode is not None and req.mode in ("max", "api"):
+            updates["claude_mode"] = req.mode
+
+        await db.execute(
+            update(Task).where(Task.id == task.id).values(**updates)
+        )
+        await db.commit()
+
+    return {
+        "task_key": task_key,
+        "old_status": old_status,
+        "new_status": "pending",
+        "model": req.model,
+        "mode": req.mode,
+    }
 
 
 # ─── Task Log ────────────────────────────────────────────────────────────────
@@ -302,81 +350,6 @@ async def task_log_tail(task_key: str, lines: int = 50):
         return {"lines": []}
 
 
-# ─── Patch Export (Option A) ─────────────────────────────────────────────────
-#
-# Three endpoints backing the "Patches" UI panel on the task detail page.
-# All three are keyed by task_key (not task_id) so they match the task log
-# endpoint above — the dashboard already has the key.
-
-async def _resolve_task_for_patches(task_key: str) -> tuple[Task, Repo]:
-    """Fetch a task + its repo by task_key, raising 404 on miss."""
-    async with async_session() as db:
-        res = await db.execute(select(Task).where(Task.task_key == task_key))
-        task = res.scalar_one_or_none()
-        if task is None:
-            raise HTTPException(404, f"task {task_key!r} not found")
-        repo = await db.get(Repo, task.repo_id)
-        if repo is None:
-            raise HTTPException(404, f"repo for task {task_key!r} not found")
-        return task, repo
-
-
-@router.get("/tasks/{task_key}/patches")
-async def list_task_patches(task_key: str):
-    """List existing patch files for a task.
-
-    Returns whatever is currently on disk — does NOT regenerate. Used by
-    the dashboard Patches panel to render the list + download buttons.
-    """
-    patchset = patch_ops.list_patches(task_key)
-    return patchset.to_dict()
-
-
-@router.post("/tasks/{task_key}/patches/generate")
-async def regenerate_task_patches(task_key: str):
-    """Regenerate patches for a task on demand.
-
-    Safe to call multiple times — the patches directory is wiped and
-    rebuilt from scratch. Runs against the bare repo, so it works even
-    after the live worktree has been reset.
-    """
-    task, repo = await _resolve_task_for_patches(task_key)
-    branch_name = f"agent/{task_key.replace(' ', '-').replace('/', '-').strip('-')}"
-    patchset = await patch_ops.generate_patches(
-        task_key=task_key,
-        repo_name=repo.name,
-        base_branch=repo.default_branch,
-        branch_name=branch_name,
-    )
-    if not patchset.ok:
-        raise HTTPException(400, patchset.error or "patch generation failed")
-    return patchset.to_dict()
-
-
-@router.get("/tasks/{task_key}/patches/file/{filename}")
-async def download_task_patch(task_key: str, filename: str):
-    """Stream a single patch (or the combined mbox) back as a download.
-
-    The filename is validated by ``patch_ops.get_patch_path`` which
-    rejects anything that doesn't look like a format-patch artefact —
-    this is the guard against path traversal.
-    """
-    path = patch_ops.get_patch_path(task_key, filename)
-    if path is None:
-        raise HTTPException(404, f"patch {filename!r} not found")
-
-    media_type = (
-        "application/mbox"
-        if filename.endswith(".mbox")
-        else "text/x-patch"
-    )
-    return FileResponse(
-        path=path,
-        media_type=media_type,
-        filename=filename,
-    )
-
-
 # ─── DevTask Skill ──────────────────────────────────────────────────────────
 
 class GenerateTaskRequest(BaseModel):
@@ -385,45 +358,58 @@ class GenerateTaskRequest(BaseModel):
 
 @router.post("/generate-task")
 async def generate_task(body: GenerateTaskRequest):
-    """Call Claude API with devtask skill prompt to generate task JSON."""
-    if not settings.anthropic_api_key:
-        raise HTTPException(500, "ANTHROPIC_API_KEY not configured")
+    """Call the system LLM with devtask skill prompt to generate task JSON.
+
+    Uses whichever vendor/model is configured in the ``system_llm_vendor``
+    and ``system_llm_model`` settings (editable on the /settings page).
+    Defaults to GLM-5.1 if the settings haven't been created yet.
+    """
+    # Read system LLM vendor/model from settings table
+    async with async_session() as db:
+        vendor_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_vendor")
+        )
+        model_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_model")
+        )
+        vendor_setting = vendor_row.scalar_one_or_none()
+        model_setting = model_row.scalar_one_or_none()
+
+    # Settings store values as JSON strings — strip the outer quotes
+    sys_vendor = "glm"
+    sys_model = "glm-5.1"
+    if vendor_setting and vendor_setting.value:
+        v = vendor_setting.value
+        sys_vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    if model_setting and model_setting.value:
+        v = model_setting.value
+        sys_model = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
 
     # Read skill prompt, strip YAML frontmatter
     devserver_root = os.environ.get("DEVSERVER_ROOT")
     if devserver_root:
         root = Path(devserver_root)
     else:
-        # Local dev: go up from routes/ -> src/ -> worker/ -> apps/ -> project root
         root = Path(__file__).resolve().parent.parent.parent.parent.parent
     skill_path = root / ".claude" / "skills" / "devtask" / "SKILL.md"
     if not skill_path.exists():
         raise HTTPException(500, "devtask skill not found")
     raw = skill_path.read_text()
     prompt = raw.split("---", 2)[-1].strip() if raw.startswith("---") else raw
+    prompt = prompt.replace("$ARGUMENTS", body.description)
 
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": settings.anthropic_api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 1024,
-                "messages": [{
-                    "role": "user",
-                    "content": prompt.replace("$ARGUMENTS", body.description),
-                }],
-            },
+    try:
+        text_content = await llm_client.complete(
+            vendor=sys_vendor,
+            model=sys_model,
+            prompt=prompt,
+            max_tokens=1024,
         )
-        if resp.status_code != 200:
-            raise HTTPException(502, f"Claude API error: {resp.status_code}")
-        data = resp.json()
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"System LLM error: {exc}")
 
-    text_content = data.get("content", [{}])[0].get("text", "")
     # Strip markdown fences if any
     cleaned = text_content.replace("```json", "").replace("```", "").strip()
     try:
@@ -432,6 +418,90 @@ async def generate_task(body: GenerateTaskRequest):
         raise HTTPException(502, "Failed to parse devtask response as JSON")
 
     return task
+
+
+# ─── DevPlan Skill ──────────────────────────────────────────────────────────
+
+class GeneratePlanRequest(BaseModel):
+    project_name: str
+    description: str
+
+
+@router.post("/generate-plan")
+async def generate_plan(body: GeneratePlanRequest):
+    """Call the system LLM with devplan skill prompt to generate a plan JSON.
+
+    Returns ``{"plan_key": "...", "prompt": "..."}``.  When ``OBSIDIAN_FOLDER``
+    is configured the prompt is also saved as ``<plan_key>.md`` in that folder.
+    """
+    # Read system LLM vendor/model from settings table
+    async with async_session() as db:
+        vendor_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_vendor")
+        )
+        model_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_model")
+        )
+        vendor_setting = vendor_row.scalar_one_or_none()
+        model_setting = model_row.scalar_one_or_none()
+
+    sys_vendor = "glm"
+    sys_model = "glm-5.1"
+    if vendor_setting and vendor_setting.value:
+        v = vendor_setting.value
+        sys_vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    if model_setting and model_setting.value:
+        v = model_setting.value
+        sys_model = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+
+    # Read skill prompt, strip YAML frontmatter
+    devserver_root = os.environ.get("DEVSERVER_ROOT")
+    if devserver_root:
+        root = Path(devserver_root)
+    else:
+        root = Path(__file__).resolve().parent.parent.parent.parent.parent
+    skill_path = root / ".claude" / "skills" / "devplan" / "SKILL.md"
+    if not skill_path.exists():
+        raise HTTPException(500, "devplan skill not found")
+    raw = skill_path.read_text()
+    prompt = raw.split("---", 2)[-1].strip() if raw.startswith("---") else raw
+
+    # Replace $ARGUMENTS with "project_name description"
+    arguments = f"{body.project_name} {body.description}"
+    prompt = prompt.replace("$ARGUMENTS", arguments)
+
+    try:
+        text_content = await llm_client.complete(
+            vendor=sys_vendor,
+            model=sys_model,
+            prompt=prompt,
+            max_tokens=2048,
+        )
+    except ValueError as exc:
+        raise HTTPException(502, str(exc))
+    except Exception as exc:
+        raise HTTPException(502, f"System LLM error: {exc}")
+
+    # Strip markdown fences if any
+    cleaned = text_content.replace("```json", "").replace("```", "").strip()
+    try:
+        plan = _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        raise HTTPException(502, "Failed to parse devplan response as JSON")
+
+    # Save to Obsidian folder if configured
+    obsidian_folder = settings.obsidian_folder
+    if obsidian_folder:
+        obsidian_path = Path(obsidian_folder)
+        if obsidian_path.is_dir():
+            plan_key = plan.get("plan_key", "PLAN-UNKNOWN")
+            file_path = obsidian_path / f"{plan_key}.md"
+            try:
+                file_path.write_text(plan.get("prompt", ""), encoding="utf-8")
+            except OSError:
+                pass  # best-effort — don't fail the request
+
+    return plan
 
 
 # ─── Scheduled Jobs ─────────────────────────────────────────────────────────

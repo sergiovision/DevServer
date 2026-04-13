@@ -40,7 +40,7 @@ All of the above are real code paths, not marketing bullets. See [`apps/worker/s
 
 ## Features in Pictures
 
-Five surfaces, each backed by code in this repo. Click any image to view full-size on GitHub.
+Six surfaces, each backed by code in this repo. Click any image to view full-size on GitHub.
 
 ### 🏠 Dashboard — what's running, what's queued, what cost what
 
@@ -79,16 +79,6 @@ The single most information-dense view in the product. From left:
 
 ---
 
-### 🤖 Agents — what's actually running right now
-
-<a href="assets/agents.png"><img src="assets/agents.png" alt="DevServer agents page — currently active agents, worker controls, night cycle panel" width="100%" /></a>
-
-The operations view. One card per actively running task, with worker pause/resume controls and the **Night Cycle** panel — DevServer's overnight auto-runner that walks the pending+failed backlog and enqueues tasks one by one until a configured end hour, persisting state across worker restarts.
-
-📂 [`apps/web/src/app/agents/page.tsx`](apps/web/src/app/agents/page.tsx) · [`apps/web/src/components/AgentCard.tsx`](apps/web/src/components/AgentCard.tsx) · [`apps/web/src/components/NightCyclePanel.tsx`](apps/web/src/components/NightCyclePanel.tsx) · [`apps/worker/src/services/night_cycle.py`](apps/worker/src/services/night_cycle.py)
-
----
-
 ### 💡 Ideas — hierarchical brainstorm tree, convertible to tasks
 
 <a href="assets/ideas.png"><img src="assets/ideas.png" alt="DevServer ideas tree — folders and idea leaves, convertible to tasks" width="100%" /></a>
@@ -96,6 +86,26 @@ The operations view. One card per actively running task, with worker pause/resum
 A lightweight brainstorm space. Folders contain other folders or **idea leaves** (markdown content). When an idea is ready, click *Convert to Task* and it lands in the tasks backlog with the description pre-populated. Idea ↔ task linkage is preserved in the database (`ideas.task_id`) so you can always trace a shipped PR back to where the thought started.
 
 📂 [`apps/web/src/app/ideas/page.tsx`](apps/web/src/app/ideas/page.tsx) · [`apps/web/src/components/IdeasView.tsx`](apps/web/src/components/IdeasView.tsx) · [`database/migrations/003_ideas.sql`](database/migrations/003_ideas.sql)
+
+---
+
+### 📄 Logs — live tail of worker and web process output
+
+<a href="assets/logs.png"><img src="assets/logs.png" alt="DevServer logs page — live-tailed worker and web log with colour-coded severity levels" width="100%" /></a>
+
+A real-time log viewer with two tabs — `worker.log` and `web.log` — polled every 1.5 seconds. Lines are colour-coded by severity (ERROR in red, WARNING in yellow, INFO in blue, DEBUG in green). A pulsing live indicator turns red on fetch errors. Auto-scrolls to the bottom as new lines arrive; a jump-to-bottom button appears when you scroll up. Toolbar buttons reload from the beginning or clear the display without losing the underlying file.
+
+📂 [`apps/web/src/app/logs/page.tsx`](apps/web/src/app/logs/page.tsx) · [`apps/web/src/components/LogsView.tsx`](apps/web/src/components/LogsView.tsx) · [`apps/web/src/app/api/logs/[name]/route.ts`](apps/web/src/app/api/logs/[name]/route.ts)
+
+---
+
+### ⚙️ Settings — global queue and system LLM configuration
+
+<a href="assets/settings.png"><img src="assets/settings.png" alt="DevServer settings page — execution mode, concurrency, queue controls, system LLM picker" width="100%" /></a>
+
+A single-page control panel for the worker's global behaviour. The **Queue Status** card shows live counts from `QueueStats`. The **General** card exposes: execution mode (autonomous / interactive / paused), max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, and the **System LLM** vendor + model picker used by Fill Task and DevPlan. Saving writes all fields in parallel via `PUT /api/settings` with no page reload required.
+
+📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx)
 
 ## Architecture
 
@@ -298,40 +308,156 @@ cp ../config/.env.example .env
 docker compose up -d --build
 ```
 
+The default compose file ships a bundled `pgvector/pgvector:pg17` service,
+so the stack runs out of the box on Linux, macOS, and Windows.
+
+#### Linux / macOS — host PostgreSQL (recommended)
+
+If your host already runs PostgreSQL on port 5432, skip the bundled DB
+with the host-DB override:
+
+```bash
+# If you previously ran the bundled-DB stack, tear it down first
+# so the old devserver-postgres container releases port 5432:
+docker compose down
+
+docker compose -f docker-compose.yml -f docker-compose.host-db.yml up -d --build
+```
+
+On Docker Desktop (macOS) `host.docker.internal` is built in; on Linux
+it is mapped through the compose override via `host-gateway`.
+
+**Linux host Postgres prerequisites** (one-time):
+
+1. `postgresql.conf` — add the docker bridge gateway to `listen_addresses`
+   (check yours with `ip addr show docker0`, default is `172.17.0.1`):
+   ```
+   listen_addresses = 'localhost,172.17.0.1'
+   ```
+2. `pg_hba.conf` — allow the docker bridge subnet:
+   ```
+   host    devserver    devserver    172.16.0.0/12    scram-sha-256
+   ```
+3. `sudo systemctl reload postgresql` (listen_addresses needs a full
+   restart: `sudo systemctl restart postgresql`).
+
+**macOS host Postgres prerequisites** (one-time, Homebrew install):
+
+1. `postgresql.conf` (usually `/opt/homebrew/var/postgresql@17/postgresql.conf`):
+   ```
+   listen_addresses = '*'
+   ```
+2. `pg_hba.conf` — allow the Docker Desktop VM subnet:
+   ```
+   host    devserver    devserver    192.168.65.0/24    scram-sha-256
+   host    devserver    devserver    127.0.0.1/32       scram-sha-256
+   ```
+3. `brew services restart postgresql@17`.
+
+Make sure the `vector` extension is installed on the host Postgres — on
+macOS: `brew install pgvector` then `CREATE EXTENSION vector;` in the
+`devserver` database. On Linux: `sudo apt install postgresql-17-pgvector`
+(or the equivalent package for your distro).
+
+#### Windows (Docker Desktop)
+
+DevServer is developed on Linux and macOS, and on Windows the only
+supported way to run it is via Docker Desktop — do not attempt the
+host-process setup (`./scripts/start.sh`). Use **PowerShell** (not CMD)
+and **run all commands from the repository root or `docker/`**.
+
+1. Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)
+   with the WSL 2 backend (default on modern installs) and make sure it is
+   running.
+2. Clone the repo into a WSL filesystem path (e.g. `\\wsl$\Ubuntu\home\<you>\DevServer`)
+   or a short Windows path with no spaces. Line endings are handled by the
+   bundled `.gitattributes`; if you hit `^M` errors, run
+   `git config --global core.autocrlf false` before cloning.
+3. Create and edit `.env`:
+   ```powershell
+   cd docker
+   Copy-Item ..\config\.env.example .env
+   notepad .env     # set PGPASSWORD and ANTHROPIC_API_KEY at minimum
+   ```
+4. Build and start the stack:
+   ```powershell
+   docker compose up -d --build
+   ```
+5. Open **http://localhost:3000** in your browser.
+
+**Windows-specific notes**
+
+- Always use the default compose file — the `host-db` override is for Linux
+  only. Windows has no host Postgres to point at.
+- Claude **Max subscription (OAuth)** mount: the commented `claude_auth`
+  volume in `docker-compose.yml` expects a Unix path. On Windows, set
+  `CLAUDE_CONFIG_DIR` in `.env` to your host config dir using a WSL-style
+  path that Docker Desktop understands, e.g.
+  `CLAUDE_CONFIG_DIR=/mnt/c/Users/<you>/.claude`, then uncomment the line:
+  ```yaml
+  - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude:ro
+  ```
+  Leave this mount commented out if you use **API mode** — just set
+  `ANTHROPIC_API_KEY` in `.env` and nothing else is required.
+- File watching / HMR is not used in Docker mode; Next.js runs the
+  production build inside the container.
+- Helper scripts under `scripts/` (`start.sh`, `migrate.sh`, …) are bash
+  scripts and are not needed on Windows. Everything runs through
+  `docker compose`.
+- To view logs:
+  ```powershell
+  docker compose logs -f web
+  docker compose logs -f worker
+  ```
+- To stop / reset the stack:
+  ```powershell
+  docker compose down              # stop, keep data
+  docker compose down -v           # stop and wipe Postgres + worktree volumes
+  ```
+
 ## Project Layout
 
 ```
 apps/
-  web/                              → Next.js 15 frontend, API routes, PgQueuer producer, WebSocket server
+  web/                                → Next.js 15 frontend, API routes, PgQueuer producer, WebSocket server
     src/components/
-      TaskDetail.tsx                → Task detail page — events, logs, patches, runs
-      PatchesPanel.tsx              → Download combined.mbox + per-commit patches + copy-command
-    src/app/api/tasks/[id]/
-      approve/route.ts              → POST endpoint for the interactive plan gate (approve/reject)
-    src/app/api/task-patches/[key]/
-      route.ts                      → GET list + POST regenerate patches
-      file/[filename]/route.ts      → Download stream for a single patch or combined mbox
-  worker/                           → Python FastAPI worker + PgQueuer consumer + Claude CLI orchestrator
+      TaskDetail.tsx                  → Task detail — events, logs, agent settings, run history
+        PatchesPanel.tsx              → Download combined.mbox + per-commit patches
+        NightCyclePanel.tsx           → Overnight batch runner controls
+    src/app/api/
+      tasks/                          → FREE — task CRUD + enqueue
+        task-patches/                 → Patch list + generate + download
+        night-cycle/                  → Start/stop/status
+        approve/                      → Interactive plan approval
+  worker/                             → Python FastAPI worker + PgQueuer consumer
     src/services/
-      agent_runner.py               → Main task lifecycle
-      repo_map.py                   → Multi-language symbol map for prompt enrichment
-      reality_gate.py               → Pre-execution 0–100 weighted evidence scan
-      plan_gate.py                  → Spec → Plan → Implement gate for interactive mode
-      error_classifier.py           → 20 regex rules → targeted retry hints
-      pr_preflight.py               → Author, allow-list, secrets, size checks before push
-      patch_ops.py                  → git format-patch generation against the bare repo
-      memory.py                     → pgvector similarity search on agent_memory
-      verifier.py                   → pre/build/test/lint runner
-      git_ops.py                    → Git worktree management + Gitea PR creation
+      _free_hooks.py                  → FREE — no-op stubs (always present)
+      agent_runner.py                 → FREE — uses pro.* calls that degrade gracefully
+      agent_backends.py               → FREE — vendor abstraction (Claude, Gemini, OpenAI, GLM)
+      repo_map.py                     → FREE — multi-language symbol map
+      error_classifier.py             → FREE — 20 regex rules → targeted retry hints
+      llm_client.py                   → FREE — vendor-agnostic system LLM client
+      verifier.py                     → FREE — pre/build/test/lint runner
+      git_ops.py                      → FREE — git worktree + Gitea PR creation        __init__.py                   → ProHooks: real implementations of all pro methods
+        reality_gate.py               → 0–100 evidence scan
+        plan_gate.py                  → Spec → Plan → Implement gate
+        pr_preflight.py               → Secret scan + allow-list + author + size check
+        patch_ops.py                  → git format-patch generation
+        memory.py                     → pgvector recall + store
+        night_cycle.py                → Autonomous overnight batch runner
+    src/routes/
+      internal.py                     → FREE — status, pause, cancel, generate-task, generate-plan
+      pro_internal.py                 → PRO — night cycle + patch endpoints
 database/
-  migrations/                       → Versioned SQL migrations
+  migrations/                         → Versioned SQL migrations (001–007)
 config/
-  .env.example                      → Sanitised environment template
+  .env.example                        → Sanitised environment template
 docker/
-  docker-compose.yml                → Full stack deployment (Postgres + web + worker)
+  docker-compose.yml                  → Full stack deployment (Postgres + web + worker)
 scripts/
-  start.sh / stop.sh / restart.sh   → Dev + prod lifecycle helpers
-  migrate.sh                        → Run database migrations
+  start.sh / stop.sh / restart.sh     → Dev + prod lifecycle helpers
+  migrate.sh                          → Run database migrations
+  strip-pro.sh                        → Remove all pro features → free version
 ```
 
 ## Roadmap
@@ -352,11 +478,24 @@ Contributions and issues are welcome.
 
 [MIT](LICENSE) — free for personal and commercial use. Attribution appreciated but not required.
 
+## Support / Donations
+
+DevServer is built and maintained in my spare time. If it saves you hours of
+work or you'd like to see development continue, consider sending a tip — it
+directly funds new features, faster fixes, and ongoing maintenance.
+
+**USDT (TRC20 — Tron network):**
+
+```
+TLkm4qjsXWTWhnKJ6JW77ieD891qtJE2a5
+```
+
+Every contribution, regardless of size, is genuinely appreciated. Thank you!
+
 ---
 
 <div align="center">
 
 ### Built by Sergei Zhuravlev
-Available for contract work on AI agent orchestration, autonomous engineering pipelines, and quantitative trading systems.
 [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [GitHub](https://github.com/sergiovision) · [hi@sergego.com](mailto:hi@sergego.com)
 </div>

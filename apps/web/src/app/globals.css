@@ -195,3 +195,9 @@ h2 {
   font-size: 1.5rem;
   font-weight: 600;
 }
+
+/* Error notification bar slide-up animation */
+@keyframes notif-slide-up {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}

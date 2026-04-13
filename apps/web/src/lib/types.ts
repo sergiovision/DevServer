@@ -34,6 +34,7 @@ export type TaskStatus =
 export type TaskMode = 'autonomous' | 'interactive';
 export type ClaudeMode = 'api' | 'max';
 export type GitFlow = 'branch' | 'commit' | 'patch';
+export type AgentVendor = 'anthropic' | 'google' | 'openai' | 'glm';
 
 export interface Task {
   id: number;
@@ -46,6 +47,7 @@ export interface Task {
   labels: string[];
   mode: TaskMode;
   claude_mode: ClaudeMode;
+  agent_vendor: AgentVendor;
   claude_model: string | null;
   max_turns: number | null;
   status: TaskStatus;
@@ -53,6 +55,7 @@ export interface Task {
   queue_job_id: string | null;
   skip_verify: boolean;
   git_flow: GitFlow;
+  backup_model: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
