@@ -1,6 +1,7 @@
 # Runtime data
 /logs/
 worktrees/
+backups/
 
 # ── Secrets ──────────────────────────────────────────────
 # Never commit any .env variant. The only env file that SHOULD be
@@ -51,5 +52,9 @@ build/
 coverage/
 
 # ── Claude Code session state ────────────────────────────
-.claude/settings.local.json
-.claude/projects/
+.claude/                                                                                                 
+.gemini/  
+
+
+apps/web/package-lock.json
+apps/web/package-lock.json

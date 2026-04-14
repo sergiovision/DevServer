@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { usePathname } from 'next/navigation';
 import {
   CContainer,
   CHeader,
@@ -17,6 +18,12 @@ import { useTheme } from './ThemeProvider';
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggleTheme } = useTheme();
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  const pathname = usePathname();
+
+  // Setup wizard gets a clean full-screen layout — no sidebar, header, or footer.
+  if (pathname === '/setup') {
+    return <>{children}</>;
+  }
 
   return (
     <div className="app-shell d-flex">

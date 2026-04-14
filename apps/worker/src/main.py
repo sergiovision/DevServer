@@ -19,6 +19,7 @@ if _SRC_DIR not in sys.path:
 from config import settings
 from routes.health import router as health_router
 from routes.internal import router as internal_router
+from routes.env_config import router as env_config_router
 from services.queue_consumer import start_consumer, stop_consumer
 from services.scheduler import start_scheduler, stop_scheduler
 from services.telegram_polling import start_polling, stop_polling
@@ -72,6 +73,7 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(internal_router)
+app.include_router(env_config_router)
 if _has_pro_routes:
     app.include_router(pro_router)
 

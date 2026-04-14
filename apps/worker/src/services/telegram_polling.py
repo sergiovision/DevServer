@@ -1,6 +1,5 @@
 """Telegram bot update polling — runs inside the worker process.
 
-Activated only when TELEGRAM_CONTROLLER_MODE=local.
 Uses long-polling (getUpdates) so no HTTPS certificate is required.
 
 Supported commands:
@@ -11,13 +10,19 @@ Supported commands:
   /pause
   /resume
   /mode autonomous|interactive
+  /digest  — trigger daily digest now (Pro)
+  /budget TASK-KEY — show budget status for a task (Pro)
   /help
+
+Also handles callback_query updates (inline keyboard button presses)
+for Pro plan approval from Telegram.
 """
 
 import asyncio
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
+from decimal import Decimal
 
 import httpx
 from sqlalchemy import select, update
@@ -27,6 +32,13 @@ from models.base import async_session
 from models.setting import Setting
 from models.task import Task
 from services.telegram import tg_send
+
+# Pro Telegram: conditionally import for callback handling and rich commands
+try:
+    from services.pro.telegram_pro import handle_plan_callback, send_daily_digest
+    _has_pro_telegram = True
+except ImportError:
+    _has_pro_telegram = False
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +169,54 @@ async def _cmd_mode(mode_arg: str) -> str:
     return f"Mode set to `{mode}`"
 
 
+async def _cmd_digest() -> str:
+    if not _has_pro_telegram:
+        return "Daily digest requires DevServer Pro."
+    async with async_session() as db:
+        result = await send_daily_digest(db)
+    return result
+
+
+async def _cmd_budget(task_key: str) -> str:
+    async with async_session() as db:
+        res = await db.execute(select(Task).where(Task.task_key == task_key))
+        task = res.scalar_one_or_none()
+        if not task:
+            return f"Task `{task_key}` not found"
+
+        max_cost = task.max_cost_usd
+        max_wall = task.max_wall_seconds
+
+        # Sum cost/duration from task_runs
+        from sqlalchemy import text as sql_text
+        stats = await db.execute(sql_text(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS total_cost, "
+            "COALESCE(SUM(duration_ms), 0) AS total_ms "
+            "FROM task_runs WHERE task_id = :tid"
+        ), {"tid": task.id})
+        row = stats.fetchone()
+        cum_cost = row[0] if row else Decimal("0")
+        cum_ms = row[1] if row else 0
+
+    wall_s = cum_ms / 1000
+    lines = [
+        f"\U0001f4b0 *Budget: {task_key}*",
+        f"Status: `{task.status}`",
+        "",
+        f"Cost: ${cum_cost:.4f}" + (f" / ${max_cost:.4f}" if max_cost else " (unlimited)"),
+        f"Wall: {wall_s:.0f}s" + (f" / {max_wall}s" if max_wall else " (unlimited)"),
+    ]
+
+    if max_cost and cum_cost > 0:
+        pct = float(cum_cost) / float(max_cost) * 100
+        lines.append(f"Cost usage: {pct:.0f}%")
+    if max_wall and cum_ms > 0:
+        pct = wall_s / max_wall * 100
+        lines.append(f"Wall usage: {pct:.0f}%")
+
+    return "\n".join(lines)
+
+
 _HELP = (
     "*DevServer Bot Commands*\n"
     "/status — worker status\n"
@@ -165,7 +225,9 @@ _HELP = (
     "/retry TASK\\-KEY — retry failed task\n"
     "/pause — pause queue\n"
     "/resume — resume queue\n"
-    "/mode autonomous|interactive — set mode"
+    "/mode autonomous|interactive — set mode\n"
+    "/digest — send daily digest now\n"
+    "/budget TASK\\-KEY — show task budget status"
 )
 
 
@@ -186,15 +248,58 @@ async def _dispatch(cmd: str, args: list[str]) -> str | None:
         return await _cmd_resume()
     if cmd == "/mode":
         return await _cmd_mode(args[0]) if args else "Usage: /mode autonomous|interactive"
+    if cmd == "/digest":
+        return await _cmd_digest()
+    if cmd == "/budget":
+        return await _cmd_budget(args[0]) if args else "Usage: /budget TASK-KEY"
     if cmd == "/help":
         return _HELP
     return None
 
 
+# ─── Callback query handler (inline keyboard buttons) ──────────────────────
+
+async def _handle_callback_query(callback_query: dict) -> None:
+    """Handle inline keyboard button presses (plan approve/reject)."""
+    if not _has_pro_telegram:
+        return
+
+    callback_id = callback_query.get("id", "")
+    data = callback_query.get("data", "")
+    message = callback_query.get("message")
+    message_id = message.get("message_id") if message else None
+
+    # Validate sender
+    from_user = callback_query.get("from", {})
+    chat = message.get("chat", {}) if message else {}
+    chat_id = str(chat.get("id", ""))
+    if settings.telegram_chat_id and chat_id != settings.telegram_chat_id:
+        logger.warning(
+            "Ignoring callback from unauthorized chat_id=%s (user=%s)",
+            chat_id, from_user.get("username", "unknown"),
+        )
+        return
+
+    logger.info("Telegram callback: data=%s from=%s", data, from_user.get("username"))
+
+    if data.startswith("plan_approve:") or data.startswith("plan_reject:"):
+        try:
+            await handle_plan_callback(callback_id, data, message_id)
+        except Exception:
+            logger.exception("Error handling plan callback %s", data)
+
+
 # ─── Update handler ──────────────────────────────────────────────────────────
 
-async def _handle_update(update: dict) -> None:
-    message = update.get("message") or update.get("edited_message")
+async def _handle_update(upd: dict) -> None:
+    # Inline keyboard button press
+    callback_query = upd.get("callback_query")
+    if callback_query:
+        await _handle_callback_query(callback_query)
+        return
+
+    # Text command
+    message = upd.get("message") or upd.get("edited_message")
     if not message:
         return
 
@@ -234,7 +339,7 @@ async def _poll() -> None:
             async with httpx.AsyncClient(timeout=35) as client:
                 resp = await client.get(
                     f"{base_url}/getUpdates",
-                    params={"timeout": 30, "offset": offset, "allowed_updates": ["message"]},
+                    params={"timeout": 30, "offset": offset, "allowed_updates": ["message", "callback_query"]},
                 )
             data = resp.json()
             if not data.get("ok"):
@@ -260,8 +365,6 @@ async def _poll() -> None:
 def start_polling() -> None:
     """Start the background polling task. No-op if token not configured."""
     global _poll_task
-    if settings.telegram_controller_mode != "local":
-        return
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN not set — polling disabled")
         return

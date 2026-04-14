@@ -21,11 +21,6 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
 
-    # Telegram Controller (external vs local)
-    telegram_controller_mode: str = "external"  # "external" or "local"
-    telegram_controller_url: str = "http://127.0.0.1:8200"
-    telegram_controller_token: str = ""
-
     # Claude / Anthropic (primary backend)
     anthropic_api_key: str = ""
     claude_bin: str = "claude"

@@ -79,3 +79,33 @@ class FreeHooks:
     def check_budget(self, **kwargs: Any) -> tuple[str, str]:
         """Always returns ("ok", "") — no budget enforcement in free."""
         return "ok", ""
+
+    # ── Pro Telegram (no-op stubs) ─────────────────────────────────
+    # Free tier uses basic tg_send() in agent_runner. Pro tier calls
+    # these methods for rich formatting, inline keyboards, and digests.
+    async def tg_send_task_start(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_task_success(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_task_failed(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_plan_approval(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_vendor_failover(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_budget_warning(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_budget_exceeded(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_preflight_blocked(self, **kwargs: Any) -> None:
+        pass
+
+    async def tg_send_daily_digest(self, **kwargs: Any) -> str:
+        return ""

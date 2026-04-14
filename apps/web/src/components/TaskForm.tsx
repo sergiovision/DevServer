@@ -17,7 +17,7 @@ import {
   CCol,
   CAlert,
 } from '@coreui/react-pro';
-import type { Repo, Task, GitFlow, AgentVendor } from '@/lib/types';
+import type { Repo, Task, TaskTemplate, GitFlow, AgentVendor } from '@/lib/types';
 import {
   AGENT_VENDORS,
   defaultModelForVendor,
@@ -29,9 +29,10 @@ import { VendorModelPicker } from '@/components/VendorModelPicker';
 interface TaskFormProps {
   repos: Repo[];
   task?: Task;
+  templates?: TaskTemplate[];
 }
 
-export function TaskForm({ repos, task }: TaskFormProps) {
+export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const isEdit = !!task;
@@ -48,7 +49,7 @@ export function TaskForm({ repos, task }: TaskFormProps) {
     claude_mode: task?.claude_mode || 'max',
     agent_vendor: (task?.agent_vendor || 'anthropic') as AgentVendor,
     claude_model: task?.claude_model || '',
-    backup_vendor: 'anthropic' as AgentVendor,
+    backup_vendor: (task?.backup_vendor || 'anthropic') as AgentVendor,
     backup_model: task?.backup_model || 'claude-sonnet-4-6',
     max_turns: (task?.max_turns ?? 50) as number | null,
     skip_verify: task?.skip_verify ?? false,
@@ -57,6 +58,27 @@ export function TaskForm({ repos, task }: TaskFormProps) {
   const [saving, setSaving] = useState(false);
   const [filling, setFilling] = useState(false);
   const [fillError, setFillError] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
+
+  const handleApplyTemplate = (templateId: string) => {
+    if (!templateId) return;
+    const t = templates.find((tpl) => tpl.id === parseInt(templateId));
+    if (!t) return;
+    setFormData((prev) => ({
+      ...prev,
+      description: t.description ?? prev.description,
+      acceptance: t.acceptance ?? prev.acceptance,
+      git_flow: t.git_flow ?? prev.git_flow,
+      claude_mode: t.claude_mode ?? prev.claude_mode,
+      agent_vendor: (t.agent_vendor ?? prev.agent_vendor) as AgentVendor,
+      claude_model: t.claude_model ?? prev.claude_model,
+      backup_vendor: (t.backup_vendor ?? t.agent_vendor ?? prev.backup_vendor) as AgentVendor,
+      backup_model: t.backup_model ?? prev.backup_model,
+      max_turns: t.max_turns ?? prev.max_turns,
+      skip_verify: t.skip_verify ?? prev.skip_verify,
+    }));
+  };
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
@@ -121,6 +143,27 @@ export function TaskForm({ repos, task }: TaskFormProps) {
     }
   };
 
+  const handleRefreshGit = async () => {
+    if (!formData.repo_id) return;
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const res = await fetch(`/api/repos/${formData.repo_id}/refresh-git`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'Refresh failed');
+      }
+      const data = await res.json();
+      setRefreshMsg({ type: 'success', text: data.message });
+    } catch (err) {
+      setRefreshMsg({ type: 'danger', text: err instanceof Error ? err.message : 'Refresh failed' });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
@@ -134,6 +177,7 @@ export function TaskForm({ repos, task }: TaskFormProps) {
         labels: [],
         mode: 'autonomous',
         claude_model: formData.claude_model.trim() || null,
+        backup_vendor: formData.backup_vendor !== formData.agent_vendor ? formData.backup_vendor : null,
         backup_model: formData.backup_model.trim() || null,
         max_turns: formData.max_turns,
       };
@@ -178,9 +222,42 @@ export function TaskForm({ repos, task }: TaskFormProps) {
       <CCardBody>
         {error && <CAlert color="danger">{error}</CAlert>}
         <CForm onSubmit={handleSubmit}>
+          {!isEdit && templates.length > 0 && (
+            <div className="mb-3">
+              <CFormLabel>Load from Template</CFormLabel>
+              <CFormSelect
+                onChange={(e) => handleApplyTemplate(e.target.value)}
+                defaultValue=""
+              >
+                <option value="">-- Select a template --</option>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </CFormSelect>
+              <small className="text-body-secondary">Pre-fills description, acceptance, and agent settings from a saved template.</small>
+            </div>
+          )}
+
           <CRow className="mb-3">
             <CCol md={6}>
-              <CFormLabel>Repository</CFormLabel>
+              <div className="d-flex align-items-center gap-2 mb-1">
+                <CFormLabel className="mb-0">Repository</CFormLabel>
+                <CButton
+                  type="button"
+                  color="info"
+                  variant="outline"
+                  size="sm"
+                  disabled={refreshing || !formData.repo_id}
+                  onClick={handleRefreshGit}
+                >
+                  {refreshing ? 'Refreshing...' : 'Refresh Git'}
+                </CButton>
+                {refreshMsg && (
+                  <span className={`small text-${refreshMsg.type}`}>{refreshMsg.text}</span>
+                )}
+              </div>
               <CFormSelect
                 name="repo_id"
                 value={formData.repo_id}
@@ -374,7 +451,7 @@ export function TaskForm({ repos, task }: TaskFormProps) {
               vendorName="backup_vendor"
               modelName="backup_model"
             />
-            <small className="text-body-secondary">Used automatically if the primary model fails after all retries.</small>
+            <small className="text-body-secondary">Auto-failover: if the primary vendor/model fails after all retries, switches to this backup. Different vendor = cross-vendor failover.</small>
           </div>
 
           <div className="mb-3">

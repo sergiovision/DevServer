@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     claude_mode         VARCHAR(8)   DEFAULT 'max',
     agent_vendor        VARCHAR(16)  NOT NULL DEFAULT 'anthropic',
     claude_model        VARCHAR(32)  DEFAULT NULL,
+    backup_vendor       VARCHAR(16)  DEFAULT NULL,
     backup_model        VARCHAR(32)  DEFAULT 'claude-sonnet-4-6',
     max_turns           INTEGER      DEFAULT NULL,
     is_continuation     BOOLEAN      NOT NULL DEFAULT FALSE,
@@ -375,3 +376,26 @@ INSERT INTO settings (key, value) VALUES
     ('system_llm_model',      '"glm-5.1"')
 ON CONFLICT (key) DO NOTHING;
 
+-- ─── Task Templates ─────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS task_templates (
+    id                  SERIAL PRIMARY KEY,
+    name                VARCHAR(128) NOT NULL,
+    description         TEXT,
+    acceptance          TEXT,
+    git_flow            VARCHAR(16)  DEFAULT 'branch',
+    claude_mode         VARCHAR(8)   DEFAULT 'max',
+    agent_vendor        VARCHAR(16)  DEFAULT 'anthropic',
+    claude_model        VARCHAR(32)  DEFAULT NULL,
+    backup_vendor       VARCHAR(16)  DEFAULT NULL,
+    backup_model        VARCHAR(32)  DEFAULT NULL,
+    max_turns           INTEGER      DEFAULT NULL,
+    skip_verify         BOOLEAN      DEFAULT FALSE,
+    created_at          TIMESTAMPTZ  DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ  DEFAULT NOW()
+);
+
+-- ─── Additive column migrations (idempotent) ───────────────────────────────
+-- These run safely on both fresh and existing databases.
+
+-- Auto-vendor-failover: backup_vendor column for cross-vendor failover.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS backup_vendor VARCHAR(16) DEFAULT NULL;

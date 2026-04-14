@@ -1,6 +1,7 @@
 import { query } from '@/lib/db';
 import type { Settings } from '@/lib/types';
 import { SettingsForm } from '@/components/SettingsForm';
+import { EnvSettingsForm } from '@/components/EnvSettingsForm';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,7 @@ export default async function SettingsPage() {
     <>
       <h2 className="mb-4">Settings</h2>
       <SettingsForm settings={settings} />
+      <EnvSettingsForm />
     </>
   );
 }

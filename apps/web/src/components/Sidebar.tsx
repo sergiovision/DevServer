@@ -13,6 +13,7 @@ import {
   cilClock,
   cilListRich,
   cilDescription,
+  cilCopy,
 } from '@coreui/icons';
 
 interface SidebarProps {
@@ -23,6 +24,7 @@ interface SidebarProps {
 const navItems = [
   { name: 'Dashboard', href: '/', icon: cilSpeedometer },
   { name: 'Tasks', href: '/tasks', icon: cilTask },
+  { name: 'Templates', href: '/templates', icon: cilCopy },
   { name: 'Ideas', href: '/ideas', icon: cilListRich },
   { name: 'Jobs', href: '/jobs', icon: cilClock },
   { name: 'Repos', href: '/repos', icon: cilStorage },

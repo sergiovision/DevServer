@@ -197,6 +197,95 @@ async def setup_worktree(
     return worktree_path, branch_name
 
 
+async def refresh_repo(
+    repo_name: str,
+    clone_url: str,
+    default_branch: str,
+    gitea_token: str | None = None,
+) -> dict:
+    """Clone bare repo + worktree if missing, or fetch + pull if they exist.
+
+    Returns a status dict with keys: ok, message, cloned, fetched.
+    """
+    token = gitea_token or settings.gitea_token or ""
+    auth_url = _auth_url(clone_url, token)
+    bare_repo = os.path.join(settings.bare_repo_dir, repo_name)
+    worktree_path = get_worktree_path(repo_name)
+
+    cloned = False
+    fetched = False
+
+    # --- Ensure bare repo exists ---
+    if not os.path.isdir(bare_repo):
+        os.makedirs(os.path.dirname(bare_repo), exist_ok=True)
+        logger.info("Cloning bare repo %s", repo_name)
+        rc, out, err = await _run(["git", "clone", "--bare", auth_url, bare_repo])
+        if rc != 0:
+            return {"ok": False, "message": f"git clone --bare failed: {err}"}
+        cloned = True
+
+    # Update remote URL (token may have changed)
+    await _run(["git", "-C", bare_repo, "remote", "set-url", "origin", auth_url])
+
+    # Fetch latest from remote.
+    # The refspec +refs/heads/*:refs/heads/* updates local branch refs in-place
+    # inside the bare repo.  Git refuses to update a ref whose branch is checked
+    # out in a linked worktree (e.g. refs/heads/master when the worktree has
+    # master checked out).  Detach the worktree HEAD first so no branch is
+    # "checked out" and git allows the update.
+    worktree_was_attached = False
+    if os.path.isdir(worktree_path):
+        rc_head, head_out, _ = await _run(
+            ["git", "-C", worktree_path, "symbolic-ref", "--short", "HEAD"],
+        )
+        if rc_head == 0 and head_out.strip():
+            worktree_was_attached = True
+            await _run(["git", "-C", worktree_path, "checkout", "--detach"])
+
+    rc, out, err = await _run([
+        "git", "-C", bare_repo, "fetch", "origin",
+        "+refs/heads/*:refs/heads/*", "--prune",
+    ])
+    if rc != 0:
+        # Re-attach before returning the error
+        if worktree_was_attached:
+            await _run(["git", "-C", worktree_path, "checkout", default_branch])
+        return {"ok": False, "message": f"git fetch failed: {err}"}
+    fetched = True
+
+    # --- Ensure worktree exists ---
+    if not os.path.isdir(worktree_path):
+        logger.info("Creating worktree for %s at %s", repo_name, worktree_path)
+        rc, out, err = await _run([
+            "git", "-C", bare_repo, "worktree", "add",
+            worktree_path, default_branch,
+        ])
+        if rc != 0:
+            return {"ok": False, "message": f"git worktree add failed: {err}"}
+        cloned = True
+    else:
+        # Re-attach worktree to the (now-updated) default branch.
+        # The bare repo has no remote-tracking refs — branches live directly
+        # in refs/heads/* — so we reset to the branch name, not origin/*.
+        await _run(["git", "-C", worktree_path, "reset", "--hard"])
+        rc, out, err = await _run(
+            ["git", "-C", worktree_path, "checkout", default_branch],
+        )
+        if rc != 0:
+            await _run(["git", "-C", worktree_path, "checkout", "--force", default_branch])
+        await _run([
+            "git", "-C", worktree_path, "reset", "--hard", default_branch,
+        ])
+
+    # Configure git identity
+    await _run(["git", "-C", worktree_path, "config", "user.email", settings.git_user_email])
+    await _run(["git", "-C", worktree_path, "config", "user.name", settings.git_user_name])
+
+    action = "cloned" if cloned else "fetched"
+    logger.info("Refresh complete for %s (%s)", repo_name, action)
+    return {"ok": True, "message": f"Repository {action} successfully", "cloned": cloned, "fetched": fetched}
+
+
 async def reset_worktree(repo_name: str, default_branch: str) -> None:
     """Reset the worktree back to default branch after task completion.
 
@@ -255,6 +344,19 @@ async def commit_to_default_branch(
     )
     if rc != 0:
         logger.error("fetch %s failed: %s", default_branch, err)
+        return False
+
+    # Rebase the task branch onto the freshly fetched default branch so
+    # any remote changes that landed while the agent was working are
+    # incorporated into the squash commit's tree. Without this the
+    # task branch's tree (based on an older default_branch) would
+    # clobber concurrent remote changes on push.
+    rc, _, err = await _run(
+        ["git", "rebase", default_branch, branch_name], cwd=worktree_path,
+    )
+    if rc != 0:
+        logger.error("rebase %s onto %s failed: %s", branch_name, default_branch, err)
+        await _run(["git", "rebase", "--abort"], cwd=worktree_path)
         return False
 
     # Resolve the tree of the task branch (all file content) and the

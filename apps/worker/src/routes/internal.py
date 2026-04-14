@@ -23,6 +23,7 @@ from models.setting import Setting
 from models.task import Task
 from models.task_run import TaskRun
 from services.queue_consumer import is_consumer_running
+from services import git_ops
 from services import llm_client
 from services import scheduler
 
@@ -259,6 +260,27 @@ async def cancel_task(task_id: int):
         await db.commit()
 
     return {"task_id": task_id, "old_status": old_status, "new_status": "cancelled"}
+
+
+# ─── Refresh Git ───────────────────────────────────────────────────────────
+
+@router.post("/repos/{repo_id}/refresh-git")
+async def refresh_git(repo_id: int):
+    """Clone or fetch a repo's bare repo and worktree."""
+    async with async_session() as db:
+        repo = await db.get(Repo, repo_id)
+        if not repo:
+            raise HTTPException(status_code=404, detail=f"Repo {repo_id} not found")
+
+    result = await git_ops.refresh_repo(
+        repo_name=repo.name,
+        clone_url=repo.clone_url,
+        default_branch=repo.default_branch,
+        gitea_token=repo.gitea_token or None,
+    )
+    if not result["ok"]:
+        raise HTTPException(status_code=500, detail=result["message"])
+    return result
 
 
 # ─── Task continuation ──────────────────────────────────────────────────────

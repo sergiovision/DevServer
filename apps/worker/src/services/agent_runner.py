@@ -380,6 +380,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         skip_verify = bool(task.skip_verify)
         is_continuation = bool(getattr(task, "is_continuation", False))
         backup_model = getattr(task, "backup_model", None)
+        backup_vendor = getattr(task, "backup_vendor", None)
         # Resolve the agent backend for this task. Defaults to Anthropic
         # when the column is missing or unknown (backwards compatible with
         # every task created before migration 006).
@@ -451,9 +452,13 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             # Update status
             await _update_task_status(db, task_id, "running")
             await _emit_event(db, task_id, None, "status_change", {"status": "running"})
-            await telegram.tg_send(
-                f"\U0001f527 Starting: *{task_key}* -- {title} ({repo_name})"
-            )
+            if not await pro.tg_send_task_start(
+                task_key=task_key, title=title, repo_name=repo_name,
+                mode=task.mode, vendor=agent_vendor, model=effective_model or "",
+            ):
+                await telegram.tg_send(
+                    f"\U0001f527 Starting: *{task_key}* -- {title} ({repo_name})"
+                )
 
             # Setup worktree
             worktree_path, branch_name = await git_ops.setup_worktree(
@@ -600,6 +605,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             cum_wall_ms = 0
             budget_warned = False
             budget_blocked = False
+            budget_reason = ""
 
             # Phase 2 #7 — extract plan allow-list for PR preflight, if this
             # is an interactive task with an approved plan.
@@ -618,6 +624,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     claude_mode=claude_mode,
                 )
                 if state == "exceeded":
+                    budget_reason = reason
                     logger.warning("Budget exceeded before attempt %d: %s", attempt, reason)
                     await _emit_event(db, task_id, None, "budget_exceeded", {
                         "reason": reason,
@@ -639,6 +646,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     })
                     task_log.write(f"\n[budget_warning] {reason}\n")
                     task_log.flush()
+                    await pro.tg_send_budget_warning(
+                        task_key=task_key, repo_name=repo_name, reason=reason,
+                        cum_cost=cum_cost, cum_wall_ms=cum_wall_ms,
+                        max_cost=max_cost_usd, max_wall=max_wall_seconds,
+                    )
 
                 logger.info("--- Attempt %d/%d ---", attempt, repo.max_retries)
 
@@ -932,10 +944,15 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             )
                             await _update_task_status(db, task_id, "blocked")
                             await db.commit()
-                            await telegram.tg_send(
-                                f"\u26d4 *{task_key}* blocked by PR preflight\n"
-                                f"Violations: {violations_str[:300]}"
-                            )
+                            if not await pro.tg_send_preflight_blocked(
+                                task_key=task_key,
+                                violations=[{"kind": v.kind, "detail": v.detail, "severity": v.severity}
+                                            for v in getattr(preflight, "violations", [])],
+                            ):
+                                await telegram.tg_send(
+                                    f"\u26d4 *{task_key}* blocked by PR preflight\n"
+                                    f"Violations: {violations_str[:300]}"
+                                )
                             success = False
                             break
 
@@ -957,6 +974,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     git_flow = getattr(task, "git_flow", "branch") or "branch"
                     verify_note = "Skipped" if skip_verify else "PASSED"
 
+                    commit_ok = True
                     if git_flow == "branch":
                         pr_body = (
                             f"## {task_key}: {title}\n\n"
@@ -1040,11 +1058,16 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         "commit": commit_label,
                         "patch": "Patch generated (no push)",
                     }
-                    await telegram.tg_send(
-                        f"\u2705 *{task_key}* done\n"
-                        f"{git_flow_labels.get(git_flow, '')}\n"
-                        f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
-                    )
+                    if not await pro.tg_send_task_success(
+                        task_key=task_key, git_flow=git_flow, pr_url=pr_url,
+                        attempts=attempt, turns=num_turns, cost=cost_usd,
+                        duration_ms=duration_ms, repo_name=repo_name,
+                    ):
+                        await telegram.tg_send(
+                            f"\u2705 *{task_key}* done\n"
+                            f"{git_flow_labels.get(git_flow, '')}\n"
+                            f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
+                        )
 
                     # Option A — auto-generate downloadable patches for the
                     # branch so operators can apply the changes to a
@@ -1150,34 +1173,65 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         )
                         break
 
-            # ── Auto-fallback to backup model ────────────────────────
-            # If primary model exhausted retries and a backup model is
-            # configured, switch and run another full retry loop.
+            # ── Auto-fallback to backup vendor/model ─────────────────
+            # If primary model exhausted retries and a backup is configured,
+            # switch vendor+model and run another full retry loop. When
+            # backup_vendor differs from the primary, this is a cross-vendor
+            # failover (e.g. Anthropic → GLM).
+            effective_backup_vendor = backup_vendor or agent_vendor
+            has_vendor_switch = effective_backup_vendor != agent_vendor
+            has_model_switch = backup_model and backup_model != effective_model
             if (
                 not success
                 and not budget_blocked
-                and backup_model
-                and backup_model != effective_model
+                and (has_vendor_switch or has_model_switch)
             ):
+                from_label = f"{agent_vendor}/{effective_model}"
+                to_label = f"{effective_backup_vendor}/{backup_model or effective_model}"
                 logger.info(
-                    "Primary model %s exhausted — falling back to backup model %s",
-                    effective_model, backup_model,
+                    "Primary %s exhausted — failing over to %s",
+                    from_label, to_label,
                 )
                 task_log.write(
                     f"\n{'='*60}\n"
-                    f"[backup_model] switching {effective_model} → {backup_model}\n"
+                    f"[vendor_failover] switching {from_label} → {to_label}\n"
                     f"{'='*60}\n"
                 )
                 task_log.flush()
-                await _emit_event(db, task_id, None, "backup_model_switch", {
-                    "from_model": effective_model,
-                    "to_model": backup_model,
-                })
-                await telegram.tg_send(
-                    f"\U0001f504 *{task_key}* primary model failed — switching to backup: {backup_model}"
-                )
 
-                effective_model = backup_model
+                if has_vendor_switch:
+                    backend = agent_backends.get_backend(effective_backup_vendor)
+                    await _emit_event(db, task_id, None, "vendor_failover", {
+                        "from_vendor": agent_vendor,
+                        "from_model": effective_model,
+                        "to_vendor": effective_backup_vendor,
+                        "to_model": backup_model or effective_model,
+                    })
+                    if not await pro.tg_send_vendor_failover(
+                        task_key=task_key,
+                        repo_name=repo_name,
+                        from_vendor=agent_vendor,
+                        from_model=effective_model,
+                        to_vendor=effective_backup_vendor,
+                        to_model=backup_model or effective_model,
+                    ):
+                        await telegram.tg_send(
+                            f"\U0001f504 *{task_key}* vendor failover: {from_label} → {to_label}"
+                        )
+                else:
+                    await _emit_event(db, task_id, None, "backup_model_switch", {
+                        "from_model": effective_model,
+                        "to_model": backup_model,
+                    })
+                    await telegram.tg_send(
+                        f"\U0001f504 *{task_key}* primary model failed — switching to backup: {backup_model}"
+                    )
+
+                # Session cannot be resumed across vendors — reset it.
+                if has_vendor_switch:
+                    session_id = None
+
+                effective_model = backup_model or effective_model
                 error_class_counts.clear()
                 # Ensure any uncommitted work is preserved before backup run
                 if worktree_path:
@@ -1193,6 +1247,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         claude_mode=claude_mode,
                     )
                     if state == "exceeded":
+                        budget_reason = reason
                         logger.warning("Budget exceeded before backup attempt %d: %s", attempt, reason)
                         await _emit_event(db, task_id, None, "budget_exceeded", {
                             "reason": reason,
@@ -1384,17 +1439,18 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         verify_note = "Skipped" if skip_verify else "PASSED"
 
                         if git_flow == "branch":
+                            failover_label = f"{effective_backup_vendor}/{effective_model}" if has_vendor_switch else effective_model
                             pr_body = (
                                 f"## {task_key}: {title}\n\n"
                                 f"### Changes\n{claude_result['result'][:2000]}\n\n"
                                 f"### Verification\n- Build: {verify_note}\n- Tests: {verify_note}\n"
                                 f"### Metrics\n"
-                                f"- Backup model: {effective_model}\n"
+                                f"- Failover: {failover_label}\n"
                                 f"- Attempts: {attempt}\n"
                                 f"- Claude turns: {num_turns}\n"
                                 f"- Cost: ${cost_usd}\n"
                                 f"- Duration: {duration_ms // 1000}s\n\n"
-                                f"---\n*Generated by DevServer autonomous agent (backup model)*"
+                                f"---\n*Generated by DevServer autonomous agent (failover: {failover_label})*"
                             )
                             pr_url = await git_ops.create_gitea_pr(
                                 worktree_path=worktree_path,
@@ -1443,10 +1499,15 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             ))
                         await db.commit()
 
-                        await telegram.tg_send(
-                            f"\u2705 *{task_key}* done (backup model: {effective_model})\n"
-                            f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
-                        )
+                        if not await pro.tg_send_task_success(
+                            task_key=task_key, git_flow=git_flow, pr_url=pr_url,
+                            attempts=attempt, turns=num_turns, cost=cost_usd,
+                            duration_ms=duration_ms, repo_name=repo_name,
+                        ):
+                            await telegram.tg_send(
+                                f"\u2705 *{task_key}* done (failover: {failover_label})\n"
+                                f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
+                            )
 
                         try:
                             patchset = await pro.generate_patches(
@@ -1509,11 +1570,15 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         db.add(DailyStat(date=today, failed=1))
                     await db.commit()
 
-                    await telegram.tg_send(
-                        f"\u23f3 *{task_key}* blocked — budget exceeded\n"
-                        f"Repo: {repo_name}\n"
-                        f"Cost: ${cum_cost} / wall: {cum_wall_ms/1000:.0f}s"
-                    )
+                    if not await pro.tg_send_budget_exceeded(
+                        task_key=task_key, repo_name=repo_name,
+                        reason=budget_reason, cum_cost=cum_cost, cum_wall_ms=cum_wall_ms,
+                    ):
+                        await telegram.tg_send(
+                            f"\u23f3 *{task_key}* blocked — budget exceeded\n"
+                            f"Repo: {repo_name}\n"
+                            f"Cost: ${cum_cost} / wall: {cum_wall_ms/1000:.0f}s"
+                        )
                 else:
                     await _update_task_status(db, task_id, "failed")
                     today = datetime.now(timezone.utc).date()
@@ -1524,11 +1589,16 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         db.add(DailyStat(date=today, failed=1))
                     await db.commit()
 
-                    await telegram.tg_send(
-                        f"\u274c *{task_key}* FAILED after {repo.max_retries} attempts\n"
-                        f"Repo: {repo_name}\n"
-                        f"Error: {error_context[:200]}"
-                    )
+                    if not await pro.tg_send_task_failed(
+                        task_key=task_key, repo_name=repo_name,
+                        error_context=error_context, attempts=repo.max_retries,
+                        cost=cum_cost,
+                    ):
+                        await telegram.tg_send(
+                            f"\u274c *{task_key}* FAILED after {repo.max_retries} attempts\n"
+                            f"Repo: {repo_name}\n"
+                            f"Error: {error_context[:200]}"
+                        )
 
         except Exception as exc:
             tb = traceback.format_exc()

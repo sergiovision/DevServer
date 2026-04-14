@@ -44,6 +44,7 @@ class Task(Base):
     plan_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     plan_rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     git_flow: Mapped[str] = mapped_column(String(16), default="branch")
+    backup_vendor: Mapped[str | None] = mapped_column(String(16), default=None)
     backup_model: Mapped[str | None] = mapped_column(String(32), default="claude-sonnet-4-6")
     is_continuation: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

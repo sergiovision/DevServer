@@ -86,7 +86,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const [agentModel, setAgentModel] = useState<string>(task.claude_model ?? '');
   const [agentBilling, setAgentBilling] = useState<ClaudeMode>((task.claude_mode ?? 'max') as ClaudeMode);
   const [agentGitFlow, setAgentGitFlow] = useState<GitFlow>((task.git_flow ?? 'branch') as GitFlow);
-  const [backupVendor, setBackupVendor] = useState<AgentVendor>('anthropic');
+  const [backupVendor, setBackupVendor] = useState<AgentVendor>((task.backup_vendor ?? 'anthropic') as AgentVendor);
   const [backupModel, setBackupModel] = useState<string>(task.backup_model ?? 'claude-sonnet-4-6');
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentError, setAgentError] = useState('');
@@ -106,6 +106,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
           claude_model: agentModel.trim() || null,
           claude_mode: agentBilling,
           git_flow: agentGitFlow,
+          backup_vendor: backupVendor !== agentVendor ? backupVendor : null,
           backup_model: backupModel.trim() || null,
         }),
       });
@@ -120,7 +121,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     } finally {
       setAgentSaving(false);
     }
-  }, [task.id, agentMaxTurns, agentVendor, agentModel, agentBilling, agentGitFlow, backupModel, router]);
+  }, [task.id, agentMaxTurns, agentVendor, agentModel, agentBilling, agentGitFlow, backupVendor, backupModel, router]);
 
   const handleDelete = useCallback(async () => {
     if (!confirm(`Delete task "${task.task_key}"? This cannot be undone.`)) return;
@@ -197,6 +198,27 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     });
     router.refresh();
   }, [task.id, router]);
+
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMsg, setRefreshMsg] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
+  const handleRefreshGit = useCallback(async () => {
+    if (!task.repo_id) return;
+    setRefreshing(true);
+    setRefreshMsg(null);
+    try {
+      const res = await fetch(`/api/repos/${task.repo_id}/refresh-git`, { method: 'POST' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'Refresh failed');
+      }
+      const data = await res.json();
+      setRefreshMsg({ type: 'success', text: data.message });
+    } catch (err) {
+      setRefreshMsg({ type: 'danger', text: err instanceof Error ? err.message : 'Refresh failed' });
+    } finally {
+      setRefreshing(false);
+    }
+  }, [task.repo_id]);
 
   const [filling, setFilling] = useState(false);
   const [fillError, setFillError] = useState('');
@@ -314,6 +336,18 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
             >
               Repo Link
             </CButton>
+          )}
+          {task.repo_id && (
+            <CButton
+              color="outline-info"
+              disabled={refreshing}
+              onClick={handleRefreshGit}
+            >
+              {refreshing ? 'Refreshing...' : 'Refresh Git'}
+            </CButton>
+          )}
+          {refreshMsg && (
+            <span className={`small text-${refreshMsg.type} align-self-center`}>{refreshMsg.text}</span>
           )}
         </div>
       </div>
@@ -460,8 +494,10 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   modelName="backup_model"
                 />
                 <small className="text-body-secondary">
-                  Used automatically if the primary model fails after all retries.
-                  {task.backup_model ? ` Current: ${task.backup_model}` : ''}
+                  Auto-failover if primary vendor/model fails after all retries.
+                  {task.backup_vendor || task.backup_model
+                    ? ` Current: ${task.backup_vendor ? `${task.backup_vendor}/` : ''}${task.backup_model || '(default model)'}`
+                    : ''}
                 </small>
               </div>
               <div className="mb-3">

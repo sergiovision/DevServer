@@ -21,8 +21,6 @@ import {
   defaultModelForVendor,
   modelsForVendor,
 } from '@/lib/agent-vendors';
-import { QueueStats } from './QueueStats';
-
 interface SettingsFormProps {
   settings: Record<string, unknown>;
 }
@@ -42,7 +40,6 @@ function unquote(val: unknown): string {
 /** Build a clean draft object from the raw settings record. */
 function buildDraft(raw: Record<string, unknown>) {
   return {
-    execution_mode: String(raw.execution_mode || 'autonomous'),
     max_concurrency: Number(raw.max_concurrency || 2),
     queue_paused: Boolean(raw.queue_paused),
     auto_enqueue: Boolean(raw.auto_enqueue),
@@ -91,7 +88,6 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
     setError('');
     try {
       const pairs: [string, unknown][] = [
-        ['execution_mode', draft.execution_mode],
         ['max_concurrency', draft.max_concurrency],
         ['queue_paused', draft.queue_paused],
         ['auto_enqueue', draft.auto_enqueue],
@@ -122,14 +118,6 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
 
   return (
     <>
-      {/* Queue Stats */}
-      <CCard className="mb-4">
-        <CCardHeader><strong>Queue Status</strong></CCardHeader>
-        <CCardBody>
-          <QueueStats />
-        </CCardBody>
-      </CCard>
-
       {/* General Settings */}
       <CCard className="mb-4">
         <CCardHeader><strong>General</strong></CCardHeader>
@@ -138,17 +126,6 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
           {saved && <CAlert color="success" className="py-2">Settings saved.</CAlert>}
           <CForm onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
             <CRow className="mb-3">
-              <CCol md={4}>
-                <CFormLabel>Execution Mode</CFormLabel>
-                <CFormSelect
-                  value={draft.execution_mode}
-                  onChange={(e) => set('execution_mode', e.target.value)}
-                >
-                  <option value="autonomous">Autonomous</option>
-                  <option value="interactive">Interactive</option>
-                  <option value="paused">Paused</option>
-                </CFormSelect>
-              </CCol>
               <CCol md={4}>
                 <CFormLabel>Max Concurrency</CFormLabel>
                 <CFormInput

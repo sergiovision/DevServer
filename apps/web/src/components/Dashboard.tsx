@@ -18,6 +18,7 @@ import { cilPeople, cilTask, cilCheckAlt, cilXCircle } from '@coreui/icons';
 import { AgentCard } from './AgentCard';
 import { WorkerToolbar } from './WorkerToolbar';
 import { NightCyclePanel } from './pro-loader';
+import { DashboardCharts } from './DashboardCharts';
 import type { Task, QueueStatsResponse } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 
@@ -176,6 +177,9 @@ export function Dashboard({ runningTasks, queuedTasks, todayStats }: DashboardPr
           />
         </CCol>
       </CRow>
+
+      {/* Analytics Charts */}
+      <DashboardCharts />
     </>
   );
 }

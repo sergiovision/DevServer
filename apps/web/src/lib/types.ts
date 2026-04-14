@@ -55,6 +55,7 @@ export interface Task {
   queue_job_id: string | null;
   skip_verify: boolean;
   git_flow: GitFlow;
+  backup_vendor: AgentVendor | null;
   backup_model: string | null;
   created_by: string | null;
   created_at: string;
@@ -62,6 +63,23 @@ export interface Task {
   // Joined fields
   repo_name?: string;
   repo_clone_url?: string;
+}
+
+export interface TaskTemplate {
+  id: number;
+  name: string;
+  description: string | null;
+  acceptance: string | null;
+  git_flow: GitFlow;
+  claude_mode: ClaudeMode;
+  agent_vendor: AgentVendor;
+  claude_model: string | null;
+  backup_vendor: AgentVendor | null;
+  backup_model: string | null;
+  max_turns: number | null;
+  skip_verify: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export type RunStatus = 'running' | 'passed' | 'failed' | 'cancelled';

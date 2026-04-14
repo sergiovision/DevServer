@@ -25,6 +25,13 @@ from models.daily_stat import DailyStat
 from models.task import Task
 from services.telegram import tg_send
 
+# Pro features: rich daily digest replaces the basic one when available.
+try:
+    from services.pro import hooks as pro
+    _has_pro = True
+except ImportError:
+    _has_pro = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,6 +148,15 @@ async def _run_stale_task_recovery() -> str:
 
 
 async def _run_daily_report() -> str:
+    # Pro daily digest: richer formatting with 7-day trends and sparklines
+    if _has_pro:
+        async with async_session() as session:
+            result = await pro.tg_send_daily_digest(db=session)
+        if result:
+            deleted_files = await _cleanup_old_logs()
+            return f"{result} | cleaned {deleted_files} old logs"
+
+    # Free-tier daily report — basic stats
     yesterday = (datetime.utcnow() - timedelta(days=1)).date()
 
     async with async_session() as session:
