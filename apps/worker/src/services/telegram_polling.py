@@ -5,8 +5,11 @@ Uses long-polling (getUpdates) so no HTTPS certificate is required.
 Supported commands:
   /status   — worker status
   /approve TASK-KEY
-  /reject  TASK-KEY
+  /reject  TASK-KEY — cancel a pending/blocked task
+  /cancel  TASK-KEY — stop a running task (alias of /reject for any status)
   /retry   TASK-KEY
+  /reply   TASK-KEY <message> — send a message from the operator to a task's inbox
+  /inbox   [N] — show the last N unread operator-addressed messages
   /pause
   /resume
   /mode autonomous|interactive
@@ -19,6 +22,7 @@ for Pro plan approval from Telegram.
 """
 
 import asyncio
+import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -109,6 +113,80 @@ async def _cmd_reject(task_key: str) -> str:
         )
         await db.commit()
     return f"\U0001f6ab Rejected `{task_key}`"
+
+
+async def _cmd_cancel(task_key: str) -> str:
+    """Cancel a task in ANY status — terminal or not. Complements
+    /reject which only fires for pending/blocked tasks."""
+    async with async_session() as db:
+        res = await db.execute(select(Task).where(Task.task_key == task_key))
+        task = res.scalar_one_or_none()
+        if not task:
+            return f"Task `{task_key}` not found"
+        if task.status in ("done", "cancelled"):
+            return f"Task is already `{task.status}`"
+        await db.execute(
+            update(Task)
+            .where(Task.task_key == task_key)
+            .values(status="cancelled", updated_at=datetime.now(timezone.utc))
+        )
+        await db.commit()
+    return f"\U0001f6d1 Cancelled `{task_key}`"
+
+
+async def _cmd_reply(task_key: str, body: str) -> str:
+    """Send an operator-originated message to a task's inbox. The agent
+    picks it up on its next inbox poll (prompted between major steps).
+
+    Pro-only: inter-task messaging lives in ``services.pro.task_messaging``.
+    In free mode this command politely declines.
+    """
+    try:
+        from services.pro import task_messaging
+    except ImportError:
+        return "\u274c Inter-task messaging is a Pro feature."
+    async with async_session() as db:
+        try:
+            msg = await task_messaging.send_message(
+                db,
+                from_task_key="operator",
+                to_task_key=task_key,
+                body=body,
+                kind="note",
+            )
+        except ValueError as exc:
+            return f"\u274c {exc}"
+    excerpt = body[:60] + ("…" if len(body) > 60 else "")
+    return f"\u2709 Message sent to `{task_key}` (#{msg['id']}): _{excerpt}_"
+
+
+async def _cmd_inbox(n_arg: str | None) -> str:
+    """Show the last N unread messages addressed to operator, without acking.
+
+    Pro-only: the operator inbox lives on top of the pro messaging bus.
+    """
+    try:
+        n = max(1, min(20, int(n_arg) if n_arg else 5))
+    except ValueError:
+        n = 5
+    try:
+        from services.pro import task_messaging
+    except ImportError:
+        return "\u274c Operator inbox is a Pro feature."
+    async with async_session() as db:
+        rows = await task_messaging.read_inbox(
+            db, task_key="operator", mark_read=False,
+            include_read=False, limit=n,
+        )
+    if not rows:
+        return "\U0001f4ed Operator inbox is empty."
+    lines = [f"\U0001f4e5 *Operator inbox* — {len(rows)} unread"]
+    for r in rows:
+        from_key = r.get("from_task_key") or "?"
+        subj = r.get("subject") or r.get("body", "")[:60]
+        lines.append(f"• `{from_key}` ({r.get('kind', '?')}): {subj}")
+    lines.append("_Open /inbox in the dashboard to reply or mark read._")
+    return "\n".join(lines)
 
 
 async def _cmd_retry(task_key: str) -> str:
@@ -221,8 +299,11 @@ _HELP = (
     "*DevServer Bot Commands*\n"
     "/status — worker status\n"
     "/approve TASK\\-KEY — approve pending task\n"
-    "/reject TASK\\-KEY — cancel task\n"
+    "/reject TASK\\-KEY — cancel pending/blocked task\n"
+    "/cancel TASK\\-KEY — cancel task in any status\n"
     "/retry TASK\\-KEY — retry failed task\n"
+    "/reply TASK\\-KEY <msg> — message the agent's inbox\n"
+    "/inbox \\[N\\] — show N unread operator messages (default 5)\n"
     "/pause — pause queue\n"
     "/resume — resume queue\n"
     "/mode autonomous|interactive — set mode\n"
@@ -240,8 +321,16 @@ async def _dispatch(cmd: str, args: list[str]) -> str | None:
         return await _cmd_approve(args[0]) if args else "Usage: /approve TASK-KEY"
     if cmd == "/reject":
         return await _cmd_reject(args[0]) if args else "Usage: /reject TASK-KEY"
+    if cmd == "/cancel":
+        return await _cmd_cancel(args[0]) if args else "Usage: /cancel TASK-KEY"
     if cmd == "/retry":
         return await _cmd_retry(args[0]) if args else "Usage: /retry TASK-KEY"
+    if cmd == "/reply":
+        if len(args) < 2:
+            return "Usage: /reply TASK-KEY <message>"
+        return await _cmd_reply(args[0], " ".join(args[1:]))
+    if cmd == "/inbox":
+        return await _cmd_inbox(args[0] if args else None)
     if cmd == "/pause":
         return await _cmd_pause()
     if cmd == "/resume":
@@ -339,7 +428,16 @@ async def _poll() -> None:
             async with httpx.AsyncClient(timeout=35) as client:
                 resp = await client.get(
                     f"{base_url}/getUpdates",
-                    params={"timeout": 30, "offset": offset, "allowed_updates": ["message", "callback_query"]},
+                    params={
+                        "timeout": 30,
+                        "offset": offset,
+                        # Telegram expects allowed_updates as a JSON-serialized
+                        # string, not repeat-key query params. httpx would
+                        # otherwise render a Python list as
+                        # ``allowed_updates=message&allowed_updates=callback_query``
+                        # which Telegram silently interprets as "no filter".
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
+                    },
                 )
             data = resp.json()
             if not data.get("ok"):

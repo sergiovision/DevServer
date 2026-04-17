@@ -37,7 +37,7 @@ Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a C
 
 All of the above are real code paths, not marketing bullets. See [`apps/worker/src/services/`](apps/worker/src/services/) for the implementations.
 
-> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, and night cycle are available in the [Pro edition](README.PRO.md).
+> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, night cycle, inter-task messaging bus + operator inbox, and webhook triggers are available in the pro version, write me to get it.
 
 ## Features
 
@@ -459,7 +459,7 @@ Contributions and issues are welcome.
 
 DevServer is built and maintained in my spare time. If it saves you hours of
 work or you'd like to see development continue, consider sending a tip — it
-directly funds new features, faster fixes, and ongoing maintenance.
+directly funds new features, faster fixes, and ongoing maintenance. With generous donation you can receive PRO version.
 
 **USDT (TRC20 — Tron network):**
 

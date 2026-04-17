@@ -23,6 +23,7 @@ from models.setting import Setting
 from models.task import Task
 from models.task_run import TaskRun
 from services.queue_consumer import is_consumer_running
+from services import compaction
 from services import git_ops
 from services import llm_client
 from services import scheduler
@@ -300,7 +301,11 @@ async def continue_task(task_key: str, req: ContinueTaskRequest):
         task = res.scalar_one_or_none()
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_key} not found")
-        if task.status in ("done", "test", "retired"):
+        # ``test`` is a post-verify "waiting for human QA" state that still
+        # has a live agent branch + session_id, so operators can drop a
+        # follow-up message into the inbox and continue the same task
+        # without reopening (which would reset the session).
+        if task.status in ("done", "retired"):
             raise HTTPException(
                 status_code=400,
                 detail=f"Task is {task.status}, cannot continue",
@@ -549,3 +554,47 @@ async def stop_job(body: JobActionRequest):
     if not scheduler.stop_job_now(body.name):
         raise HTTPException(409, f"Job not running or not found: {body.name}")
     return {"status": "ok", "name": body.name}
+
+
+# Inter-task messaging endpoints moved to routes/pro_internal.py
+# (/tasks/{task_key}/messages/send, /inbox, /thread, /sessions/list)
+
+
+# ─── Context compaction ────────────────────────────────────────────────────
+
+@router.post("/tasks/{task_key}/compact")
+async def compact_task(task_key: str, reason: str = "manual"):
+    """Summarise a task's transcript via the system LLM.
+
+    Writes the result onto ``tasks.compacted_context`` and emits a
+    ``context_compacted`` event. The next attempt will inject the
+    summary as its sole context block (repo map/memory/reality signal
+    are skipped).
+
+    The caller is responsible for separately clearing ``session_id``
+    or triggering a continuation. Invoking ``/tasks/<key>/continue``
+    after ``/compact`` is the standard recovery path from the dashboard.
+    """
+    async with async_session() as db:
+        res = await db.execute(select(Task).where(Task.task_key == task_key))
+        task = res.scalar_one_or_none()
+        if not task:
+            raise HTTPException(404, f"Task {task_key} not found")
+        result = await compaction.compact_task(
+            db, task_id=task.id, reason=reason,
+        )
+    if not result["ok"]:
+        raise HTTPException(502, result.get("error") or "compaction failed")
+    return {
+        "task_key": task_key,
+        "chars_in": result["chars_in"],
+        "chars_out": result["chars_out"],
+        "compression_ratio": (
+            round(result["chars_out"] / result["chars_in"], 3)
+            if result["chars_in"] else None
+        ),
+    }
+
+
+# Webhook-fire endpoint moved to routes/pro_internal.py
+# (POST /internal/webhooks/fire)

@@ -113,17 +113,41 @@ def _build_openai_request(
     prompt: str,
     max_tokens: int,
 ) -> tuple[str, dict, dict]:
-    """OpenAI Chat Completions format."""
-    url = _VENDOR_CONFIGS["openai"]["url"]
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+    """OpenAI Chat Completions format. Supports Azure Foundry via OPENAI_BASE_URL."""
+    # Check for Azure Foundry / custom endpoint override
+    base_url = (settings.openai_base_url or "").rstrip("/")
+    if base_url:
+        # Azure Foundry: construct URL with api-version query param
+        api_version = settings.openai_api_version or "2024-10-01-preview"
+        # Ensure /openai suffix for Azure (agent_backends.py does the same)
+        if not base_url.endswith("/openai"):
+            base_url = f"{base_url}/openai"
+        url = f"{base_url}/deployments/{model}/chat/completions?api-version={api_version}"
+        # Azure uses api-key header instead of Bearer token
+        headers = {
+            "api-key": api_key,
+            "Content-Type": "application/json",
+        }
+    else:
+        # Standard OpenAI
+        url = _VENDOR_CONFIGS["openai"]["url"]
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+    # Azure Foundry requires max_completion_tokens for newer models
+    # (gpt-4o, gpt-4.1, gpt-5.x), while standard OpenAI uses max_tokens
+    if base_url:
+        body = {
+            "messages": [{"role": "user", "content": prompt}],
+            "max_completion_tokens": max_tokens,
+        }
+    else:
+        body = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
     return url, headers, body
 
 

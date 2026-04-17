@@ -52,6 +52,8 @@ ENV_SCHEMA: list[dict] = [
     # OpenAI
     {"key": "OPENAI_API_KEY", "group": "OpenAI", "label": "API Key", "type": "string", "secret": True},
     {"key": "CODEX_BIN", "group": "OpenAI", "label": "Codex Binary", "type": "string", "secret": False},
+    {"key": "OPENAI_BASE_URL", "group": "OpenAI", "label": "Base URL (Azure Foundry / proxy)", "type": "url", "secret": False},
+    {"key": "OPENAI_API_VERSION", "group": "OpenAI", "label": "API Version (Azure only)", "type": "string", "secret": False},
     # Google
     {"key": "GEMINI_API_KEY", "group": "Google", "label": "API Key", "type": "string", "secret": True},
     {"key": "GEMINI_BIN", "group": "Google", "label": "Gemini Binary", "type": "string", "secret": False},

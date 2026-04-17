@@ -58,3 +58,4 @@ coverage/
 
 apps/web/package-lock.json
 apps/web/package-lock.json
+apps/web/tsconfig.tsbuildinfo

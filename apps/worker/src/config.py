@@ -17,9 +17,17 @@ class Settings(BaseSettings):
     gitea_owner: str = ""
     gitea_token: str = ""
 
-    # Telegram
+    # Notification channels (zero-config, opt-in via env vars).
+    # Each backend is enabled by its own set of env vars — the dispatcher
+    # fans notifications out to every configured channel. Leave blank to
+    # disable a channel.
+    # Telegram — bot token + chat id enable rich notifications + two-way
+    # command polling.
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+    # Discord — webhook URL (https://discord.com/api/webhooks/...).
+    # Supports embeds for colored task-success/failure cards.
+    discord_webhook_url: str = ""
 
     # Claude / Anthropic (primary backend)
     anthropic_api_key: str = ""
@@ -32,6 +40,14 @@ class Settings(BaseSettings):
     # spawn time. Only Anthropic is production-tested today.
     openai_api_key: str = ""
     codex_bin: str = "codex"
+    # Optional OpenAI-compatible endpoint override. Set to an Azure OpenAI
+    # / Azure AI Foundry URL (e.g. https://<resource>.openai.azure.com/)
+    # to route Codex through Azure instead of api.openai.com. When set,
+    # the worker propagates it into the Codex subprocess env.
+    openai_base_url: str = ""
+    # Only needed for Azure OpenAI / Azure AI Foundry — the API version
+    # query param Azure requires (e.g. "2024-10-01-preview").
+    openai_api_version: str = ""
     google_api_key: str = ""
     gemini_bin: str = "gemini"
     glm_api_key: str = ""  # Zhipu AI (open.bigmodel.cn)

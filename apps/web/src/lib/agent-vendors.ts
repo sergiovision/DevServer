@@ -51,6 +51,7 @@ export const AGENT_VENDORS: VendorEntry[] = [
     id: 'openai',
     label: 'OpenAI',
     models: [
+      { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini (Azure Foundry test)' },
       { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex (coding-tuned)' },
       { id: 'gpt-5.2',       label: 'GPT-5.2 (reasoning)' },
       { id: 'o4-mini',       label: 'o4-mini (cheap reasoning)' },

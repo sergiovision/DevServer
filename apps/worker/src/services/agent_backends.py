@@ -74,6 +74,7 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
         {"id": "gemini-pro-latest",            "label": "Gemini Pro (latest alias)"},
     ],
     "openai": [
+        {"id": "gpt-5.4-mini",                 "label": "GPT-5.4 Mini (Azure Foundry test)"},
         {"id": "gpt-5.3-codex",                "label": "GPT-5.3 Codex (coding-tuned)"},
         {"id": "gpt-5.2",                      "label": "GPT-5.2 (reasoning)"},
         {"id": "o4-mini",                      "label": "o4-mini (cheap reasoning)"},
@@ -393,12 +394,26 @@ class GeminiBackend(AgentBackend):
 
 # ── OpenAI — Codex CLI ──────────────────────────────────────────────────────
 #
-# Command shape (openai/codex, Apache-2.0, Q1 2026):
-#     codex exec <prompt> --model <model> --output-format json
-#            [--max-turns N] [--resume <session_id>]
+# Command shape (openai/codex ≥ 0.120, Rust rewrite):
+#     codex exec [OPTIONS] [PROMPT]
 #
-# Auth: reads ``OPENAI_API_KEY`` from the env, or uses the ChatGPT OAuth
-# login from ``codex login``.
+# Supported flags (what we use):
+#   --json                         JSONL event stream on stdout
+#   --model <MODEL>                model name (or Azure deployment name)
+#   --full-auto                    workspace-write sandbox, no prompts
+#   --skip-git-repo-check          let codex run in existing git worktree
+#   -C, --cd <DIR>                 working root
+#   -c key=value                   TOML config override (repeatable)
+#
+# NOT supported by current codex (intentionally dropped):
+#   --output-format, --max-turns, --resume, --tools
+#   Session resume is a distinct subcommand (``codex exec resume``) with a
+#   different shape — skipped here; each invocation runs fresh.
+#
+# Auth: reads ``OPENAI_API_KEY`` from env, or uses the ChatGPT OAuth login
+# stored by ``codex login``. For Azure AI Foundry, OPENAI_API_KEY is the
+# Azure resource key and extra ``-c`` overrides route codex through the
+# Azure provider (see build_command below).
 #
 # Rate-limit detection: OpenAI returns ``rate_limit_exceeded`` in the error
 # JSON or a literal 429.
@@ -410,10 +425,7 @@ _OPENAI_RATE_LIMIT_RE = re.compile(
 
 
 class OpenAIBackend(AgentBackend):
-    """OpenAI Codex CLI backend.
-
-    **Untested as of first commit.** See GeminiBackend for the same caveat.
-    """
+    """OpenAI Codex CLI backend (codex-cli ≥ 0.120)."""
 
     vendor = "openai"
     label = "OpenAI"
@@ -427,23 +439,54 @@ class OpenAIBackend(AgentBackend):
         *,
         prompt: str,
         model: str,
-        allowed_tools: str,
-        session_id: str | None,
-        max_turns: int | None,
+        allowed_tools: str,  # noqa: ARG002 — codex has no equivalent flag
+        session_id: str | None,  # noqa: ARG002 — see module docstring
+        max_turns: int | None,  # noqa: ARG002 — codex has no --max-turns
     ) -> list[str]:
-        cmd = [
-            self.cli_bin, "exec", prompt,
-            "--model", model,
-            "--output-format", "json",
+        cmd: list[str] = [
+            self.cli_bin, "exec",
+            "--json",                      # JSONL event stream on stdout
+            "--skip-git-repo-check",       # worktrees are valid repos but already on a branch
+            "--full-auto",                 # workspace-write sandbox + no approval prompts
         ]
-        if max_turns is not None:
-            cmd.extend(["--max-turns", str(max_turns)])
-        if session_id:
-            cmd.extend(["--resume", session_id])
-        # Codex CLI uses its own default tool set; ``allowed_tools`` is
-        # passed through as a best-effort hint when the value is non-empty.
-        if allowed_tools:
-            cmd.extend(["--tools", allowed_tools])
+        if model:
+            cmd.extend(["--model", model])
+
+        # Azure AI Foundry routing. When OPENAI_BASE_URL is set we assume
+        # the user wants an OpenAI-compatible alternative endpoint (Azure
+        # is the only supported case today). Rather than ask the user to
+        # maintain ``~/.codex/config.toml``, we synthesise an ``azure``
+        # provider via repeatable ``-c key=value`` TOML overrides. This is
+        # the same shape documented at
+        # https://github.com/openai/codex (Azure provider section).
+        try:
+            from config import settings  # local import to avoid cycles at module load
+        except Exception:
+            settings = None  # type: ignore[assignment]
+
+        base_url = getattr(settings, "openai_base_url", "") if settings else ""
+        api_version = getattr(settings, "openai_api_version", "") if settings else ""
+        if base_url:
+            # Azure wants the ``/openai`` suffix appended when it's not
+            # already present; accept either form from the user.
+            endpoint = base_url.rstrip("/")
+            if not endpoint.endswith("/openai"):
+                endpoint = f"{endpoint}/openai"
+            cmd.extend([
+                "-c", 'model_provider="azure"',
+                "-c", 'model_providers.azure.name="Azure OpenAI"',
+                "-c", f'model_providers.azure.base_url="{endpoint}"',
+                "-c", 'model_providers.azure.env_key="OPENAI_API_KEY"',
+                "-c", 'model_providers.azure.wire_api="responses"',
+            ])
+            if api_version:
+                cmd.extend([
+                    "-c",
+                    f'model_providers.azure.query_params={{api-version="{api_version}"}}',
+                ])
+
+        # Prompt is positional and must come last.
+        cmd.append(prompt)
         return cmd
 
     def is_rate_limit_error(self, stdout: str, stderr: str, exit_code: int) -> bool:
@@ -454,20 +497,92 @@ class OpenAIBackend(AgentBackend):
         )
 
     def parse_output(self, raw_output: str, prior_session_id: str | None) -> AgentResult:
+        """Parse codex's JSONL event stream.
+
+        codex 0.120 emits dot-namespaced event types on stdout, one JSON
+        object per line. Observed shapes:
+
+            {"type":"thread.started","thread_id":"019d9172-..."}
+            {"type":"turn.started"}
+            {"type":"agent.message","message":"..."}           (speculative)
+            {"type":"turn.completed","usage":{"total_tokens":123}}  (speculative)
+            {"type":"error","message":"..."}
+
+        We also tolerate underscore-namespaced variants (older codex) and
+        an optional ``msg`` envelope. Cost isn't reported directly — codex
+        only gives tokens — so ``cost_usd`` stays 0 and the budget gate
+        treats OpenAI runs as free until we wire a tokens→$ table.
+        """
         res = AgentResult(
             raw_output=raw_output,
             session_id=prior_session_id,
         )
-        try:
-            data = json.loads(raw_output)
-            res.result = data.get("result") or data.get("message", {}).get("content", "") or ""
-            usage = data.get("usage") or {}
-            res.num_turns = int(usage.get("turns", 0) or data.get("num_turns", 0) or 0)
-            res.cost_usd = float(usage.get("total_cost_usd") or 0)
-            res.session_id = data.get("session_id", prior_session_id) or prior_session_id
-        except (json.JSONDecodeError, TypeError, ValueError):
-            res.result = raw_output
-            logger.warning("OpenAI Codex output was not valid JSON, using raw text")
+
+        last_message = ""
+        errors: list[str] = []
+        turns = 0
+        total_tokens = 0
+        for line in raw_output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload = event.get("msg") if isinstance(event.get("msg"), dict) else event
+            etype = (payload.get("type") or event.get("type") or "").replace("_", ".")
+
+            if etype in ("thread.started", "task.started"):
+                sid = (
+                    payload.get("thread_id")
+                    or payload.get("session_id")
+                    or event.get("thread_id")
+                    or event.get("session_id")
+                )
+                if sid:
+                    res.session_id = sid
+            elif etype in ("agent.message", "agent_message", "message"):
+                msg = payload.get("message") or payload.get("content") or ""
+                if isinstance(msg, str) and msg:
+                    last_message = msg
+                    turns += 1
+            elif etype in ("turn.completed", "token_count"):
+                usage = payload.get("usage") or {}
+                tt = usage.get("total_tokens") or usage.get("total") or 0
+                try:
+                    total_tokens = int(tt) or total_tokens
+                except (TypeError, ValueError):
+                    pass
+            elif etype in ("task.complete", "task_complete", "thread.completed"):
+                final = payload.get("last_agent_message") or payload.get("message")
+                if isinstance(final, str) and final:
+                    last_message = final
+            elif etype == "error":
+                err_msg = payload.get("message") or payload.get("error") or ""
+                if isinstance(err_msg, str) and err_msg:
+                    errors.append(err_msg)
+
+        if last_message:
+            res.result = last_message
+        elif errors:
+            # Surface the first error so the dashboard shows something
+            # actionable (e.g. Azure 404s) instead of a silent failure.
+            res.result = "\n".join(errors[:3])
+            res.error = errors[0]
+            logger.warning("OpenAI Codex reported errors: %s", errors[0])
+        elif raw_output:
+            res.result = raw_output[:2000]
+            logger.warning(
+                "OpenAI Codex produced no agent.message events; storing raw output",
+            )
+
+        res.num_turns = turns
+        # Surface token counts + any non-fatal errors in ``errors`` so the
+        # dashboard can display them without a new AgentResult field.
+        if total_tokens:
+            res.errors.append(f"total_tokens={total_tokens}")
+        res.errors.extend(errors)
         return res
 
 

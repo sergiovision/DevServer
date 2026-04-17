@@ -26,7 +26,7 @@ import { AgentLog } from './AgentLog';
 import { TaskLog } from './TaskLog';
 import { MaxTurnsInput } from './MaxTurnsInput';
 import { VendorModelPicker } from './VendorModelPicker';
-import { PatchesPanel } from './pro-loader';
+import { PatchesPanel, MessagesPanel } from './pro-loader';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 
@@ -181,6 +181,35 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     }
   }, [task.id, router]);
 
+  const [compacting, setCompacting] = useState(false);
+  const handleCompact = useCallback(async () => {
+    if (
+      !confirm(
+        "Summarise this task's prior transcript via the system LLM, replacing the per-retry context with a distilled summary? The next attempt will start with a fresh session.",
+      )
+    )
+      return;
+    setCompacting(true);
+    try {
+      const res = await fetch(`/api/tasks/${task.id}/compact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'manual_ui' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error || 'Compaction failed');
+      } else {
+        alert(
+          `Compacted ${data.chars_in ?? '?'} chars → ${data.chars_out ?? '?'} chars. Use "Continue" to resume with the summary.`,
+        );
+      }
+      router.refresh();
+    } finally {
+      setCompacting(false);
+    }
+  }, [task.id, router]);
+
   const handleRetire = useCallback(async () => {
     await fetch(`/api/tasks/${task.id}`, {
       method: 'PATCH',
@@ -305,9 +334,29 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
               Cancel
             </CButton>
           )}
-          {(['running', 'queued', 'failed', 'blocked', 'cancelled'].includes(task.status)) && (
-            <CButton color="info" disabled={continuing} onClick={handleContinue}>
+          {(['running', 'queued', 'failed', 'blocked', 'cancelled', 'test'].includes(task.status)) && (
+            <CButton
+              color="info"
+              disabled={continuing}
+              onClick={handleContinue}
+              title={
+                task.status === 'test'
+                  ? 'Resume this task with the existing session & branch to address a follow-up request from the Messages panel'
+                  : 'Resume this task from where it left off'
+              }
+            >
               {continuing ? 'Continuing…' : 'Continue'}
+            </CButton>
+          )}
+          {(['running', 'failed', 'blocked', 'cancelled'].includes(task.status)) && (
+            <CButton
+              color="secondary"
+              variant="outline"
+              disabled={compacting}
+              onClick={handleCompact}
+              title="Summarise prior attempts via the system LLM — next retry starts fresh with the summary"
+            >
+              {compacting ? 'Compacting…' : 'Compact'}
             </CButton>
           )}
           {(task.status === 'running' || task.status === 'verifying' || task.status === 'failed' || task.status === 'queued') && (
@@ -400,6 +449,11 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
               </CButton>
             </CCardBody>
           </CCard>
+
+          {/* Messages — two-way chat between operator and agent via task_messages.
+              Placed above the Event Log so the operator can easily talk to the
+              agent without scrolling the right-hand sidebar. */}
+          <MessagesPanel taskId={task.id} taskKey={task.task_key} />
 
           {/* Live Log */}
           <CCard className="mb-4">

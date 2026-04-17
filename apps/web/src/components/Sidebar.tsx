@@ -15,13 +15,17 @@ import {
   cilDescription,
   cilCopy,
 } from '@coreui/icons';
+import { PRO_NAV_ITEMS } from './pro-loader';
 
 interface SidebarProps {
   visible: boolean;
   onVisibleChange: (visible: boolean) => void;
 }
 
-const navItems = [
+// Free nav entries. Pro-only entries (Inbox, Webhooks) are spliced in
+// from ``PRO_NAV_ITEMS`` so ``strip-pro.sh`` removes them along with
+// the rest of the pro bundle.
+const baseNavItems = [
   { name: 'Dashboard', href: '/', icon: cilSpeedometer },
   { name: 'Tasks', href: '/tasks', icon: cilTask },
   { name: 'Templates', href: '/templates', icon: cilCopy },
@@ -30,6 +34,15 @@ const navItems = [
   { name: 'Repos', href: '/repos', icon: cilStorage },
   { name: 'Settings', href: '/settings', icon: cilSettings },
   { name: 'Logs', href: '/logs', icon: cilDescription },
+];
+
+// Inbox/Webhooks sit next to Tasks/Templates in pro; in free they're absent.
+const navItems = [
+  ...baseNavItems.slice(0, 2),       // Dashboard, Tasks
+  ...PRO_NAV_ITEMS.slice(0, 1),      // Inbox (pro)
+  baseNavItems[2],                   // Templates
+  ...PRO_NAV_ITEMS.slice(1),         // Webhooks (pro)
+  ...baseNavItems.slice(3),          // Ideas, Jobs, Repos, Settings, Logs
 ];
 
 export function Sidebar({ visible, onVisibleChange }: SidebarProps) {

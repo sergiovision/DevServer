@@ -29,6 +29,7 @@ from models.task_event import TaskEvent
 from models.task_run import TaskRun
 from services import (
     agent_backends,
+    compaction,
     error_classifier,
     git_ops,
     repo_map,
@@ -36,15 +37,18 @@ from services import (
     verifier,
 )
 from services.agent_backends import AgentBackend
+from services.notify import notify
 
 # Pro features: if the services/pro/ folder exists, load real implementations.
 # If it's absent (public MIT repo), fall back to no-op stubs so the free
 # version compiles and runs without errors.
 try:
     from services.pro import hooks as pro
+    _HAS_PRO = True
 except ImportError:
     from services._free_hooks import FreeHooks
     pro = FreeHooks()
+    _HAS_PRO = False
 
 
 # Rate-limit handling applies to every vendor — when the agent CLI
@@ -130,7 +134,9 @@ def _build_prompt(
     reality_signal_text: str = "",
     memory_recall_text: str = "",
     approved_plan_text: str = "",
+    compacted_context: str = "",
     is_resume: bool = False,
+    skip_verify: bool = False,
 ) -> str:
     """Build the user-message prompt for one Claude CLI invocation.
 
@@ -170,12 +176,18 @@ def _build_prompt(
 
     # Evidence-before-action blocks (Phase 1). Injected only when available so
     # the prompt stays clean for tasks where a block failed to generate.
-    if repo_map_text:
-        parts.extend(["", repo_map_text])
-    if reality_signal_text:
-        parts.extend(["", reality_signal_text])
-    if memory_recall_text:
-        parts.extend(["", memory_recall_text])
+    # NOTE: ``compacted_context`` is an alternative to the evidence stack —
+    # when set, it REPLACES repo_map/memory_recall/reality_signal because
+    # the summariser has already distilled prior attempts into what matters.
+    if compacted_context:
+        parts.extend(["", compacted_context])
+    else:
+        if repo_map_text:
+            parts.extend(["", repo_map_text])
+        if reality_signal_text:
+            parts.extend(["", reality_signal_text])
+        if memory_recall_text:
+            parts.extend(["", memory_recall_text])
     if approved_plan_text:
         parts.extend(["", approved_plan_text])
 
@@ -190,6 +202,60 @@ def _build_prompt(
         f"6. Commit your changes with a clear message referencing {task_key}",
         "7. Ensure all acceptance criteria are met",
     ])
+
+    if skip_verify:
+        parts.extend([
+            "",
+            "## Verification policy — SKIPPED",
+            "The operator has set `skip_verify=true` for this task. Do NOT run",
+            "the project's test suite, build, or lint commands. Do NOT spawn",
+            "`npm test`, `pytest`, `cargo test`, `go test`, `dotnet test`,",
+            "`npm run build`, `tsc`, `eslint`, `ruff`, or equivalent. Read and",
+            "edit code freely, but skip the verify step — the operator will",
+            "run checks manually after you finish. Proceed straight from the",
+            "implementation to the commit.",
+        ])
+
+    # Inter-task messaging prompt block — Pro-only. When the pro package
+    # is absent the /internal/tasks/.../messages/* endpoints do not exist,
+    # so teaching the agent to curl them would just cause confused 404s.
+    if _HAS_PRO:
+        parts.extend([
+            "",
+            "## Inter-task messaging (optional)",
+            "You can coordinate with other concurrently-running tasks or hand off",
+            "questions to the human operator via the DevServer messaging bus.",
+            "The subprocess env exposes $DEVSERVER_WORKER_URL and $DEVSERVER_TASK_KEY.",
+            "",
+            "- List live peer tasks:",
+            "    curl -s \"$DEVSERVER_WORKER_URL/internal/sessions/list\"",
+            "- Read your own inbox (drains unread by default):",
+            "    curl -s \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/messages/inbox\"",
+            "- Send a message to another task or to 'operator' (the human):",
+            "    curl -s -X POST \\",
+            "      \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/messages/send\" \\",
+            "      -H 'content-type: application/json' \\",
+            "      -d '{\"to_task_key\":\"operator\",\"kind\":\"note\",\"body\":\"...\"}'",
+            "",
+            "IMPORTANT: the operator can send you messages mid-run. Check your",
+            "inbox at the start of the task and again before any major commit or",
+            "irreversible step. If the operator's message contradicts or amends",
+            "the task description, follow the message — it is the most recent",
+            "human intent. Do NOT poll in a tight loop; once per major step is",
+            "enough.",
+            "",
+            "ALWAYS REPLY to operator messages — silent execution is a bug.",
+            "When you drain an operator message from your inbox:",
+            "1. Send a brief acknowledgement reply (to_task_key='operator', kind='response').",
+            "   • For a request/note: confirm receipt and state what you're about to do.",
+            "   • For a question (e.g. 'how are you doing?', 'is X done?'): answer it directly.",
+            "   • One or two sentences is plenty — no wall of text.",
+            "2. Then act on any actionable content.",
+            "3. Send a final 'done' reply when you have committed the requested change.",
+            "",
+            "Use send_message to peer tasks sparingly — only for blocking questions,",
+            "cross-task handoffs, or status updates another task is waiting on.",
+        ])
 
     if error_context:
         parts.extend(["", error_context])
@@ -213,6 +279,7 @@ async def _run_agent(
     db: AsyncSession,
     claude_mode: str = "max",
     max_turns: int | None = 100,
+    task_key: str | None = None,
 ) -> dict:
     """Execute a vendor-agnostic coding-agent CLI and collect its output.
 
@@ -244,6 +311,20 @@ async def _run_agent(
     )
     env = backend.build_env(billing_mode=claude_mode)
 
+    # Inject inter-task messaging env vars (Pro only). Agents can curl
+    # the worker via these two variables to read their inbox, list peers,
+    # or message other tasks mid-run. The endpoints they point at live
+    # in ``routes/pro_internal.py`` — if pro is stripped there is nothing
+    # to target, so we skip the injection entirely.
+    if task_key and _HAS_PRO:
+        if env is None:
+            env = dict(os.environ)
+        env.setdefault(
+            "DEVSERVER_WORKER_URL",
+            f"http://{settings.worker_host if settings.worker_host != '0.0.0.0' else '127.0.0.1'}:{settings.worker_port}",
+        )
+        env["DEVSERVER_TASK_KEY"] = task_key
+
     if backend.vendor == "google":
         gemini_dir = os.path.join(worktree_path, ".gemini")
         os.makedirs(gemini_dir, exist_ok=True)
@@ -253,6 +334,30 @@ async def _run_agent(
                 json.dump({"model": {"maxSessionTurns": max_turns if max_turns is not None else -1}}, f)
         except Exception as e:
             logger.warning("Failed to write .gemini/settings.json: %s", e)
+
+    # OpenAI / Azure OpenAI — propagate the custom endpoint overrides so
+    # Codex CLI targets Azure AI Foundry (or any OpenAI-compatible proxy)
+    # instead of api.openai.com. pydantic-settings reads these from .env
+    # into the Settings object but does NOT push them back into
+    # os.environ, so we forward them explicitly here.
+    if backend.vendor == "openai":
+        if settings.openai_base_url or settings.openai_api_version:
+            if env is None:
+                env = dict(os.environ)
+            if settings.openai_base_url:
+                env["OPENAI_BASE_URL"] = settings.openai_base_url
+            if settings.openai_api_version:
+                env["OPENAI_API_VERSION"] = settings.openai_api_version
+                # Azure's OpenAI-compatible SDKs also read AZURE_OPENAI_*.
+                env.setdefault("AZURE_OPENAI_API_VERSION", settings.openai_api_version)
+            if settings.openai_api_key:
+                # Azure Codex deployments read AZURE_OPENAI_API_KEY when
+                # the endpoint is an *.openai.azure.com URL. Mirror the
+                # existing OPENAI_API_KEY across both names so either
+                # client path works.
+                env.setdefault("AZURE_OPENAI_API_KEY", settings.openai_api_key)
+            if settings.openai_base_url:
+                env.setdefault("AZURE_OPENAI_ENDPOINT", settings.openai_base_url)
 
     timeout_seconds = timeout_minutes * 60
 
@@ -379,6 +484,12 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         acceptance = task.acceptance or ""
         skip_verify = bool(task.skip_verify)
         is_continuation = bool(getattr(task, "is_continuation", False))
+        # Context compaction — when a prior attempt called ``/compact`` (or the
+        # auto-compaction branch below fired on a previous run), this column
+        # holds a distilled summary of everything tried so far. Its presence
+        # causes _build_prompt to skip the Phase-1 evidence stack and inject
+        # the summary instead. See services/compaction.py.
+        compacted_context: str = getattr(task, "compacted_context", None) or ""
         backup_model = getattr(task, "backup_model", None)
         backup_vendor = getattr(task, "backup_vendor", None)
         # Resolve the agent backend for this task. Defaults to Anthropic
@@ -452,13 +563,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             # Update status
             await _update_task_status(db, task_id, "running")
             await _emit_event(db, task_id, None, "status_change", {"status": "running"})
-            if not await pro.tg_send_task_start(
+            await notify.task_start(
                 task_key=task_key, title=title, repo_name=repo_name,
-                mode=task.mode, vendor=agent_vendor, model=effective_model or "",
-            ):
-                await telegram.tg_send(
-                    f"\U0001f527 Starting: *{task_key}* -- {title} ({repo_name})"
-                )
+                mode=task.mode, vendor=agent_vendor,
+                model=effective_model or "",
+            )
 
             # Setup worktree
             worktree_path, branch_name = await git_ops.setup_worktree(
@@ -595,6 +704,43 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 task_log.flush()
 
             error_context = ""
+            # Continuation nudge — on a human-initiated /continue, the resume
+            # prompt would otherwise be a bare "Continue with the previous
+            # task." That's fine when resuming a crashed run, but a common
+            # reason operators hit Continue is because the task is in ``test``
+            # or ``failed`` and they've just dropped a follow-up message into
+            # the task inbox. Seed error_context so the resume prompt points
+            # the agent at its inbox before it does anything else.
+            if is_continuation and continuation_session_id:
+                if _HAS_PRO:
+                    error_context = (
+                        "## Continuation — human-initiated\n"
+                        "The operator has resumed this task. They may have "
+                        "dropped a new instruction into your inbox. FIRST, drain "
+                        "your inbox before doing anything else:\n"
+                        "    curl -s \"$DEVSERVER_WORKER_URL/internal/tasks/"
+                        "$DEVSERVER_TASK_KEY/messages/inbox\"\n"
+                        "\n"
+                        "If you find an operator message:\n"
+                        "1. REPLY FIRST — send a brief acknowledgement to "
+                        "to_task_key='operator' (kind='response'). For a "
+                        "question, answer it directly; for a request, confirm "
+                        "what you're about to do. Silent execution is a bug.\n"
+                        "2. Then act. Treat the message as the most recent "
+                        "human intent — it overrides any previous plan. "
+                        "Implement the new scope on the same branch and commit.\n"
+                        "3. Send a final 'done' reply when the change is "
+                        "committed, then finish.\n"
+                        "\n"
+                        "If the inbox is empty, resume where you left off."
+                    )
+                else:
+                    error_context = (
+                        "## Continuation — human-initiated\n"
+                        "The operator has resumed this task. Resume where "
+                        "you left off and finish the implementation. Commit "
+                        "your changes when done."
+                    )
             # Track recurring error classes across retries. Phase 1 #4:
             # if the same class hits twice, escalate instead of burning another full retry.
             error_class_counts: dict[str, int] = {}
@@ -613,8 +759,50 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 db=db, task_id=task_id, task=task, approved_plan_text=approved_plan_text,
             )
 
+            # Auto-compaction threshold: number of total attempts (primary
+            # + backup) after which we transparently summarise the transcript
+            # and reset the session to keep the vendor's context window from
+            # blowing up. 0 disables the automatic branch entirely — manual
+            # /internal/tasks/<key>/compact calls still work.
+            compact_after_attempts = 3
+            auto_compacted_once = bool(compacted_context)
+
             # Retry loop
             for attempt in range(1, repo.max_retries + 1):
+                # Auto-compaction check. Triggers at most once per task: if
+                # we've already consumed ``compact_after_attempts`` attempts
+                # and haven't compacted yet, summarise now and drop the
+                # session_id so the next attempt starts fresh with the
+                # summary as its only context.
+                if (
+                    not auto_compacted_once
+                    and compact_after_attempts > 0
+                    and attempt > compact_after_attempts
+                ):
+                    task_log.write(
+                        f"\n[auto-compact] attempt {attempt} > threshold "
+                        f"{compact_after_attempts}; summarising transcript\n"
+                    )
+                    task_log.flush()
+                    try:
+                        cres = await compaction.compact_task(
+                            db, task_id=task_id, reason="auto_after_retries",
+                        )
+                        if cres["ok"]:
+                            compacted_context = cres["summary"]
+                            session_id = None  # fresh start — summary IS the history
+                            auto_compacted_once = True
+                            task_log.write(
+                                f"[auto-compact] OK — {cres['chars_in']} → {cres['chars_out']} chars\n"
+                            )
+                            task_log.flush()
+                        else:
+                            # Failure is logged by compact_task; keep going.
+                            auto_compacted_once = True  # don't retry on every attempt
+                    except Exception:
+                        logger.exception("auto-compaction failed for %s", task_key)
+                        auto_compacted_once = True
+
                 # Phase 2 #6 — check budget before spending another retry.
                 state, reason = pro.check_budget(
                     cum_cost=cum_cost,
@@ -646,7 +834,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     })
                     task_log.write(f"\n[budget_warning] {reason}\n")
                     task_log.flush()
-                    await pro.tg_send_budget_warning(
+                    await notify.budget_warning(
                         task_key=task_key, repo_name=repo_name, reason=reason,
                         cum_cost=cum_cost, cum_wall_ms=cum_wall_ms,
                         max_cost=max_cost_usd, max_wall=max_wall_seconds,
@@ -685,7 +873,9 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     reality_signal_text=reality_signal_text,
                     memory_recall_text=memory_recall_text,
                     approved_plan_text=approved_plan_text,
+                    compacted_context=compaction.build_compacted_prompt_block(compacted_context),
                     is_resume=is_resume,
+                    skip_verify=skip_verify,
                 )
 
                 # Run the agent via the resolved backend. The variable is
@@ -709,6 +899,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     db=db,
                     claude_mode=claude_mode,
                     max_turns=effective_max_turns,
+                    task_key=task_key,
                 )
 
                 duration_ms = (time.monotonic_ns() // 1_000_000) - start_ms
@@ -944,15 +1135,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             )
                             await _update_task_status(db, task_id, "blocked")
                             await db.commit()
-                            if not await pro.tg_send_preflight_blocked(
+                            await notify.preflight_blocked(
                                 task_key=task_key,
                                 violations=[{"kind": v.kind, "detail": v.detail, "severity": v.severity}
                                             for v in getattr(preflight, "violations", [])],
-                            ):
-                                await telegram.tg_send(
-                                    f"\u26d4 *{task_key}* blocked by PR preflight\n"
-                                    f"Violations: {violations_str[:300]}"
-                                )
+                            )
                             success = False
                             break
 
@@ -1058,16 +1245,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         "commit": commit_label,
                         "patch": "Patch generated (no push)",
                     }
-                    if not await pro.tg_send_task_success(
+                    await notify.task_success(
                         task_key=task_key, git_flow=git_flow, pr_url=pr_url,
                         attempts=attempt, turns=num_turns, cost=cost_usd,
                         duration_ms=duration_ms, repo_name=repo_name,
-                    ):
-                        await telegram.tg_send(
-                            f"\u2705 *{task_key}* done\n"
-                            f"{git_flow_labels.get(git_flow, '')}\n"
-                            f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
-                        )
+                    )
 
                     # Option A — auto-generate downloadable patches for the
                     # branch so operators can apply the changes to a
@@ -1207,23 +1389,20 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         "to_vendor": effective_backup_vendor,
                         "to_model": backup_model or effective_model,
                     })
-                    if not await pro.tg_send_vendor_failover(
+                    await notify.vendor_failover(
                         task_key=task_key,
                         repo_name=repo_name,
                         from_vendor=agent_vendor,
                         from_model=effective_model,
                         to_vendor=effective_backup_vendor,
                         to_model=backup_model or effective_model,
-                    ):
-                        await telegram.tg_send(
-                            f"\U0001f504 *{task_key}* vendor failover: {from_label} → {to_label}"
-                        )
+                    )
                 else:
                     await _emit_event(db, task_id, None, "backup_model_switch", {
                         "from_model": effective_model,
                         "to_model": backup_model,
                     })
-                    await telegram.tg_send(
+                    await notify.text(
                         f"\U0001f504 *{task_key}* primary model failed — switching to backup: {backup_model}"
                     )
 
@@ -1285,6 +1464,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         memory_recall_text=memory_recall_text,
                         approved_plan_text=approved_plan_text,
                         is_resume=is_resume,
+                        skip_verify=skip_verify,
                     )
 
                     await _extend_lock(db, repo_name)
@@ -1303,6 +1483,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         db=db,
                         claude_mode=claude_mode,
                         max_turns=effective_max_turns,
+                        task_key=task_key,
                     )
 
                     duration_ms = (time.monotonic_ns() // 1_000_000) - start_ms
@@ -1499,15 +1680,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             ))
                         await db.commit()
 
-                        if not await pro.tg_send_task_success(
+                        await notify.task_success(
                             task_key=task_key, git_flow=git_flow, pr_url=pr_url,
                             attempts=attempt, turns=num_turns, cost=cost_usd,
                             duration_ms=duration_ms, repo_name=repo_name,
-                        ):
-                            await telegram.tg_send(
-                                f"\u2705 *{task_key}* done (failover: {failover_label})\n"
-                                f"Attempts: {attempt} | Turns: {num_turns} | Cost: ${cost_usd}"
-                            )
+                        )
 
                         try:
                             patchset = await pro.generate_patches(
@@ -1570,15 +1747,10 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         db.add(DailyStat(date=today, failed=1))
                     await db.commit()
 
-                    if not await pro.tg_send_budget_exceeded(
+                    await notify.budget_exceeded(
                         task_key=task_key, repo_name=repo_name,
                         reason=budget_reason, cum_cost=cum_cost, cum_wall_ms=cum_wall_ms,
-                    ):
-                        await telegram.tg_send(
-                            f"\u23f3 *{task_key}* blocked — budget exceeded\n"
-                            f"Repo: {repo_name}\n"
-                            f"Cost: ${cum_cost} / wall: {cum_wall_ms/1000:.0f}s"
-                        )
+                    )
                 else:
                     await _update_task_status(db, task_id, "failed")
                     today = datetime.now(timezone.utc).date()
@@ -1589,16 +1761,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         db.add(DailyStat(date=today, failed=1))
                     await db.commit()
 
-                    if not await pro.tg_send_task_failed(
+                    await notify.task_failed(
                         task_key=task_key, repo_name=repo_name,
                         error_context=error_context, attempts=repo.max_retries,
                         cost=cum_cost,
-                    ):
-                        await telegram.tg_send(
-                            f"\u274c *{task_key}* FAILED after {repo.max_retries} attempts\n"
-                            f"Repo: {repo_name}\n"
-                            f"Error: {error_context[:200]}"
-                        )
+                    )
 
         except Exception as exc:
             tb = traceback.format_exc()
@@ -1608,7 +1775,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 "error": str(exc),
                 "traceback": tb[-3000:],
             })
-            await telegram.tg_send(
+            await notify.text(
                 f"\u274c *{task_key}* crashed\n```\n{str(exc)[:300]}\n```"
             )
 
