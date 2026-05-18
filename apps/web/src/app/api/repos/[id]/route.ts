@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -16,8 +17,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     }
     return NextResponse.json(result.rows[0]);
   } catch (err) {
-    console.error(`GET /api/repos/${id} error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `GET /api/repos/${id}`);
   }
 }
 
@@ -30,8 +30,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     const allowed = [
       'name', 'gitea_url', 'gitea_owner', 'gitea_repo', 'clone_url',
       'default_branch', 'build_cmd', 'test_cmd', 'lint_cmd', 'pre_cmd',
-      'claude_model', 'claude_allowed_tools', 'gitea_token', 'max_retries',
-      'timeout_minutes', 'active',
+      'claude_model', 'claude_allowed_tools', 'gitea_token', 'provider',
+      'max_retries', 'timeout_minutes', 'active',
     ];
 
     const sets: string[] = [];
@@ -63,8 +63,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json(result.rows[0]);
   } catch (err) {
-    console.error(`PATCH /api/repos/${id} error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `PATCH /api/repos/${id}`);
   }
 }
 
@@ -79,7 +78,6 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     }
     return NextResponse.json({ deleted: true, id: repoId });
   } catch (err) {
-    console.error(`DELETE /api/repos/${id} error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `DELETE /api/repos/${id}`);
   }
 }

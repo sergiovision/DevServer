@@ -5,7 +5,7 @@
 
 ### An autonomous coding pipeline for AI coding agents.
 
-**Dispatches coding tasks → runs the agent in an isolated git worktree → verifies build/test/lint → opens a pull request on Gitea.**
+**Dispatches coding tasks → runs the agent in an isolated git worktree → verifies build/test/lint → opens a pull request on Gitea or GitHub.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=next.js&logoColor=white)](https://nextjs.org/)
@@ -28,6 +28,7 @@
 Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted orchestration platform** for people who already run their own infrastructure and want agents to work on their terms.
 
 - **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini (Google), Codex (OpenAI), or GLM (Zhipu AI). Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
+- **Multi-host git providers.** Each repo declares its provider — self-hosted **Gitea / Forgejo** or **GitHub** (incl. GitHub Enterprise Server). Clone/push auth and pull-request creation are provider-aware, with per-repo tokens and provider-specific global fallbacks. The provider auto-detects from the clone URL.
 - **Error-class-aware retries.** Failures are classified by 20+ regex rules (import errors, TS compile errors, test failures, merge conflicts, ...) and the next attempt receives a surgical remediation hint. Recurring hard errors *escalate* instead of burning retries.
 - **Multi-language repo map.** Before any code is written, the worker builds a regex-based symbol index (classes, functions, types) for 11 languages, so the agent starts with an accurate picture of the codebase.
 - **Dashboard with analytics.** Live counts, today's stats, per-vendor cost breakdown, average duration and turns-per-task charts, and a period selector for 7–90 days of history.
@@ -37,7 +38,7 @@ Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a C
 
 All of the above are real code paths, not marketing bullets. See [`apps/worker/src/services/`](apps/worker/src/services/) for the implementations.
 
-> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, night cycle, inter-task messaging bus + operator inbox, and webhook triggers are available in the pro version, write me to get it.
+> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, night cycle, inter-task messaging bus + operator inbox, and webhook triggers are available in the [Pro edition](README.PRO.md).
 
 ## Features
 
@@ -148,7 +149,7 @@ flowchart TB
 
   subgraph ext["External services"]
     direction TB
-    Gitea[("Gitea<br/>(PRs)")]
+    Gitea[("Gitea / GitHub<br/>(PRs)")]
     PG2[("PostgreSQL 17")]
     TG["Telegram"]
     Agents["Claude / Gemini<br/>Codex / GLM"]
@@ -219,6 +220,26 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 
 📂 [`apps/worker/src/services/agent_runner.py`](apps/worker/src/services/agent_runner.py)
 
+### 6. Multi-host git providers (Gitea + GitHub)
+
+DevServer is not tied to a single git host. Each repo carries a `provider`
+column (`gitea` default, or `github`) that drives how the worker
+authenticates clones/pushes and which pull-request REST API it calls:
+
+- **Auth** — Gitea uses the `https://token:<pat>@host` form; GitHub uses
+  `https://x-access-token:<pat>@github.com` (the only form that works for
+  classic PATs, fine-grained PATs, and App installation tokens alike).
+- **Tokens** — a per-repo token always wins; the global fallback is
+  provider-specific (`GITEA_TOKEN` vs. `GITHUB_TOKEN`). A Gitea token is
+  never reused for a GitHub repo.
+- **PRs** — Gitea's `/api/v1/.../pulls` or GitHub's `api.github.com`
+  (and `{host}/api/v3/...` for GitHub Enterprise Server).
+- **Auto-detect** — the provider is sniffed from the clone-URL host at
+  runtime, so a `github.com` URL is handled correctly even if the column
+  was never set; an explicit non-default value always wins.
+
+📂 [`apps/worker/src/services/git_ops.py`](apps/worker/src/services/git_ops.py) · migration [`009_github_provider.sql`](database/migrations/009_github_provider.sql)
+
 ## Tech Stack
 
 | Layer | Choice | Why |
@@ -229,7 +250,7 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 | **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
 | **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
 | **AI engines** | Claude, Gemini, Codex, GLM CLIs | DevServer *orchestrates* existing CLIs instead of reimplementing agent logic. |
-| **Git platform** | Gitea / Forgejo | Self-hosted and API-compatible. |
+| **Git platform** | Gitea / Forgejo · GitHub | Per-repo provider — self-hosted Gitea/Forgejo or GitHub (incl. Enterprise Server). |
 | **Notifications** | Telegram Bot API | Basic task lifecycle alerts. |
 | **Charts** | Chart.js + react-chartjs-2 | Lightweight, no-frills analytics visualizations. |
 | **Package mgmt** | `uv` (Python) · `npm` (Node) | Fast, cacheable, boring. |
@@ -243,7 +264,7 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 - PostgreSQL >= 16
 - At least one agent CLI installed and authenticated (e.g. `claude login`)
 - `uv` for Python dependency management — [install guide](https://docs.astral.sh/uv/)
-- A Gitea (or Forgejo) instance with a personal access token
+- A Gitea (or Forgejo) instance, or GitHub, with a personal access token
 
 ### Local setup (host processes)
 
@@ -251,7 +272,7 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 git clone https://github.com/<YOUR_GITHUB_HANDLE>/DevServer.git
 cd DevServer
 cp config/.env.example .env
-# edit .env — fill in PGPASSWORD, GITEA_TOKEN, TELEGRAM_*, ANTHROPIC_API_KEY
+# edit .env — fill in PGPASSWORD, GITEA_TOKEN and/or GITHUB_TOKEN, TELEGRAM_*, ANTHROPIC_API_KEY
 
 ./scripts/migrate.sh          # runs all SQL migrations
 ./scripts/start.sh --dev      # starts worker + web in dev mode
@@ -385,11 +406,11 @@ apps/
       error_classifier.py             → 20 regex rules → targeted retry hints
       llm_client.py                   → Vendor-agnostic system LLM client
       verifier.py                     → Pre/build/test/lint runner
-      git_ops.py                      → Git worktree management + Gitea PR creation
+      git_ops.py                      → Git worktree management + Gitea/GitHub PR creation
     src/routes/
       internal.py                     → Status, pause, cancel, generate-task, generate-plan
 database/
-  migrations/                         → Versioned SQL migrations (001–007)
+  migrations/                         → Versioned SQL migrations (001–009)
 config/
   .env.example                        → Sanitised environment template
 docker/
@@ -419,7 +440,7 @@ DevServer ships as two editions:
 | Settings / system LLM configuration | ✅ | ✅ |
 | Basic Telegram notifications | ✅ | ✅ |
 | Backup & restore scripts | ✅ | ✅ |
-| Git worktree isolation + Gitea PRs | ✅ | ✅ |
+| Git worktree isolation + Gitea/GitHub PRs | ✅ | ✅ |
 | Full build/test/lint verifier | ✅ | ✅ |
 | Reality gate (0–100 evidence scoring) | — | ✅ |
 | pgvector memory (past task recall) | — | ✅ |
@@ -429,6 +450,8 @@ DevServer ships as two editions:
 | Patch export (`git format-patch` + `combined.mbox`) | — | ✅ |
 | Night cycle (autonomous overnight batch) | — | ✅ |
 | Rich Telegram (inline keyboards, daily digest) | — | ✅ |
+| Inter-task messaging bus + operator inbox | — | ✅ |
+| Webhook triggers (Gitea/GitHub/Sentry/Grafana → task) | — | ✅ |
 | Hardened Docker Compose (resource limits, log rotation, security) | — | ✅ |
 
 The free edition compiles and runs without errors — the agent runner
@@ -459,7 +482,7 @@ Contributions and issues are welcome.
 
 DevServer is built and maintained in my spare time. If it saves you hours of
 work or you'd like to see development continue, consider sending a tip — it
-directly funds new features, faster fixes, and ongoing maintenance. With generous donation you can receive PRO version.
+directly funds new features, faster fixes, and ongoing maintenance.
 
 **USDT (TRC20 — Tron network):**
 

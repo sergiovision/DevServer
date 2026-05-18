@@ -4,14 +4,32 @@ import React, { createContext, useContext, useState, useCallback, useEffect, use
 
 type NotificationType = 'error' | 'warning' | 'info';
 
+interface DbDiagnostic {
+  kind: string;
+  code: string;
+  userMessage: string;
+  hint: string | null;
+}
+
 interface Notification {
   id: string;
   message: string;
   type: NotificationType;
+  // Sticky notifications never auto-dismiss — used for DB-down diagnostics
+  // that the operator needs to act on.
+  sticky?: boolean;
+  // Optional second line shown beneath the main message (e.g. remediation hint).
+  detail?: string;
+}
+
+interface NotifyOptions {
+  type?: NotificationType;
+  sticky?: boolean;
+  detail?: string;
 }
 
 interface NotificationContextValue {
-  notify: (message: string, type?: NotificationType) => void;
+  notify: (message: string, typeOrOpts?: NotificationType | NotifyOptions) => void;
 }
 
 const NotificationContext = createContext<NotificationContextValue>({
@@ -57,19 +75,29 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     setStack(prev => prev.filter(n => n.id !== id));
   }, []);
 
-  const notify = useCallback((message: string, type: NotificationType = 'error') => {
-    setStack(prev => {
-      // Deduplicate: skip if the same message is already visible
-      if (prev.some(n => n.message === message)) return prev;
-      const id = Math.random().toString(36).slice(2);
-      const timer = setTimeout(() => {
-        timers.current.delete(id);
-        setStack(s => s.filter(n => n.id !== id));
-      }, 5000);
-      timers.current.set(id, timer);
-      return [...prev, { id, message, type }];
-    });
-  }, []);
+  const notify = useCallback(
+    (message: string, typeOrOpts: NotificationType | NotifyOptions = 'error') => {
+      const opts: NotifyOptions =
+        typeof typeOrOpts === 'string' ? { type: typeOrOpts } : typeOrOpts;
+      const type: NotificationType = opts.type ?? 'error';
+      const sticky = !!opts.sticky;
+      const detail = opts.detail;
+      setStack(prev => {
+        // Deduplicate: skip if the same message is already visible
+        if (prev.some(n => n.message === message)) return prev;
+        const id = Math.random().toString(36).slice(2);
+        if (!sticky) {
+          const timer = setTimeout(() => {
+            timers.current.delete(id);
+            setStack(s => s.filter(n => n.id !== id));
+          }, 5000);
+          timers.current.set(id, timer);
+        }
+        return [...prev, { id, message, type, sticky, detail }];
+      });
+    },
+    [],
+  );
 
   // Patch global fetch to intercept HTTP errors automatically
   useEffect(() => {
@@ -89,7 +117,32 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       try {
         const response = await originalFetch.current!(...args);
         if (!response.ok && isInternal) {
-          notify(statusMessage(response.status), 'error');
+          // 503 may carry a structured DB diagnostic from apiErrorResponse.
+          // Peek the body via a clone so the original stays readable.
+          let dbInfo: DbDiagnostic | null = null;
+          if (response.status === 503) {
+            try {
+              const cloned = response.clone();
+              const ctype = cloned.headers.get('content-type') || '';
+              if (ctype.includes('application/json')) {
+                const body = await cloned.json();
+                if (body && typeof body === 'object' && body.db && body.db.userMessage) {
+                  dbInfo = body.db as DbDiagnostic;
+                }
+              }
+            } catch {
+              // Non-JSON or read error — fall through to generic 503 message.
+            }
+          }
+          if (dbInfo) {
+            notify(dbInfo.userMessage, {
+              type: 'error',
+              sticky: true,
+              detail: dbInfo.hint || undefined,
+            });
+          } else {
+            notify(statusMessage(response.status), 'error');
+          }
         }
         return response;
       } catch (err) {
@@ -142,7 +195,14 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             animation: 'notif-slide-up 0.2s ease-out',
           }}
         >
-          <span style={{ flex: 1 }}>{current.message}</span>
+          <span style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span>{current.message}</span>
+            {current.detail && (
+              <span style={{ opacity: 0.85, fontSize: '0.8rem', fontWeight: 400 }}>
+                {current.detail}
+              </span>
+            )}
+          </span>
           {stack.length > 1 && (
             <span style={{ opacity: 0.75, fontSize: '0.8rem', whiteSpace: 'nowrap' }}>
               +{stack.length - 1} more

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pauseQueue, resumeQueue } from '@/lib/queue';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 export async function POST(request: NextRequest) {
   try {
@@ -16,7 +17,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
     }
   } catch (err) {
-    console.error('POST /api/queue/pause error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'POST /api/queue/pause');
   }
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 const UPDATABLE = new Set([
   'parent_id',
@@ -43,8 +44,7 @@ export async function PATCH(
     }
     return NextResponse.json(result.rows[0]);
   } catch (err) {
-    console.error('PATCH /api/ideas/[id] error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'PATCH /api/ideas/[id]');
   }
 }
 
@@ -64,7 +64,6 @@ export async function DELETE(
     }
     return NextResponse.json({ ok: true });
   } catch (err) {
-    console.error('DELETE /api/ideas/[id] error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'DELETE /api/ideas/[id]');
   }
 }

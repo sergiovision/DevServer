@@ -576,6 +576,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 default_branch=repo.default_branch,
                 task_key=task_key,
                 gitea_token=repo.gitea_token,
+                provider=getattr(repo, "provider", None),
                 continuation=is_continuation,
             )
 
@@ -632,6 +633,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     gitea_owner=repo.gitea_owner,
                     gitea_repo=repo.gitea_repo,
                     gitea_token=repo.gitea_token,
+                    provider=getattr(repo, "provider", "") or "",
+                    clone_url=repo.clone_url,
                 )
                 reality_signal_text = reality_signal_text_raw
                 await _emit_event(db, task_id, None, "reality_signal", {
@@ -1186,6 +1189,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             gitea_owner=repo.gitea_owner,
                             gitea_repo=repo.gitea_repo,
                             gitea_token=repo.gitea_token,
+                            provider=getattr(repo, "provider", None),
+                            clone_url=repo.clone_url,
                         )
                         if not pr_url:
                             logger.warning("PR creation failed for %s, branch was pushed", task_key)
@@ -1643,6 +1648,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                                 gitea_owner=repo.gitea_owner,
                                 gitea_repo=repo.gitea_repo,
                                 gitea_token=repo.gitea_token,
+                                provider=getattr(repo, "provider", None),
+                                clone_url=repo.clone_url,
                             )
                         elif git_flow == "commit":
                             await git_ops.commit_to_default_branch(

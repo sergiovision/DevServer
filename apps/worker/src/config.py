@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     gitea_owner: str = ""
     gitea_token: str = ""
 
+    # GitHub — optional global fallback token used only by repos whose
+    # provider is 'github' and that do not carry their own per-repo token.
+    # The Gitea token is deliberately NOT reused for GitHub repos: GitHub
+    # would reject it with a misleading "Invalid username or token" error.
+    github_token: str = ""
+
     # Notification channels (zero-config, opt-in via env vars).
     # Each backend is enabled by its own set of env vars — the dispatcher
     # fans notifications out to every configured channel. Leave blank to

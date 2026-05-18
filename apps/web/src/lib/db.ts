@@ -1,4 +1,5 @@
 import { Pool, QueryResult, QueryResultRow } from 'pg';
+import { classifyDbError, DatabaseError } from './db-errors';
 
 // PGPASSWORD is required — we deliberately do NOT ship a hardcoded fallback.
 // Missing the env var at boot is a configuration error, not something we want
@@ -29,12 +30,18 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   params?: unknown[],
 ): Promise<QueryResult<T>> {
   const start = Date.now();
-  const result = await pool.query<T>(text, params);
-  const duration = Date.now() - start;
-  if (duration > 1000) {
-    console.warn(`Slow query (${duration}ms):`, text.slice(0, 100));
+  try {
+    const result = await pool.query<T>(text, params);
+    const duration = Date.now() - start;
+    if (duration > 1000) {
+      console.warn(`Slow query (${duration}ms):`, text.slice(0, 100));
+    }
+    return result;
+  } catch (err) {
+    const info = classifyDbError(err);
+    if (info) throw new DatabaseError(info, err);
+    throw err;
   }
-  return result;
 }
 
 export { pool };

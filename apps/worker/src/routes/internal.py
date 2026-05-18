@@ -278,6 +278,7 @@ async def refresh_git(repo_id: int):
         clone_url=repo.clone_url,
         default_branch=repo.default_branch,
         gitea_token=repo.gitea_token or None,
+        provider=getattr(repo, "provider", None),
     )
     if not result["ok"]:
         raise HTTPException(status_code=500, detail=result["message"])

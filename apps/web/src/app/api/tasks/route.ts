@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -37,8 +38,7 @@ export async function GET(request: NextRequest) {
     const result = await query(sql, params);
     return NextResponse.json(result.rows);
   } catch (err) {
-    console.error('GET /api/tasks error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'GET /api/tasks');
   }
 }
 
@@ -96,7 +96,6 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(result.rows[0], { status: 201 });
   } catch (err) {
-    console.error('POST /api/tasks error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'POST /api/tasks');
   }
 }

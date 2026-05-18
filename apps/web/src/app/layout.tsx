@@ -20,6 +20,15 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" data-coreui-theme="light">
+      <head>
+        {process.env.NODE_ENV !== 'production' && (
+          <script
+            dangerouslySetInnerHTML={{
+              __html: `(()=>{const o=console.log;console.log=function(){if(typeof arguments[0]==='string'&&arguments[0].indexOf('[Fast Refresh]')===0)return;return o.apply(this,arguments);};})();`,
+            }}
+          />
+        )}
+      </head>
       <body>
         <ThemeProvider>
           <NotificationProvider>

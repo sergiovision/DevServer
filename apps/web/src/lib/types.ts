@@ -15,6 +15,7 @@ export interface Repo {
   max_retries: number;
   timeout_minutes: number;
   gitea_token: string;
+  provider: 'gitea' | 'github';
   active: boolean;
   created_at: string;
   updated_at: string;

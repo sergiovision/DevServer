@@ -1,4 +1,5 @@
 import { query } from '@/lib/db';
+import { tryDbPage } from '@/lib/db-page';
 import type { Repo } from '@/lib/types';
 import { RepoList } from '@/components/RepoList';
 import Link from 'next/link';
@@ -6,14 +7,12 @@ import Link from 'next/link';
 export const dynamic = 'force-dynamic';
 
 export default async function ReposPage() {
-  let repos: Repo[] = [];
-
-  try {
+  const r = await tryDbPage(async () => {
     const result = await query<Repo>('SELECT * FROM repos ORDER BY name');
-    repos = result.rows;
-  } catch (err) {
-    console.error('Failed to fetch repos:', err);
-  }
+    return result.rows;
+  });
+
+  if (!r.ok) return r.panel;
 
   return (
     <>
@@ -23,7 +22,7 @@ export default async function ReposPage() {
         </Link>
         <h2 className="mb-0">Repositories</h2>
       </div>
-      <RepoList repos={repos} />
+      <RepoList repos={r.data} />
     </>
   );
 }

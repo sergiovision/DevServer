@@ -61,7 +61,8 @@ logger = logging.getLogger(__name__)
 
 VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
     "anthropic": [
-        {"id": "claude-opus-4-6",              "label": "Claude Opus 4.6 (most capable)"},
+        {"id": "claude-opus-4-7",              "label": "Claude Opus 4.7 (most capable)"},
+        {"id": "claude-opus-4-6",              "label": "Claude Opus 4.6"},
         {"id": "claude-sonnet-4-6",            "label": "Claude Sonnet 4.6"},
         {"id": "claude-haiku-4-5-20251001",    "label": "Claude Haiku 4.5"},
         {"id": "claude-opus-4-5",              "label": "Claude Opus 4.5"},

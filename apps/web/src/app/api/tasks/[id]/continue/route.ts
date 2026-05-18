@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { enqueueTask } from '@/lib/queue';
 import { WORKER_URL } from '@/lib/worker-url';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -74,7 +75,6 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json({ success: true, jobId });
   } catch (err) {
-    console.error(`POST /api/tasks/${id}/continue error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `POST /api/tasks/${id}/continue`);
   }
 }

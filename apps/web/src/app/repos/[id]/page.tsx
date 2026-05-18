@@ -1,4 +1,5 @@
 import { query } from '@/lib/db';
+import { tryDbPage } from '@/lib/db-page';
 import { notFound } from 'next/navigation';
 import type { Repo } from '@/lib/types';
 import { RepoForm } from '@/components/RepoForm';
@@ -24,21 +25,19 @@ export default async function RepoDetailPage({ params }: PageProps) {
   const repoId = parseInt(id);
   if (isNaN(repoId)) notFound();
 
-  let repo: Repo | null = null;
-
-  try {
+  const r = await tryDbPage(async () => {
     const result = await query<Repo>('SELECT * FROM repos WHERE id = $1', [repoId]);
-    if (result.rows.length === 0) notFound();
-    repo = result.rows[0];
-  } catch (err) {
-    console.error('Failed to fetch repo:', err);
-    notFound();
-  }
+    return result.rows[0] ?? null;
+  });
+
+  if (!r.ok) return r.panel;
+  if (r.data === null) notFound();
+  const repo = r.data;
 
   return (
     <>
-      <h2 className="mb-4">Edit Repository: {repo!.name}</h2>
-      <RepoForm repo={repo!} />
+      <h2 className="mb-4">Edit Repository: {repo.name}</h2>
+      <RepoForm repo={repo} />
     </>
   );
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -72,7 +73,6 @@ export async function GET(request: NextRequest) {
       vendor_totals: vendorTotalsResult.rows,
     });
   } catch (err) {
-    console.error('GET /api/analytics error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'GET /api/analytics');
   }
 }

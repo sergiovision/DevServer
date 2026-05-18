@@ -29,6 +29,7 @@ export function RepoForm({ repo }: RepoFormProps) {
 
   const [formData, setFormData] = useState({
     name: repo?.name || '',
+    provider: repo?.provider || 'gitea',
     gitea_url: repo?.gitea_url || '',
     gitea_owner: repo?.gitea_owner || '',
     gitea_repo: repo?.gitea_repo || '',
@@ -53,7 +54,17 @@ export function RepoForm({ repo }: RepoFormProps) {
   ) => {
     const target = e.target as HTMLInputElement;
     const value = target.type === 'checkbox' ? target.checked : target.value;
-    setFormData((prev) => ({ ...prev, [target.name]: value }));
+    setFormData((prev) => {
+      const next = { ...prev, [target.name]: value };
+      // Auto-detect the provider from the clone URL host as the user types
+      // it. They can still override via the Provider select afterwards.
+      if (target.name === 'clone_url' && typeof value === 'string') {
+        next.provider = /^https?:\/\/([^/@]+@)?github\.com\//i.test(value)
+          ? 'github'
+          : 'gitea';
+      }
+      return next;
+    });
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -100,32 +111,56 @@ export function RepoForm({ repo }: RepoFormProps) {
         {error && <CAlert color="danger">{error}</CAlert>}
         <CForm onSubmit={handleSubmit}>
           <CRow className="mb-3">
-            <CCol md={6}>
+            <CCol md={4}>
               <CFormLabel>Name</CFormLabel>
               <CFormInput name="name" value={formData.name} onChange={handleChange} required />
             </CCol>
+            <CCol md={2}>
+              <CFormLabel>Provider</CFormLabel>
+              <CFormSelect name="provider" value={formData.provider} onChange={handleChange}>
+                <option value="gitea">Gitea</option>
+                <option value="github">GitHub</option>
+              </CFormSelect>
+            </CCol>
             <CCol md={6}>
               <CFormLabel>Clone URL</CFormLabel>
-              <CFormInput name="clone_url" value={formData.clone_url} onChange={handleChange} required />
+              <CFormInput
+                name="clone_url"
+                value={formData.clone_url}
+                onChange={handleChange}
+                placeholder="https://github.com/owner/repo.git"
+                required
+              />
             </CCol>
           </CRow>
 
           <CRow className="mb-3">
             <CCol md={3}>
-              <CFormLabel>Gitea URL</CFormLabel>
-              <CFormInput name="gitea_url" value={formData.gitea_url} onChange={handleChange} />
+              <CFormLabel>{formData.provider === 'github' ? 'Host URL (optional)' : 'Gitea URL'}</CFormLabel>
+              <CFormInput
+                name="gitea_url"
+                value={formData.gitea_url}
+                onChange={handleChange}
+                placeholder={formData.provider === 'github' ? 'https://github.com' : 'https://gitea.example.com'}
+              />
             </CCol>
             <CCol md={3}>
-              <CFormLabel>Gitea Owner</CFormLabel>
-              <CFormInput name="gitea_owner" value={formData.gitea_owner} onChange={handleChange} />
+              <CFormLabel>Owner</CFormLabel>
+              <CFormInput name="gitea_owner" value={formData.gitea_owner} onChange={handleChange} placeholder="org or user" />
             </CCol>
             <CCol md={3}>
-              <CFormLabel>Gitea Repo</CFormLabel>
-              <CFormInput name="gitea_repo" value={formData.gitea_repo} onChange={handleChange} />
+              <CFormLabel>Repo</CFormLabel>
+              <CFormInput name="gitea_repo" value={formData.gitea_repo} onChange={handleChange} placeholder="repository name" />
             </CCol>
             <CCol md={3}>
-              <CFormLabel>Gitea Token</CFormLabel>
-              <CFormInput name="gitea_token" type="password" value={formData.gitea_token} onChange={handleChange} placeholder="API token" />
+              <CFormLabel>{formData.provider === 'github' ? 'GitHub Token' : 'Gitea Token'}</CFormLabel>
+              <CFormInput
+                name="gitea_token"
+                type="password"
+                value={formData.gitea_token}
+                onChange={handleChange}
+                placeholder={formData.provider === 'github' ? 'ghp_… (repo scope)' : 'API token'}
+              />
             </CCol>
           </CRow>
 

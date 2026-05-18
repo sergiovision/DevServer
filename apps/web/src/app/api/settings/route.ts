@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 export async function GET() {
   try {
@@ -10,8 +11,7 @@ export async function GET() {
     }
     return NextResponse.json(settings);
   } catch (err) {
-    console.error('GET /api/settings error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'GET /api/settings');
   }
 }
 
@@ -32,7 +32,6 @@ export async function PUT(request: NextRequest) {
 
     return NextResponse.json({ success: true, key, value });
   } catch (err) {
-    console.error('PUT /api/settings error:', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, 'PUT /api/settings');
   }
 }

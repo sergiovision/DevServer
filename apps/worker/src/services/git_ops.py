@@ -8,12 +8,55 @@ to the default branch and checks out a fresh task branch.
 import asyncio
 import logging
 import os
+from urllib.parse import urlsplit
 
 import httpx
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_provider(clone_url: str, provider: str | None) -> str:
+    """Resolve the git-host provider for a repo.
+
+    An explicit ``provider`` ('gitea' | 'github') wins. When it is missing
+    or unrecognised the host of the clone URL is sniffed so a github.com
+    repo always behaves correctly even if the column was never set.
+    """
+    if provider:
+        p = provider.strip().lower()
+        if p in ("gitea", "github"):
+            return p
+    host = (urlsplit(clone_url).hostname or "").lower()
+    if host == "github.com" or host.endswith(".github.com"):
+        return "github"
+    return "gitea"
+
+
+def _resolve_token(repo_token: str | None, provider: str) -> str:
+    """Pick the token for a repo without leaking one provider's into another.
+
+    A per-repo token always wins. The global fallback is provider-specific:
+    GitHub never falls back to ``settings.gitea_token`` (GitHub would reject
+    it with a misleading "Invalid username or token" error).
+    """
+    if repo_token:
+        return repo_token
+    if provider == "github":
+        return settings.github_token or ""
+    return settings.gitea_token or ""
+
+
+def _parse_owner_repo(clone_url: str) -> tuple[str, str]:
+    """Best-effort (owner, repo) extraction from an HTTPS clone URL."""
+    path = urlsplit(clone_url).path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    parts = [p for p in path.split("/") if p]
+    if len(parts) >= 2:
+        return parts[-2], parts[-1]
+    return "", (parts[-1] if parts else "")
 
 
 async def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
@@ -32,9 +75,21 @@ async def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     return proc.returncode, stdout.decode(), stderr.decode()
 
 
-def _auth_url(clone_url: str, token: str) -> str:
-    """Inject token into HTTPS clone URL."""
-    return clone_url.replace("https://", f"https://token:{token}@", 1)
+def _auth_url(clone_url: str, token: str, provider: str = "gitea") -> str:
+    """Inject a token into an HTTPS clone URL using the provider's scheme.
+
+    Gitea accepts ``token:<pat>@host`` — any username works because the
+    token is validated as the password. GitHub rejects that form
+    ("Password authentication is not supported for Git operations") and
+    expects the token under a recognised username. ``x-access-token`` is
+    the username GitHub itself uses for App/installation tokens and it
+    also works for classic and fine-grained PATs, so it is the single
+    form that works for every GitHub token type.
+    """
+    if not token or not clone_url.startswith("https://"):
+        return clone_url
+    userinfo = f"x-access-token:{token}" if provider == "github" else f"token:{token}"
+    return clone_url.replace("https://", f"https://{userinfo}@", 1)
 
 
 def get_worktree_path(repo_name: str) -> str:
@@ -49,6 +104,7 @@ async def setup_worktree(
     task_key: str,
     gitea_token: str | None = None,
     *,
+    provider: str | None = None,
     continuation: bool = False,
 ) -> tuple[str, str]:
     """Prepare the per-repo worktree for a new task.
@@ -63,8 +119,9 @@ async def setup_worktree(
 
     Returns (worktree_path, branch_name).
     """
-    token = gitea_token or settings.gitea_token or ""
-    auth_url = _auth_url(clone_url, token)
+    resolved_provider = _detect_provider(clone_url, provider)
+    token = _resolve_token(gitea_token, resolved_provider)
+    auth_url = _auth_url(clone_url, token, resolved_provider)
 
     bare_repo = os.path.join(settings.bare_repo_dir, repo_name)
     # Sanitize: spaces and other invalid chars → hyphens, lowercase
@@ -124,7 +181,7 @@ async def setup_worktree(
             )
             return await setup_worktree(
                 repo_name, clone_url, default_branch, task_key,
-                gitea_token, continuation=False,
+                gitea_token, provider=provider, continuation=False,
             )
         return worktree_path, branch_name
 
@@ -202,13 +259,15 @@ async def refresh_repo(
     clone_url: str,
     default_branch: str,
     gitea_token: str | None = None,
+    provider: str | None = None,
 ) -> dict:
     """Clone bare repo + worktree if missing, or fetch + pull if they exist.
 
     Returns a status dict with keys: ok, message, cloned, fetched.
     """
-    token = gitea_token or settings.gitea_token or ""
-    auth_url = _auth_url(clone_url, token)
+    resolved_provider = _detect_provider(clone_url, provider)
+    token = _resolve_token(gitea_token, resolved_provider)
+    auth_url = _auth_url(clone_url, token, resolved_provider)
     bare_repo = os.path.join(settings.bare_repo_dir, repo_name)
     worktree_path = get_worktree_path(repo_name)
 
@@ -420,9 +479,19 @@ async def create_gitea_pr(
     gitea_owner: str | None = None,
     gitea_repo: str | None = None,
     gitea_token: str | None = None,
+    provider: str | None = None,
+    clone_url: str = "",
 ) -> str | None:
-    """Push branch and create a Gitea pull request. Returns PR URL or None."""
-    # Push branch
+    """Push the branch and open a pull request. Returns the PR URL or None.
+
+    Provider-aware despite the legacy ``gitea`` name: Gitea uses
+    ``{base}/api/v1/repos/{owner}/{repo}/pulls`` with a ``token`` auth
+    header, GitHub uses ``api.github.com`` (or ``{host}/api/v3`` for
+    GitHub Enterprise Server) with a Bearer token. The branch push works
+    for both because ``origin`` was rewritten to a provider-correct
+    authenticated URL in ``setup_worktree``.
+    """
+    # Push branch (origin already carries provider-correct auth from setup)
     rc, out, err = await _run(
         ["git", "push", "origin", branch_name, "--force-with-lease"],
         cwd=worktree_path,
@@ -431,21 +500,45 @@ async def create_gitea_pr(
         logger.error("git push failed: %s", err)
         return None
 
-    # Create PR via Gitea API
-    token = gitea_token or settings.gitea_token or ""
-    base_url = gitea_url or settings.gitea_url
-    owner = gitea_owner or settings.gitea_owner
-    repo = gitea_repo or ""
+    resolved_provider = _detect_provider(clone_url or gitea_url or "", provider)
+    token = _resolve_token(gitea_token, resolved_provider)
 
-    api_url = f"{base_url}/api/v1/repos/{owner}/{repo}/pulls"
+    owner = gitea_owner or ""
+    repo = gitea_repo or ""
+    if (not owner or not repo) and clone_url:
+        parsed_owner, parsed_repo = _parse_owner_repo(clone_url)
+        owner = owner or parsed_owner
+        repo = repo or parsed_repo
+
+    if resolved_provider == "github":
+        host = (urlsplit(clone_url or gitea_url or "").hostname or "github.com").lower()
+        if host == "github.com" or host.endswith(".github.com"):
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
+        else:
+            # GitHub Enterprise Server
+            api_url = f"https://{host}/api/v3/repos/{owner}/{repo}/pulls"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+        }
+        label = "GitHub"
+    else:
+        base_url = gitea_url or settings.gitea_url
+        owner = owner or settings.gitea_owner
+        api_url = f"{base_url}/api/v1/repos/{owner}/{repo}/pulls"
+        headers = {
+            "Authorization": f"token {token}",
+            "Content-Type": "application/json",
+        }
+        label = "Gitea"
+
     try:
         async with httpx.AsyncClient(timeout=30, verify=not settings.git_ssl_no_verify) as client:
             resp = await client.post(
                 api_url,
-                headers={
-                    "Authorization": f"token {token}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 json={
                     "title": title,
                     "body": body,
@@ -456,10 +549,10 @@ async def create_gitea_pr(
             data = resp.json()
             pr_url = data.get("html_url")
             if not pr_url:
-                logger.error("Gitea PR creation failed: %s", data)
+                logger.error("%s PR creation failed (%s): %s", label, resp.status_code, data)
                 return None
             logger.info("PR created: %s", pr_url)
             return pr_url
     except Exception:
-        logger.exception("Gitea PR creation error")
+        logger.exception("%s PR creation error", label)
         return None

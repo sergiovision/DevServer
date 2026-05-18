@@ -8,7 +8,7 @@ const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
 const port = parseInt(process.env.PORT || '3000', 10);
 
-const app = next({ dev, hostname, port });
+const app = next({ dev, hostname, port, webpack: true });
 const handle = app.getRequestHandler();
 
 interface WsClient {
@@ -122,9 +122,8 @@ app.prepare().then(() => {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
       });
-    } else {
-      socket.destroy();
     }
+    // else: let Next's auto-attached upgrade listener handle /_next/webpack-hmr
   });
 
   // Start queue stats broadcast every 5 seconds

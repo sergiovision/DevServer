@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS repos (
     timeout_minutes     INT          DEFAULT 60,
     claude_md_path      VARCHAR(256) DEFAULT 'CLAUDE.md',
     gitea_token         VARCHAR(256) DEFAULT '',
+    -- Git host provider: 'gitea' (default, legacy behaviour) or 'github'.
+    -- Controls the clone-URL auth scheme and which PR REST API is used.
+    provider            VARCHAR(16)  NOT NULL DEFAULT 'gitea',
     active              BOOLEAN      DEFAULT true,
     created_at          TIMESTAMPTZ  DEFAULT NOW(),
     updated_at          TIMESTAMPTZ  DEFAULT NOW()

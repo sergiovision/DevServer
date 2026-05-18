@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 const WORKER_URL = process.env.WORKER_URL || 'http://localhost:8000';
 
@@ -26,7 +27,6 @@ export async function POST(_request: NextRequest, context: RouteContext) {
 
     return NextResponse.json(data);
   } catch (err) {
-    console.error(`POST /api/repos/${id}/refresh-git error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `POST /api/repos/${id}/refresh-git`);
   }
 }

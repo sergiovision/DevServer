@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
+import { apiErrorResponse } from '@/lib/api-errors';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -14,8 +15,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     }
     return NextResponse.json(result.rows[0]);
   } catch (err) {
-    console.error(`GET /api/templates/${id} error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `GET /api/templates/${id}`);
   }
 }
 
@@ -60,8 +60,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     return NextResponse.json(result.rows[0]);
   } catch (err) {
-    console.error(`PATCH /api/templates/${id} error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `PATCH /api/templates/${id}`);
   }
 }
 
@@ -74,7 +73,6 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
     }
     return NextResponse.json({ deleted: true, id: parseInt(id) });
   } catch (err) {
-    console.error(`DELETE /api/templates/${id} error:`, err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `DELETE /api/templates/${id}`);
   }
 }
