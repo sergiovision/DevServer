@@ -378,6 +378,44 @@ async def task_log_tail(task_key: str, lines: int = 50):
         return {"lines": []}
 
 
+@router.get("/tasks/{task_key}/prediction")
+async def task_prediction(task_key: str):
+    """Forecast a task's outcome (migration 010).
+
+    Free tier returns a repo-level baseline from ``task_runs``. The Pro
+    edition first tries the embeddings-based similar-task predictor and only
+    falls back to the baseline when there's no similar-task signal. One
+    endpoint, both editions — the response carries a ``basis`` field
+    (``similar`` vs ``repo``) so the UI can label the source.
+    """
+    from services import outcome
+
+    async with async_session() as db:
+        res = await db.execute(select(Task).where(Task.task_key == task_key))
+        task = res.scalar_one_or_none()
+        if task is None:
+            raise HTTPException(404, f"task {task_key!r} not found")
+
+        pred = None
+        try:  # Pro: similarity-based forecast (absent in free → ImportError)
+            from services.pro import memory as pro_memory
+            pred = await pro_memory.predict_outcome(
+                session=db,
+                repo_id=task.repo_id,
+                title=task.title,
+                description=task.description or "",
+            )
+        except ImportError:
+            pred = None
+
+        # Fall back to the repo-level baseline when Pro is absent or had no
+        # similar-task signal to work with.
+        if not pred or not pred.get("sample_size"):
+            pred = await outcome.predict_outcome_basic(db, task.repo_id)
+
+    return {"prediction": pred}
+
+
 # ─── DevTask Skill ──────────────────────────────────────────────────────────
 
 class GenerateTaskRequest(BaseModel):

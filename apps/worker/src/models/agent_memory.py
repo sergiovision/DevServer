@@ -21,3 +21,7 @@ class AgentMemory(Base):
     memory_type: Mapped[str] = mapped_column(String(32), default="experience")
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    # Migration 010 — recency decay + archive lifecycle.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    last_recalled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    recall_count: Mapped[int] = mapped_column(Integer, default=0)

@@ -29,6 +29,7 @@ from models.task_event import TaskEvent
 from models.task_run import TaskRun
 from services import (
     agent_backends,
+    app_settings,
     compaction,
     error_classifier,
     git_ops,
@@ -255,6 +256,19 @@ def _build_prompt(
             "",
             "Use send_message to peer tasks sparingly — only for blocking questions,",
             "cross-task handoffs, or status updates another task is waiting on.",
+        ])
+        parts.extend([
+            "",
+            "## Recording decisions (optional)",
+            "When you make a non-obvious architectural or design choice, record it",
+            "so future tasks recall the reasoning (not just the outcome):",
+            "    curl -s -X POST \\",
+            "      \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/decisions\" \\",
+            "      -H 'content-type: application/json' \\",
+            "      -d '{\"problem\":\"...\",\"choice\":\"...\",",
+            "           \"alternatives\":[\"...\"],\"reasoning\":\"...\"}'",
+            "Only record genuine decisions (a library choice, a schema shape, a",
+            "trade-off) — not routine edits.",
         ])
 
     if error_context:
@@ -653,15 +667,77 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
               except Exception:
                 logger.exception("reality_gate failed for %s", task_key)
 
+              # Strict abstain gate (braincore) — block low-evidence tasks
+              # BEFORE spending an agent run. Opt-in: settings key
+              # `reality_abstain_threshold` of 0 disables it entirely. Only
+              # meaningful when the Pro reality gate actually produced a score
+              # (free mode returns {} → score is None → skipped).
+              try:
+                _score = reality_signal.get("score")
+                if _score is not None:
+                    await db.execute(
+                        text("UPDATE tasks SET reality_score = :s WHERE id = :id"),
+                        {"s": int(_score), "id": task_id},
+                    )
+                    await db.commit()
+                    _threshold = await app_settings.get_int_setting(
+                        db, "reality_abstain_threshold", 0
+                    )
+                    if _threshold > 0 and int(_score) < _threshold:
+                        _warns = reality_signal.get("warnings", []) or []
+                        _reason = (
+                            f"reality score {int(_score)}/100 below abstain "
+                            f"threshold {_threshold}"
+                        )
+                        if _warns:
+                            _reason += ": " + "; ".join(str(w) for w in _warns[:3])
+                        await db.execute(
+                            text("UPDATE tasks SET abstain_reason = :r WHERE id = :id"),
+                            {"r": _reason, "id": task_id},
+                        )
+                        await db.commit()
+                        await _emit_event(db, task_id, None, "reality_abstain", {
+                            "score": int(_score),
+                            "threshold": _threshold,
+                            "reason": _reason,
+                            "warnings": [str(w) for w in _warns[:5]],
+                        })
+                        await _update_task_status(db, task_id, "blocked")
+                        task_log.write(
+                            f"\n[abstain] {_reason} — blocking task, no agent run\n"
+                        )
+                        task_log.flush()
+                        await notify.text(
+                            f"\U0001f6d1 *{task_key}* abstained\n{_reason}\n"
+                            f"Provide evidence or lower `reality_abstain_threshold`, "
+                            f"then retry."
+                        )
+                        return False
+              except Exception:
+                logger.exception("abstain gate failed for %s", task_key)
+
               # Memory recall — Tier 2 #5. Query once, inject into the prompt.
+              # When `memory_iterative_recall` is enabled, use the LLM-planned
+              # multi-hop variant (migration 010); otherwise single-pass.
               try:
                 memory_query = f"{task_key} {title}\n{description}"
-                prior_memories = await pro.search_memory(
-                    session=db,
-                    repo_id=repo.id,
-                    query=memory_query,
-                    limit=3,
+                _iterative = await app_settings.get_bool_setting(
+                    db, "memory_iterative_recall", False
                 )
+                if _iterative:
+                    prior_memories = await pro.search_memory_iterative(
+                        session=db,
+                        repo_id=repo.id,
+                        query=memory_query,
+                        limit=3,
+                    )
+                else:
+                    prior_memories = await pro.search_memory(
+                        session=db,
+                        repo_id=repo.id,
+                        query=memory_query,
+                        limit=3,
+                    )
                 memory_recall_text = pro.render_memory_recall(prior_memories)
                 if prior_memories:
                     await _emit_event(db, task_id, None, "memory_recall", {

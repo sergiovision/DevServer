@@ -198,6 +198,19 @@ async def _run_daily_report() -> str:
     return f"Sent report ({completed} done, {failed} failed)"
 
 
+async def _run_memory_archive() -> str:
+    """Archive never-recalled stale agent memories (Pro, migration 010).
+
+    Opt-in via the ``memory_archive_days`` setting — 0 (default) is a no-op,
+    so this job is cheap and harmless until an operator turns it on.
+    """
+    if not _has_pro:
+        return "Pro not installed"
+    async with async_session() as session:
+        archived = await pro.archive_stale_memories(session=session)
+    return f"Archived {archived} stale memories" if archived else "No stale memories"
+
+
 async def _cleanup_old_logs() -> int:
     if not os.path.exists(settings.log_dir):
         return 0
@@ -242,6 +255,17 @@ async def start_scheduler() -> list[asyncio.Task]:
         ),
         _run_daily_report,
     )
+    if _has_pro:
+        _register(
+            Job(
+                name="memory_archive",
+                group="devserver",
+                schedule="every 6 hours",
+                interval_seconds=6 * 60 * 60,
+                next_time=time.time() + 6 * 60 * 60,
+            ),
+            _run_memory_archive,
+        )
 
     loops: list[asyncio.Task] = []
     for job in _JOBS.values():

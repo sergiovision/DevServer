@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   CCard,
   CCardBody,
@@ -46,6 +46,11 @@ function buildDraft(raw: Record<string, unknown>) {
     notifications_enabled: raw.notifications_enabled !== false,
     system_llm_vendor: (unquote(raw.system_llm_vendor) || 'glm') as AgentVendor,
     system_llm_model: unquote(raw.system_llm_model) || 'glm-5.1',
+    // Migration 010 — memory quality + abstain gate (Pro). 0 / false = off.
+    reality_abstain_threshold: Number(raw.reality_abstain_threshold || 0),
+    memory_decay_half_life_days: Number(raw.memory_decay_half_life_days || 0),
+    memory_archive_days: Number(raw.memory_archive_days || 0),
+    memory_iterative_recall: Boolean(raw.memory_iterative_recall),
   };
 }
 
@@ -94,6 +99,10 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
         ['notifications_enabled', draft.notifications_enabled],
         ['system_llm_vendor', draft.system_llm_vendor],
         ['system_llm_model', draft.system_llm_model],
+        ['reality_abstain_threshold', draft.reality_abstain_threshold],
+        ['memory_decay_half_life_days', draft.memory_decay_half_life_days],
+        ['memory_archive_days', draft.memory_archive_days],
+        ['memory_iterative_recall', draft.memory_iterative_recall],
       ];
       await Promise.all(
         pairs.map(([key, value]) =>
@@ -200,6 +209,55 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
                     </option>
                   ))}
                 </datalist>
+              </CCol>
+            </CRow>
+
+            {/* Memory & Reality Gate (Pro). All values 0 / off = disabled. */}
+            <hr className="my-3" />
+            <CFormLabel className="fw-semibold">
+              Memory &amp; Reality Gate{' '}
+              <small className="fw-normal text-body-secondary">
+                — Pro features. 0 / off keeps prior behaviour.
+              </small>
+            </CFormLabel>
+            <CRow className="mb-3">
+              <CCol md={3}>
+                <CFormLabel className="mb-1">Abstain threshold</CFormLabel>
+                <CFormInput
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={String(draft.reality_abstain_threshold)}
+                  onChange={(e) => set('reality_abstain_threshold', parseInt(e.target.value) || 0)}
+                />
+                <small className="text-body-secondary">Block tasks scoring below this (0–100). 0 = off.</small>
+              </CCol>
+              <CCol md={3}>
+                <CFormLabel className="mb-1">Decay half-life (days)</CFormLabel>
+                <CFormInput
+                  type="number"
+                  min="0"
+                  value={String(draft.memory_decay_half_life_days)}
+                  onChange={(e) => set('memory_decay_half_life_days', parseInt(e.target.value) || 0)}
+                />
+                <small className="text-body-secondary">Recency weighting in recall. 0 = off (try 90).</small>
+              </CCol>
+              <CCol md={3}>
+                <CFormLabel className="mb-1">Archive after (days)</CFormLabel>
+                <CFormInput
+                  type="number"
+                  min="0"
+                  value={String(draft.memory_archive_days)}
+                  onChange={(e) => set('memory_archive_days', parseInt(e.target.value) || 0)}
+                />
+                <small className="text-body-secondary">Archive never-recalled memories. 0 = off (try 180).</small>
+              </CCol>
+              <CCol md={3} className="d-flex align-items-end">
+                <CFormSwitch
+                  label="Iterative recall"
+                  checked={draft.memory_iterative_recall}
+                  onChange={(e) => set('memory_iterative_recall', e.target.checked)}
+                />
               </CCol>
             </CRow>
 

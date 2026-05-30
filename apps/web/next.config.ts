@@ -17,7 +17,7 @@ const deployMode = process.env.DEPLOY_MODE
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  allowedDevOrigins: ['127.0.0.1', '100.66.144.40', '*.tail*.ts.net', hostname()],
+  allowedDevOrigins: ['127.0.0.1','100.66.144.40', '*.tail*.ts.net', hostname()],
   transpilePackages: [
     '@coreui/coreui-pro',
     '@coreui/react-pro',

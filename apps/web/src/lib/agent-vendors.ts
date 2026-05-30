@@ -30,7 +30,8 @@ export const AGENT_VENDORS: VendorEntry[] = [
     id: 'anthropic',
     label: 'Anthropic',
     models: [
-      { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7 (most capable)' },
+      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8 (most capable)' },
+      { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7' },
       { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6' },
       { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6' },
       { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5' },
@@ -42,9 +43,10 @@ export const AGENT_VENDORS: VendorEntry[] = [
     id: 'google',
     label: 'Google',
     models: [
+      { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview (latest, AI Pro plan)' },
       { id: 'gemini-3-pro-preview',   label: 'Gemini 3 Pro Preview (strong coding)' },
       { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview (cheap, fast)' },
-      { id: 'gemini-2.5-pro',         label: 'Gemini 2.5 Pro (stable)' },
+      { id: 'gemini-2.5-pro',         label: 'Gemini 2.5 Pro (stable, free tier)' },
       { id: 'gemini-pro-latest',      label: 'Gemini Pro (latest alias)' },
     ],
   },

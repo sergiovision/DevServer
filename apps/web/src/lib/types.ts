@@ -61,6 +61,11 @@ export interface Task {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // Migration 010 — strict abstain gate (Pro). reality_score is the last
+  // reality-gate score (0–100); abstain_reason is set when the gate blocked
+  // the task before running an agent.
+  reality_score?: number | null;
+  abstain_reason?: string | null;
   // Joined fields
   repo_name?: string;
   repo_clone_url?: string;

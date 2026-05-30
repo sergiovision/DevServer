@@ -54,6 +54,18 @@ class FreeHooks:
     async def store_memory(self, **kwargs: Any) -> None:
         pass
 
+    async def archive_stale_memories(self, **kwargs: Any) -> int:
+        return 0
+
+    async def predict_outcome(self, **kwargs: Any) -> dict | None:
+        return None
+
+    async def store_decision(self, **kwargs: Any) -> None:
+        pass
+
+    async def search_memory_iterative(self, **kwargs: Any) -> list[dict]:
+        return []
+
     # ── Plan gate ───────────────────────────────────────────────────
     async def run_plan_gate(self, **kwargs: Any) -> str:
         """Returns empty string = no approved plan (skip the gate)."""

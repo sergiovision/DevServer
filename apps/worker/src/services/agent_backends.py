@@ -61,7 +61,8 @@ logger = logging.getLogger(__name__)
 
 VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
     "anthropic": [
-        {"id": "claude-opus-4-7",              "label": "Claude Opus 4.7 (most capable)"},
+        {"id": "claude-opus-4-8",              "label": "Claude Opus 4.8 (most capable)"},
+        {"id": "claude-opus-4-7",              "label": "Claude Opus 4.7"},
         {"id": "claude-opus-4-6",              "label": "Claude Opus 4.6"},
         {"id": "claude-sonnet-4-6",            "label": "Claude Sonnet 4.6"},
         {"id": "claude-haiku-4-5-20251001",    "label": "Claude Haiku 4.5"},
@@ -69,9 +70,10 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
         {"id": "claude-sonnet-4-5",            "label": "Claude Sonnet 4.5"},
     ],
     "google": [
+        {"id": "gemini-3.1-pro-preview",       "label": "Gemini 3.1 Pro Preview (latest, AI Pro plan)"},
         {"id": "gemini-3-pro-preview",         "label": "Gemini 3 Pro Preview (strong coding)"},
         {"id": "gemini-3-flash-preview",       "label": "Gemini 3 Flash Preview (cheap, fast)"},
-        {"id": "gemini-2.5-pro",               "label": "Gemini 2.5 Pro (stable)"},
+        {"id": "gemini-2.5-pro",               "label": "Gemini 2.5 Pro (stable, free tier)"},
         {"id": "gemini-pro-latest",            "label": "Gemini Pro (latest alias)"},
     ],
     "openai": [
@@ -313,6 +315,37 @@ class GeminiBackend(AgentBackend):
     # mode so the CLI falls back to the interactive Google-account OAuth
     # login it set up on first run.
     api_key_env = "GEMINI_API_KEY"
+
+    #: Every env var that would override the OAuth "Login with Google"
+    #: subscription path. In 'max' (subscription) mode all of these must
+    #: be absent or the CLI silently prefers API-key / Vertex auth and the
+    #: user's Google AI Pro / Ultra subscription is never used.
+    _SUBSCRIPTION_BLOCKING_ENV = (
+        "GEMINI_API_KEY",       # AI Studio API key
+        "GOOGLE_API_KEY",       # alternate Gemini API key name
+        "GOOGLE_GENAI_USE_VERTEXAI",  # forces Vertex AI auth
+        "GOOGLE_CLOUD_PROJECT",       # Vertex / ADC project selector
+        "GOOGLE_CLOUD_LOCATION",
+        "GOOGLE_APPLICATION_CREDENTIALS",  # ADC service-account file
+    )
+
+    def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
+        """Subscription-aware env for the Gemini CLI.
+
+        ``'max'`` means "use my Google AI Pro / Ultra subscription" — i.e.
+        the OAuth login from ``gemini`` first-run / ``/auth``. That path is
+        only chosen when *none* of the API-key / Vertex env vars are set, so
+        we strip the whole :data:`_SUBSCRIPTION_BLOCKING_ENV` set (the base
+        class only strips a single ``api_key_env``). ``'api'`` inherits the
+        full environment unchanged.
+        """
+        if billing_mode == "max":
+            return {
+                k: v
+                for k, v in os.environ.items()
+                if k not in self._SUBSCRIPTION_BLOCKING_ENV
+            }
+        return None
 
     def build_command(
         self,

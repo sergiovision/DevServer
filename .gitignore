@@ -52,10 +52,7 @@ build/
 coverage/
 
 # ── Claude Code session state ────────────────────────────
-.claude/                                                                                                 
-.gemini/  
-
-
+.claude/settings.local.json
+.claude/projects/
 apps/web/package-lock.json
 apps/web/package-lock.json
-apps/web/tsconfig.tsbuildinfo

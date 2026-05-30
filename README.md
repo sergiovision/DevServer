@@ -5,7 +5,7 @@
 
 ### An autonomous coding pipeline for AI coding agents.
 
-**Dispatches coding tasks → runs the agent in an isolated git worktree → verifies build/test/lint → opens a pull request on Gitea or GitHub.**
+**Dispatches coding tasks → runs the agent in an isolated git worktree → verifies build/test/lint → opens a pull request on Gitea.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=next.js&logoColor=white)](https://nextjs.org/)
@@ -27,8 +27,9 @@
 
 Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted orchestration platform** for people who already run their own infrastructure and want agents to work on their terms.
 
-- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini (Google), Codex (OpenAI), or GLM (Zhipu AI). Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
-- **Multi-host git providers.** Each repo declares its provider — self-hosted **Gitea / Forgejo** or **GitHub** (incl. GitHub Enterprise Server). Clone/push auth and pull-request creation are provider-aware, with per-repo tokens and provider-specific global fallbacks. The provider auto-detects from the clone URL.
+- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini (Google), Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Opus 4.8** and **Gemini 3.1 Pro**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
+- **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (flat-rate subscription). Subscription mode works across vendors — Claude **Max**, ChatGPT **Plus** (Codex), and Google **AI Pro / Ultra** for Gemini — by falling back to the CLI's own OAuth login instead of an API key.
+- **Outcome forecast.** Before a task runs, see a success-probability and expected duration/turns estimate from your repo's history. Free uses a repo-level baseline; Pro upgrades it to similar-task matching via pgvector.
 - **Error-class-aware retries.** Failures are classified by 20+ regex rules (import errors, TS compile errors, test failures, merge conflicts, ...) and the next attempt receives a surgical remediation hint. Recurring hard errors *escalate* instead of burning retries.
 - **Multi-language repo map.** Before any code is written, the worker builds a regex-based symbol index (classes, functions, types) for 11 languages, so the agent starts with an accurate picture of the codebase.
 - **Dashboard with analytics.** Live counts, today's stats, per-vendor cost breakdown, average duration and turns-per-task charts, and a period selector for 7–90 days of history.
@@ -111,7 +112,7 @@ A real-time log viewer with two tabs — `worker.log` and `web.log` — polled e
 
 <a href="assets/settings.png"><img src="assets/settings.png" alt="DevServer settings page — max concurrency, queue paused toggle, auto-enqueue toggle, notifications toggle, system LLM vendor/model picker, and environment variables editor showing .env path, database connection, and API keys" width="100%" /></a>
 
-A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, and the **System LLM** vendor + model picker (used by Fill Task and DevPlan). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
+A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
 
 📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx)
 
@@ -149,7 +150,7 @@ flowchart TB
 
   subgraph ext["External services"]
     direction TB
-    Gitea[("Gitea / GitHub<br/>(PRs)")]
+    Gitea[("Gitea<br/>(PRs)")]
     PG2[("PostgreSQL 17")]
     TG["Telegram"]
     Agents["Claude / Gemini<br/>Codex / GLM"]
@@ -173,14 +174,16 @@ Three small services, one shared PostgreSQL. No Redis, no RabbitMQ, no Celery �
 
 DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers four vendors out of the box:
 
-| Vendor | CLI Binary | Status |
-|---|---|---|
-| `anthropic` | `claude` | Production-tested |
-| `google` | `gemini` | Structurally complete |
-| `openai` | `codex` | Structurally complete |
-| `glm` | `glm` | Wraps Claude CLI with Zhipu's Anthropic-compatible API |
+| Vendor | CLI Binary | Latest models | Status |
+|---|---|---|---|
+| `anthropic` | `claude` | **Claude Opus 4.8**, Sonnet 4.6, Haiku 4.5 | Production-tested |
+| `google` | `gemini` | **Gemini 3.1 Pro**, Gemini 3 Pro/Flash | Structurally complete |
+| `openai` | `codex` | GPT-5.x, Codex | Structurally complete |
+| `glm` | `glm` | GLM-5.1 — wraps Claude CLI via Zhipu's Anthropic-compatible API | Structurally complete |
 
-Each task carries `agent_vendor` and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.
+Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.
+
+**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** for Gemini without per-token metering. For Gemini, sign in once with `gemini` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.1-pro-preview`.
 
 📂 [`apps/worker/src/services/agent_backends.py`](apps/worker/src/services/agent_backends.py)
 
@@ -220,26 +223,6 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 
 📂 [`apps/worker/src/services/agent_runner.py`](apps/worker/src/services/agent_runner.py)
 
-### 6. Multi-host git providers (Gitea + GitHub)
-
-DevServer is not tied to a single git host. Each repo carries a `provider`
-column (`gitea` default, or `github`) that drives how the worker
-authenticates clones/pushes and which pull-request REST API it calls:
-
-- **Auth** — Gitea uses the `https://token:<pat>@host` form; GitHub uses
-  `https://x-access-token:<pat>@github.com` (the only form that works for
-  classic PATs, fine-grained PATs, and App installation tokens alike).
-- **Tokens** — a per-repo token always wins; the global fallback is
-  provider-specific (`GITEA_TOKEN` vs. `GITHUB_TOKEN`). A Gitea token is
-  never reused for a GitHub repo.
-- **PRs** — Gitea's `/api/v1/.../pulls` or GitHub's `api.github.com`
-  (and `{host}/api/v3/...` for GitHub Enterprise Server).
-- **Auto-detect** — the provider is sniffed from the clone-URL host at
-  runtime, so a `github.com` URL is handled correctly even if the column
-  was never set; an explicit non-default value always wins.
-
-📂 [`apps/worker/src/services/git_ops.py`](apps/worker/src/services/git_ops.py) · migration [`009_github_provider.sql`](database/migrations/009_github_provider.sql)
-
 ## Tech Stack
 
 | Layer | Choice | Why |
@@ -250,7 +233,7 @@ authenticates clones/pushes and which pull-request REST API it calls:
 | **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
 | **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
 | **AI engines** | Claude, Gemini, Codex, GLM CLIs | DevServer *orchestrates* existing CLIs instead of reimplementing agent logic. |
-| **Git platform** | Gitea / Forgejo · GitHub | Per-repo provider — self-hosted Gitea/Forgejo or GitHub (incl. Enterprise Server). |
+| **Git platform** | Gitea / Forgejo | Self-hosted and API-compatible. |
 | **Notifications** | Telegram Bot API | Basic task lifecycle alerts. |
 | **Charts** | Chart.js + react-chartjs-2 | Lightweight, no-frills analytics visualizations. |
 | **Package mgmt** | `uv` (Python) · `npm` (Node) | Fast, cacheable, boring. |
@@ -264,7 +247,7 @@ authenticates clones/pushes and which pull-request REST API it calls:
 - PostgreSQL >= 16
 - At least one agent CLI installed and authenticated (e.g. `claude login`)
 - `uv` for Python dependency management — [install guide](https://docs.astral.sh/uv/)
-- A Gitea (or Forgejo) instance, or GitHub, with a personal access token
+- A Gitea (or Forgejo) instance with a personal access token
 
 ### Local setup (host processes)
 
@@ -272,7 +255,7 @@ authenticates clones/pushes and which pull-request REST API it calls:
 git clone https://github.com/<YOUR_GITHUB_HANDLE>/DevServer.git
 cd DevServer
 cp config/.env.example .env
-# edit .env — fill in PGPASSWORD, GITEA_TOKEN and/or GITHUB_TOKEN, TELEGRAM_*, ANTHROPIC_API_KEY
+# edit .env — fill in PGPASSWORD, GITEA_TOKEN, TELEGRAM_*, ANTHROPIC_API_KEY
 
 ./scripts/migrate.sh          # runs all SQL migrations
 ./scripts/start.sh --dev      # starts worker + web in dev mode
@@ -404,13 +387,15 @@ apps/
       agent_backends.py               → Vendor abstraction (Claude, Gemini, Codex, GLM)
       repo_map.py                     → Multi-language symbol map
       error_classifier.py             → 20 regex rules → targeted retry hints
+      outcome.py                      → Repo-level outcome forecast (free baseline)
+      app_settings.py                 → Typed reader for the key/value settings table
       llm_client.py                   → Vendor-agnostic system LLM client
       verifier.py                     → Pre/build/test/lint runner
-      git_ops.py                      → Git worktree management + Gitea/GitHub PR creation
+      git_ops.py                      → Git worktree management + Gitea PR creation
     src/routes/
-      internal.py                     → Status, pause, cancel, generate-task, generate-plan
+      internal.py                     → Status, pause, cancel, generate-task, prediction
 database/
-  migrations/                         → Versioned SQL migrations (001–009)
+  migrations/                         → Versioned SQL migrations (001–010)
 config/
   .env.example                        → Sanitised environment template
 docker/
@@ -440,17 +425,22 @@ DevServer ships as two editions:
 | Settings / system LLM configuration | ✅ | ✅ |
 | Basic Telegram notifications | ✅ | ✅ |
 | Backup & restore scripts | ✅ | ✅ |
-| Git worktree isolation + Gitea/GitHub PRs | ✅ | ✅ |
+| Git worktree isolation + Gitea PRs | ✅ | ✅ |
 | Full build/test/lint verifier | ✅ | ✅ |
+| Outcome forecast (success probability + duration) | ✅ repo baseline | ✅ similar-task |
 | Reality gate (0–100 evidence scoring) | — | ✅ |
+| Strict abstain gate (block low-evidence tasks before they run) | — | ✅ |
 | pgvector memory (past task recall) | — | ✅ |
+| Memory recency decay + auto-archive | — | ✅ |
+| Decision / causal memory (problem → choice → reasoning) | — | ✅ |
+| Iterative multi-hop memory recall | — | ✅ |
 | Interactive plan approval gate | — | ✅ |
 | Per-task budget circuit breaker | — | ✅ |
 | PR preflight (secret scan, allow-list, author check) | — | ✅ |
 | Patch export (`git format-patch` + `combined.mbox`) | — | ✅ |
 | Night cycle (autonomous overnight batch) | — | ✅ |
 | Rich Telegram (inline keyboards, daily digest) | — | ✅ |
-| Inter-task messaging bus + operator inbox | — | ✅ |
+| Inter-task messaging bus + operator inbox (secret-screened) | — | ✅ |
 | Webhook triggers (Gitea/GitHub/Sentry/Grafana → task) | — | ✅ |
 | Hardened Docker Compose (resource limits, log rotation, security) | — | ✅ |
 

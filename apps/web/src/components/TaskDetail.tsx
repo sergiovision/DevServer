@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   CCard,
@@ -27,6 +27,7 @@ import { TaskLog } from './TaskLog';
 import { MaxTurnsInput } from './MaxTurnsInput';
 import { VendorModelPicker } from './VendorModelPicker';
 import { PatchesPanel, MessagesPanel } from './pro-loader';
+import { PredictionCard } from './PredictionCard';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 
@@ -308,10 +309,29 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
           <CBadge color={STATUS_COLORS[task.status as TaskStatus]}>
             {task.status}
           </CBadge>
+          {typeof task.reality_score === 'number' && (
+            <CBadge
+              color={task.reality_score >= 60 ? 'success' : task.reality_score >= 40 ? 'warning' : 'danger'}
+              className="ms-2"
+              title="Reality-gate evidence score (0–100)"
+            >
+              reality {task.reality_score}
+            </CBadge>
+          )}
           {task.repo_name && (
             <span className="ms-2 text-body-secondary">{task.repo_name}</span>
           )}
         </div>
+        {task.abstain_reason && (
+          <CAlert color="warning" className="py-2">
+            <strong>Abstained.</strong> {task.abstain_reason}. The agent was not
+            run. Provide evidence (or lower <code>reality_abstain_threshold</code>{' '}
+            in Settings) and retry.
+          </CAlert>
+        )}
+        {['pending', 'queued', 'failed', 'blocked'].includes(task.status) && (
+          <PredictionCard taskId={task.id} />
+        )}
         <div className="d-flex flex-wrap gap-2">
           <CButton
             color="outline-secondary"
