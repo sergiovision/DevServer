@@ -34,6 +34,8 @@ from services import (
     error_classifier,
     git_ops,
     repo_map,
+    side_effect_gate,
+    skills,
     telegram,
     verifier,
 )
@@ -138,6 +140,10 @@ def _build_prompt(
     compacted_context: str = "",
     is_resume: bool = False,
     skip_verify: bool = False,
+    gate_prompt: str = "",
+    skill_prompt: str = "",
+    git_flow: str = "branch",
+    is_local: bool = False,
 ) -> str:
     """Build the user-message prompt for one Claude CLI invocation.
 
@@ -158,6 +164,12 @@ def _build_prompt(
         # better for rate-limit headroom.
         if error_context:
             return error_context
+        if git_flow == "untracked":
+            return (
+                "Continue with the previous task. Resume where you left off "
+                "and finish the implementation. Do NOT commit — leave all "
+                "changes as uncommitted edits in the working tree."
+            )
         return (
             "Continue with the previous task. Resume where you left off "
             "and finish the implementation. Commit your changes when done."
@@ -192,6 +204,12 @@ def _build_prompt(
     if approved_plan_text:
         parts.extend(["", approved_plan_text])
 
+    commit_instruction = (
+        "6. Do NOT create branches, do NOT commit and do NOT push — leave "
+        "every change as uncommitted edits in the working tree"
+        if git_flow == "untracked"
+        else f"6. Commit your changes with a clear message referencing {task_key}"
+    )
     parts.extend([
         "",
         "## Instructions",
@@ -200,9 +218,14 @@ def _build_prompt(
         "3. Implement the task following existing patterns and conventions",
         "4. Make minimal, focused changes -- only what the task requires",
         "5. Do NOT add extra features, refactoring, or improvements beyond the task",
-        f"6. Commit your changes with a clear message referencing {task_key}",
+        commit_instruction,
         "7. Ensure all acceptance criteria are met",
     ])
+    if is_local:
+        parts.append(
+            "8. This is a LOCAL-ONLY repository: NEVER run `git push`, never "
+            "add or change git remotes, and never open pull requests"
+        )
 
     if skip_verify:
         parts.extend([
@@ -270,6 +293,15 @@ def _build_prompt(
             "Only record genuine decisions (a library choice, a schema shape, a",
             "trade-off) — not routine edits.",
         ])
+
+    # Domain Skill — reusable procedure injected when the task links a skill.
+    if skill_prompt:
+        parts.extend(["", skill_prompt])
+
+    # Side-effect approval gate — only injected when the feature is enabled
+    # (the caller computes gate_prompt from the side_effect_gate setting).
+    if gate_prompt:
+        parts.append(gate_prompt)
 
     if error_context:
         parts.extend(["", error_context])
@@ -487,6 +519,15 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             logger.error("Task %d not found", task_id)
             return False
 
+        # Non-coding / skill tasks have no repo — they run a Skill via the
+        # agent CLI without a worktree, verifier, or PR. Delegate to the
+        # skill runner before any repo/lock/worktree machinery.
+        if task.repo_id is None:
+            from services import skill_runner
+            return await skill_runner.run_skill_task(
+                db, task_id=task_id, claude_mode=claude_mode, max_turns=max_turns,
+            )
+
         repo = await db.get(Repo, task.repo_id)
         if not repo:
             logger.error("Repo %d not found for task %d", task.repo_id, task_id)
@@ -525,6 +566,22 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         max_wall_seconds: int | None = getattr(task, "max_wall_seconds", None)
         repo_name = repo.name
         branch_name = f"agent/{task_key}"
+        # Local-folder repos (provider='local'): no clone, no worktree copy,
+        # no push — the agent runs git directly inside the operator's folder
+        # (stored in repos.gitea_url, the "Local Root Folder"). Only the
+        # 'patch' and 'untracked' git flows make sense there; anything else
+        # (e.g. a template default of 'branch') is coerced to 'patch'.
+        is_local_repo = git_ops.is_local_provider(getattr(repo, "provider", None))
+        git_flow = getattr(task, "git_flow", "branch") or "branch"
+        if is_local_repo and git_flow not in ("patch", "untracked"):
+            logger.warning(
+                "Task %s: git_flow=%r is not supported for local repos — using 'patch'",
+                task_key, git_flow,
+            )
+            git_flow = "patch"
+        # The branch the operator had checked out before a local-repo task
+        # started — restored in the finally block (patch flow only).
+        local_original_branch: str | None = None
 
         # Continuation: load session_id from the most recent run so the
         # agent can resume its conversation, and clear the flag immediately.
@@ -583,16 +640,28 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 model=effective_model or "",
             )
 
-            # Setup worktree
-            worktree_path, branch_name = await git_ops.setup_worktree(
-                repo_name=repo_name,
-                clone_url=repo.clone_url,
-                default_branch=repo.default_branch,
-                task_key=task_key,
-                gitea_token=repo.gitea_token,
-                provider=getattr(repo, "provider", None),
-                continuation=is_continuation,
-            )
+            # Setup worktree — or, for local repos, run directly inside the
+            # operator's folder (no copy is ever made).
+            if is_local_repo:
+                local_original_branch = await git_ops.get_current_branch(
+                    git_ops.resolve_local_root(repo.gitea_url)
+                )
+                worktree_path, branch_name = await git_ops.setup_local_repo(
+                    local_root=repo.gitea_url,
+                    task_key=task_key,
+                    git_flow=git_flow,
+                    continuation=is_continuation,
+                )
+            else:
+                worktree_path, branch_name = await git_ops.setup_worktree(
+                    repo_name=repo_name,
+                    clone_url=repo.clone_url,
+                    default_branch=repo.default_branch,
+                    task_key=task_key,
+                    gitea_token=repo.gitea_token,
+                    provider=getattr(repo, "provider", None),
+                    continuation=is_continuation,
+                )
 
             # ─── Pre-execution evidence (Phase 1) ─────────────────────────
             # These blocks are generated once per task, before any Claude run.
@@ -782,6 +851,25 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 task_log.write("\n[plan_gate] plan approved, proceeding to implementation\n")
                 task_log.flush()
 
+            # Side-effect gate instructions (opt-in). When the feature is
+            # enabled, teach the agent to request approval before money /
+            # message / publish / irreversible actions. Computed once here so
+            # both retry loops reuse it; empty string ⇒ block is not injected.
+            gate_prompt_block = ""
+            try:
+                if await side_effect_gate.is_enabled(db):
+                    gate_prompt_block = "\n".join(side_effect_gate.render_gate_prompt_block())
+            except Exception:
+                logger.exception("gate prompt block failed for %s", task_key)
+
+            # Domain Skill injection — if the task links an enabled skill, load
+            # its body once and inject it into the implementation prompt.
+            skill_prompt_block = ""
+            try:
+                skill_prompt_block = await skills.get_skill_body_for_task(db, task_id)
+            except Exception:
+                logger.exception("skill prompt block failed for %s", task_key)
+
             error_context = ""
             # Continuation nudge — on a human-initiated /continue, the resume
             # prompt would otherwise be a bare "Continue with the previous
@@ -955,6 +1043,10 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     compacted_context=compaction.build_compacted_prompt_block(compacted_context),
                     is_resume=is_resume,
                     skip_verify=skip_verify,
+                    gate_prompt=gate_prompt_block,
+                    skill_prompt=skill_prompt_block,
+                    git_flow=git_flow,
+                    is_local=is_local_repo,
                 )
 
                 # Run the agent via the resolved backend. The variable is
@@ -1015,6 +1107,17 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     # fallback: raw output truncated
                     task_log.write(f"RAW OUTPUT:\n{raw_output[:20_000]}\n")
                 task_log.flush()
+
+                # Side-effect gate: if the agent raised a blocking gate during
+                # this run, it stopped and is awaiting human approval. Suspend
+                # only this task (siblings keep running) and end the job — the
+                # resolve endpoint re-enqueues it. No-op when the gate is unused.
+                _open_gate = await side_effect_gate.check_open_gate(db, task_id)
+                if _open_gate:
+                    await side_effect_gate.suspend_for_gate(
+                        db, task_id=task_id, run_id=run_id, gate=_open_gate, task_log=task_log,
+                    )
+                    return False
 
                 if exit_code != 0:
                     subtype = claude_result.get("subtype", "")
@@ -1128,8 +1231,10 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     num_turns, raw_cost, claude_mode, duration_ms,
                 )
 
-                # Ensure committed
-                await git_ops.ensure_committed(worktree_path, task_key, title)
+                # Ensure committed — except for the 'untracked' flow, whose
+                # whole contract is "edits stay uncommitted in the folder".
+                if git_flow != "untracked":
+                    await git_ops.ensure_committed(worktree_path, task_key, title)
 
                 # Update run with metrics
                 await db.execute(
@@ -1182,6 +1287,10 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         worktree_path=worktree_path,
                         base_branch=repo.default_branch,
                         allowlist=preflight_allowlist,
+                        # Local repos: agent CLI commits carry the operator's
+                        # own git identity and nothing is pushed — the author
+                        # check is meaningless there.
+                        skip_author_check=is_local_repo,
                     )
                     preflight_summary = pro.summarise_preflight(preflight)
                     if preflight.ok:
@@ -1237,7 +1346,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         continue
 
                     # ── Git flow dispatch ────────────────────────────────────
-                    git_flow = getattr(task, "git_flow", "branch") or "branch"
+                    # git_flow was resolved (and coerced for local repos) at
+                    # task start, before the worktree/local-folder setup.
                     verify_note = "Skipped" if skip_verify else "PASSED"
 
                     commit_ok = True
@@ -1283,6 +1393,14 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         if not commit_ok:
                             logger.warning("Direct commit failed for %s", task_key)
 
+                    elif git_flow == "untracked":  # local repos — edits only
+                        commit_ok = True
+                        pr_url = None
+                        logger.info(
+                            "git_flow=untracked: changes left uncommitted in %s",
+                            worktree_path,
+                        )
+
                     else:  # patch — no push, no PR
                         commit_ok = True  # patch is always "ok"
                         pr_url = None
@@ -1325,6 +1443,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         "branch": f"PR: {pr_url or 'push failed'}",
                         "commit": commit_label,
                         "patch": "Patch generated (no push)",
+                        "untracked": "Untracked changes left in local folder",
                     }
                     await notify.task_success(
                         task_key=task_key, git_flow=git_flow, pr_url=pr_url,
@@ -1338,13 +1457,24 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     # the bare repo so the live worktree reset in the
                     # finally block does not affect this step. Entirely
                     # best-effort: a failure is logged but does not demote
-                    # the successful task.
-                    try:
+                    # the successful task. Skipped for the 'untracked' flow
+                    # (nothing is ever committed, so there is nothing to
+                    # format). Local repos have no bare clone — patches are
+                    # generated straight from the local folder, based on the
+                    # branch the operator was on when the task started.
+                    if git_flow != "untracked":
+                      try:
+                        local_patch_base = (
+                            local_original_branch
+                            if local_original_branch and local_original_branch != branch_name
+                            else repo.default_branch
+                        )
                         patchset = await pro.generate_patches(
                             task_key=task_key,
                             repo_name=repo_name,
-                            base_branch=repo.default_branch,
+                            base_branch=local_patch_base if is_local_repo else repo.default_branch,
                             branch_name=branch_name,
+                            repo_dir=worktree_path if is_local_repo else None,
                         )
                         await _emit_event(db, task_id, run_id, "patches_generated", {
                             "ok": patchset.ok,
@@ -1365,7 +1495,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                                 f"\n[patches] generation failed: {patchset.error}\n"
                             )
                         task_log.flush()
-                    except Exception:
+                      except Exception:
                         logger.exception("pro.generate_patches failed for %s", task_key)
 
                     # Tier 2 #5 (write side): persist this successful run as an
@@ -1494,7 +1624,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 effective_model = backup_model or effective_model
                 error_class_counts.clear()
                 # Ensure any uncommitted work is preserved before backup run
-                if worktree_path:
+                if worktree_path and git_flow != "untracked":
                     await git_ops.ensure_committed(worktree_path, task_key, f"WIP: {title}")
 
                 for attempt in range(1, repo.max_retries + 1):
@@ -1546,6 +1676,10 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         approved_plan_text=approved_plan_text,
                         is_resume=is_resume,
                         skip_verify=skip_verify,
+                        gate_prompt=gate_prompt_block,
+                        skill_prompt=skill_prompt_block,
+                        git_flow=git_flow,
+                        is_local=is_local_repo,
                     )
 
                     await _extend_lock(db, repo_name)
@@ -1597,6 +1731,15 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         task_log.write(f"RAW OUTPUT:\n{raw_output[:20_000]}\n")
                     task_log.flush()
 
+                    # Side-effect gate (backup-vendor loop): suspend this task
+                    # if the agent raised a blocking gate during the run.
+                    _open_gate = await side_effect_gate.check_open_gate(db, task_id)
+                    if _open_gate:
+                        await side_effect_gate.suspend_for_gate(
+                            db, task_id=task_id, run_id=run_id, gate=_open_gate, task_log=task_log,
+                        )
+                        return False
+
                     if exit_code != 0:
                         subtype = claude_result.get("subtype", "")
                         if backend.vendor == "google" and exit_code == 53:
@@ -1644,7 +1787,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     cost_usd = Decimal("0") if claude_mode == "max" else raw_cost
                     num_turns = claude_result["num_turns"]
 
-                    await git_ops.ensure_committed(worktree_path, task_key, title)
+                    if git_flow != "untracked":
+                        await git_ops.ensure_committed(worktree_path, task_key, title)
 
                     await db.execute(
                         update(TaskRun).where(TaskRun.id == run_id).values(
@@ -1679,6 +1823,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             worktree_path=worktree_path,
                             base_branch=repo.default_branch,
                             allowlist=preflight_allowlist,
+                            skip_author_check=is_local_repo,
                         )
                         if not preflight.ok and preflight.has_hard_failure:
                             await _update_task_status(db, task_id, "blocked")
@@ -1697,7 +1842,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             await db.commit()
                             continue
 
-                        git_flow = getattr(task, "git_flow", "branch") or "branch"
+                        # git_flow resolved (and coerced for local repos) at task start
                         verify_note = "Skipped" if skip_verify else "PASSED"
 
                         if git_flow == "branch":
@@ -1736,7 +1881,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                                 title=title,
                             )
                             pr_url = None
-                        else:
+                        else:  # patch / untracked — no push, no PR
                             pr_url = None
 
                         await db.execute(
@@ -1769,16 +1914,24 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             duration_ms=duration_ms, repo_name=repo_name,
                         )
 
-                        try:
+                        if git_flow != "untracked":
+                          try:
+                            local_patch_base = (
+                                local_original_branch
+                                if local_original_branch and local_original_branch != branch_name
+                                else repo.default_branch
+                            )
                             patchset = await pro.generate_patches(
                                 task_key=task_key, repo_name=repo_name,
-                                base_branch=repo.default_branch, branch_name=branch_name,
+                                base_branch=local_patch_base if is_local_repo else repo.default_branch,
+                                branch_name=branch_name,
+                                repo_dir=worktree_path if is_local_repo else None,
                             )
                             await _emit_event(db, task_id, run_id, "patches_generated", {
                                 "ok": patchset.ok, "commits": patchset.commits,
                                 "files": len(patchset.files),
                             })
-                        except Exception:
+                          except Exception:
                             logger.exception("patch_ops failed for %s (backup)", task_key)
 
                         try:
@@ -1872,7 +2025,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             task_log.close()
 
             # Preserve any uncommitted work so the next run can resume from it
-            if worktree_path and not success:
+            # (never for the 'untracked' flow — its changes stay uncommitted)
+            if worktree_path and not success and git_flow != "untracked":
                 try:
                     committed = await git_ops.ensure_committed(
                         worktree_path, task_key, f"WIP: {title}"
@@ -1882,8 +2036,22 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                 except Exception:
                     logger.exception("Failed to save WIP commit for task %s", task_key)
 
-            # Always reset worktree to default branch so next task starts clean
-            await git_ops.reset_worktree(repo_name, repo.default_branch)
+            # Always reset worktree to default branch so next task starts
+            # clean. Local repos are the operator's own checkout — NEVER
+            # reset or clean them; for the 'patch' flow just try to put the
+            # original branch back (best-effort, skipped on a dirty tree).
+            if is_local_repo:
+                if git_flow != "untracked":
+                    try:
+                        await git_ops.restore_local_branch(
+                            repo.gitea_url, local_original_branch,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Failed to restore local branch for %s", task_key,
+                        )
+            else:
+                await git_ops.reset_worktree(repo_name, repo.default_branch)
             await _release_lock(db, repo_name, task_key)
 
     return success

@@ -6,6 +6,17 @@ import { CButton, CSpinner } from '@coreui/react-pro';
 import { IdeaTree, type IdeaNode } from './IdeaTree';
 import { IdeaEditor } from './IdeaEditor';
 
+export type NodeType = 'goal' | 'subtask' | 'leaf' | null;
+export type NodeStatus =
+  | 'draft'
+  | 'expanding'
+  | 'ready'
+  | 'blocked'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'abandoned';
+
 export interface Idea {
   id: number;
   parent_id: number | null;
@@ -15,6 +26,14 @@ export interface Idea {
   tasked: boolean;
   task_id: number | null;
   sort_order: number;
+  // Goal Graph (decomposition) fields — null/default on legacy ideas.
+  node_type: NodeType;
+  node_status: NodeStatus;
+  depth: number;
+  evaluator_score: number | null;
+  expand_reason: string | null;
+  stop_reason: string | null;
+  rollup_summary: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -40,6 +59,7 @@ export function IdeasView() {
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [convertingPlan, setConvertingPlan] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -151,6 +171,55 @@ export function IdeasView() {
     }
   }, [selected, ideas]);
 
+  // ── Goal Graph: expand one node a level / roll up its children ──
+  const expandNode = useCallback(async () => {
+    if (!selected || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/goals/${selected.id}/expand`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        alert(`Expand failed: ${data?.error || res.statusText}`);
+        return;
+      }
+      await load();
+      if (data?.outcome === 'leaf') {
+        alert(
+          data.task_id
+            ? `Marked as leaf — task #${data.task_id} created (pending).`
+            : `Marked as leaf — no task created (non-coding domain or no repo bound).`,
+        );
+      }
+    } catch (e) {
+      alert(`Expand error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, busy, load]);
+
+  const rollupNode = useCallback(async () => {
+    if (!selected || busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/goals/${selected.id}/rollup`, { method: 'POST' });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        alert(`Rollup not ready: ${data?.error || res.statusText}`);
+        return;
+      }
+      await load();
+      alert(`Rolled up: ${data.status} (score ${data.score}).`);
+    } catch (e) {
+      alert(`Rollup error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, busy, load]);
+
   return (
     <>
       <div className="d-flex justify-content-between align-items-center mb-4">
@@ -206,6 +275,9 @@ export function IdeasView() {
               onConvertToTask={convertToTask}
               onConvertToPlan={convertToPlan}
               convertingPlan={convertingPlan}
+              onExpand={expandNode}
+              onRollup={rollupNode}
+              busy={busy}
             />
           </div>
         </div>

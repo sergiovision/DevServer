@@ -24,9 +24,12 @@ from models.task import Task
 from models.task_run import TaskRun
 from services.queue_consumer import is_consumer_running
 from services import compaction
+from services import decomposer
 from services import git_ops
 from services import llm_client
 from services import scheduler
+from services import side_effect_gate
+from services import skills as skills_svc
 
 router = APIRouter(prefix="/internal")
 
@@ -273,13 +276,18 @@ async def refresh_git(repo_id: int):
         if not repo:
             raise HTTPException(status_code=404, detail=f"Repo {repo_id} not found")
 
-    result = await git_ops.refresh_repo(
-        repo_name=repo.name,
-        clone_url=repo.clone_url,
-        default_branch=repo.default_branch,
-        gitea_token=repo.gitea_token or None,
-        provider=getattr(repo, "provider", None),
-    )
+    if git_ops.is_local_provider(getattr(repo, "provider", None)):
+        # Local-folder repo — nothing to clone or fetch, just validate the
+        # Local Root Folder (stored in repos.gitea_url) is a git checkout.
+        result = await git_ops.refresh_local_repo(repo.gitea_url)
+    else:
+        result = await git_ops.refresh_repo(
+            repo_name=repo.name,
+            clone_url=repo.clone_url,
+            default_branch=repo.default_branch,
+            gitea_token=repo.gitea_token or None,
+            provider=getattr(repo, "provider", None),
+        )
     if not result["ok"]:
         raise HTTPException(status_code=500, detail=result["message"])
     return result
@@ -633,6 +641,207 @@ async def compact_task(task_key: str, reason: str = "manual"):
             if result["chars_in"] else None
         ),
     }
+
+
+# ─── Goal Graph (recursive decomposition) ──────────────────────────────────
+
+class ExpandRequest(BaseModel):
+    max_depth: int | None = None
+    enqueue: bool = False
+
+
+@router.post("/goals/{node_id}/expand")
+async def expand_goal(node_id: int, req: ExpandRequest | None = None):
+    """Expand one Goal Graph node one level (atomicity check + plan-sketch).
+
+    Leaves bind to a ``tasks`` row and optionally enqueue;
+    composites get 3–7 child nodes. Never raises on LLM failure — the node
+    degrades to a leaf.
+    """
+    req = req or ExpandRequest()
+    kwargs: dict = {"enqueue": bool(req.enqueue)}
+    if req.max_depth is not None:
+        kwargs["max_depth"] = req.max_depth
+    async with async_session() as db:
+        result = await decomposer.expand_node(db, node_id, **kwargs)
+    if not result.get("ok"):
+        raise HTTPException(404 if "not found" in (result.get("reason") or "") else 502,
+                            result.get("reason") or "expand failed")
+    return result
+
+
+@router.post("/goals/{node_id}/rollup")
+async def rollup_goal(node_id: int):
+    """Synthesise completed children into the parent's summary + 0–100 score."""
+    async with async_session() as db:
+        result = await decomposer.rollup_node(db, node_id)
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("reason") or "rollup not ready")
+    return result
+
+
+# ─── Side-effect gate (human-in-the-loop) ──────────────────────────────────
+
+class GateRequest(BaseModel):
+    action: str
+    payload: dict | None = None
+    node_id: int | None = None
+
+
+@router.post("/tasks/{task_key}/gate")
+async def request_gate(task_key: str, req: GateRequest):
+    """Agent-facing: classify a pending side-effecting action. Returns
+    ``{"decision": "allow"}`` to proceed or ``{"decision": "blocked", ...}``
+    (the agent must then stop — the task is suspended for human approval)."""
+    async with async_session() as db:
+        res = await db.execute(select(Task).where(Task.task_key == task_key))
+        task = res.scalar_one_or_none()
+        if not task:
+            raise HTTPException(404, f"Task {task_key} not found")
+        return await side_effect_gate.raise_gate(
+            db, task_id=task.id, task_key=task_key,
+            action=req.action, payload=req.payload, node_id=req.node_id,
+        )
+
+
+@router.get("/decisions")
+async def list_decisions(limit: int = 50):
+    """List open side-effect decision points awaiting human resolution."""
+    async with async_session() as db:
+        return {"decisions": await side_effect_gate.list_open_decisions(db, limit=limit)}
+
+
+class ResolveRequest(BaseModel):
+    decision: str                       # 'approve' | 'reject' | 'edit'
+    comment: str = ""
+    edited_payload: dict | None = None
+    resolved_by: str = "operator"
+
+
+@router.post("/decisions/{decision_id}/resolve")
+async def resolve_decision(decision_id: int, req: ResolveRequest):
+    """Approve / reject / edit an open decision point and resume the task."""
+    async with async_session() as db:
+        result = await side_effect_gate.resolve_decision(
+            db, decision_id=decision_id, decision=req.decision,
+            comment=req.comment, edited_payload=req.edited_payload,
+            resolved_by=req.resolved_by,
+        )
+    if not result.get("ok"):
+        reason = result.get("reason") or "resolve failed"
+        raise HTTPException(404 if "not found" in reason else 409, reason)
+    return result
+
+
+# ─── Skills (SKILL.md registry) ─────────────────────────────────────────────
+
+@router.get("/skills")
+async def list_skills():
+    """List skills registered in the DB (synced from disk)."""
+    async with async_session() as db:
+        rows = (await db.execute(text(
+            "SELECT id, name, description, domain, version, enabled, path, eval_pass_rate "
+            "FROM skills ORDER BY name"
+        ))).mappings().all()
+    return {"skills": [dict(r) for r in rows]}
+
+
+@router.post("/skills/sync")
+async def sync_skills():
+    """Re-scan the skills/ directory and upsert SKILL.md folders into the DB."""
+    async with async_session() as db:
+        return await skills_svc.sync_to_db(db)
+
+
+# ─── Schedules (cron-ish jobs over scheduler.py) ────────────────────────────
+
+class ScheduleCreate(BaseModel):
+    name: str
+    cron_expr: str = "@daily"
+    task_id: int
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    name: str | None = None
+    cron_expr: str | None = None
+    task_id: int | None = None
+    enabled: bool | None = None
+
+
+@router.get("/schedules")
+async def list_schedules():
+    async with async_session() as db:
+        rows = (await db.execute(text(
+            """
+            SELECT s.id, s.name, s.cron_expr, s.task_id,
+                   s.enabled, s.last_run_at, s.next_run_at,
+                   t.task_key, t.title AS task_title, t.status AS task_status
+            FROM schedules s
+            LEFT JOIN tasks t ON t.id = s.task_id
+            ORDER BY s.id
+            """
+        ))).mappings().all()
+    return {"schedules": [dict(r) for r in rows]}
+
+
+@router.post("/schedules")
+async def create_schedule(req: ScheduleCreate):
+    async with async_session() as db:
+        task = (await db.execute(
+            text("SELECT id FROM tasks WHERE id = :t"), {"t": req.task_id},
+        )).fetchone()
+        if not task:
+            raise HTTPException(400, f"task {req.task_id} not found")
+        row = (await db.execute(text(
+            """
+            INSERT INTO schedules (name, cron_expr, task_id, enabled)
+            VALUES (:name, :cron, :tid, :en)
+            RETURNING id
+            """
+        ), {"name": req.name, "cron": req.cron_expr,
+            "tid": req.task_id, "en": req.enabled})).fetchone()
+        await db.commit()
+    await scheduler.reload_schedules()
+    return {"id": row[0]}
+
+
+@router.patch("/schedules/{schedule_id}")
+async def update_schedule(schedule_id: int, req: ScheduleUpdate):
+    fields = {k: v for k, v in req.model_dump(exclude_unset=True).items()}
+    if not fields:
+        raise HTTPException(400, "no fields to update")
+    set_clause = ", ".join(f"{k} = :{k}" for k in fields)
+    fields["id"] = schedule_id
+    async with async_session() as db:
+        res = await db.execute(
+            text(f"UPDATE schedules SET {set_clause}, updated_at = NOW() WHERE id = :id"),
+            fields,
+        )
+        await db.commit()
+        if res.rowcount == 0:
+            raise HTTPException(404, f"schedule {schedule_id} not found")
+    await scheduler.reload_schedules()
+    return {"id": schedule_id, "updated": list(fields.keys())}
+
+
+@router.delete("/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: int):
+    async with async_session() as db:
+        res = await db.execute(text("DELETE FROM schedules WHERE id = :id"), {"id": schedule_id})
+        await db.commit()
+        if res.rowcount == 0:
+            raise HTTPException(404, f"schedule {schedule_id} not found")
+    await scheduler.reload_schedules()
+    return {"id": schedule_id, "deleted": True}
+
+
+@router.post("/schedules/{schedule_id}/run")
+async def run_schedule_now(schedule_id: int):
+    """Fire a schedule immediately (advances its in-memory job to now)."""
+    if scheduler.run_job_now(f"schedule:{schedule_id}"):
+        return {"id": schedule_id, "status": "fired"}
+    raise HTTPException(404, f"schedule {schedule_id} not registered (enabled?)")
 
 
 # Webhook-fire endpoint moved to routes/pro_internal.py

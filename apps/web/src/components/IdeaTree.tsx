@@ -45,11 +45,24 @@ interface NodeProps {
   depth: number;
 }
 
+// Dot colour for a goal-graph node's status (Bootstrap text-* classes).
+const STATUS_DOT: Record<string, string> = {
+  draft: 'text-body-secondary',
+  expanding: 'text-info',
+  ready: 'text-primary',
+  blocked: 'text-warning',
+  running: 'text-info',
+  done: 'text-success',
+  failed: 'text-danger',
+  abandoned: 'text-body-secondary',
+};
+
 function IdeaTreeNode({ node, selectedId, onSelect, depth }: NodeProps) {
   const [expanded, setExpanded] = useState(true);
   const isFolder = node.kind === 'folder';
   const hasChildren = node.children.length > 0;
   const isSelected = selectedId === node.id;
+  const isGoalNode = node.node_type != null;
 
   const toggle = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -63,7 +76,7 @@ function IdeaTreeNode({ node, selectedId, onSelect, depth }: NodeProps) {
         style={{ cursor: 'pointer', paddingLeft: depth * 16 }}
         onClick={() => onSelect(node.id)}
       >
-        {isFolder && hasChildren ? (
+        {hasChildren ? (
           <span onClick={toggle} className="d-inline-flex">
             <CIcon icon={expanded ? cilCaretBottom : cilCaretRight} size="sm" />
           </span>
@@ -72,16 +85,27 @@ function IdeaTreeNode({ node, selectedId, onSelect, depth }: NodeProps) {
         )}
         <CIcon
           icon={isFolder ? (expanded && hasChildren ? cilFolderOpen : cilFolder) : cilLightbulb}
-          className={isFolder ? 'text-warning' : 'text-info'}
+          className={
+            isFolder
+              ? 'text-warning'
+              : isGoalNode
+                ? (STATUS_DOT[node.node_status] ?? 'text-info')
+                : 'text-info'
+          }
         />
-        <span className="flex-grow-1 text-truncate">{node.title}</span>
+        <span className="flex-grow-1 text-truncate">
+          {node.title}
+          {isGoalNode && (
+            <small className="text-body-secondary ms-1">· {node.node_type}</small>
+          )}
+        </span>
         {node.tasked && (
-          <span title="Converted to task" className="text-success">
+          <span title="Bound to a task" className="text-success">
             <CIcon icon={cilCheckAlt} size="sm" />
           </span>
         )}
       </div>
-      {isFolder && expanded && hasChildren && (
+      {expanded && hasChildren && (
         <ul className="list-unstyled mb-0">
           {node.children.map((child) => (
             <IdeaTreeNode

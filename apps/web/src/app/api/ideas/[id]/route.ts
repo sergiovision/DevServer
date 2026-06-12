@@ -9,6 +9,8 @@ const UPDATABLE = new Set([
   'tasked',
   'task_id',
   'sort_order',
+  'node_type',
+  'node_status',
 ]);
 
 export async function PATCH(

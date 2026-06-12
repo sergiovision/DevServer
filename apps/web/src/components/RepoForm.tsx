@@ -49,6 +49,8 @@ export function RepoForm({ repo }: RepoFormProps) {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const isLocal = formData.provider === 'local';
+
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
   ) => {
@@ -58,7 +60,12 @@ export function RepoForm({ repo }: RepoFormProps) {
       const next = { ...prev, [target.name]: value };
       // Auto-detect the provider from the clone URL host as the user types
       // it. They can still override via the Provider select afterwards.
-      if (target.name === 'clone_url' && typeof value === 'string') {
+      // An explicitly chosen Local Git provider is never overridden.
+      if (
+        target.name === 'clone_url' &&
+        typeof value === 'string' &&
+        prev.provider !== 'local'
+      ) {
         next.provider = /^https?:\/\/([^/@]+@)?github\.com\//i.test(value)
           ? 'github'
           : 'gitea';
@@ -77,7 +84,17 @@ export function RepoForm({ repo }: RepoFormProps) {
         ...formData,
         max_retries: parseInt(formData.max_retries),
         timeout_minutes: parseInt(formData.timeout_minutes),
+        // Local Git repos are defined only by their Local Root Folder
+        // (gitea_url) — clear remote-only fields so stale values from a
+        // previous provider choice are never persisted.
+        ...(isLocal
+          ? { clone_url: '', gitea_token: '', gitea_owner: '', gitea_repo: '' }
+          : {}),
       };
+
+      if (isLocal && !formData.gitea_url.trim()) {
+        throw new Error('Local Root Folder is required for a Local Git repository');
+      }
 
       const url = isEdit ? `/api/repos/${repo!.id}` : '/api/repos';
       const method = isEdit ? 'PATCH' : 'POST';
@@ -120,46 +137,80 @@ export function RepoForm({ repo }: RepoFormProps) {
               <CFormSelect name="provider" value={formData.provider} onChange={handleChange}>
                 <option value="gitea">Gitea</option>
                 <option value="github">GitHub</option>
+                <option value="local">Local Git</option>
               </CFormSelect>
             </CCol>
             <CCol md={6}>
-              <CFormLabel>Clone URL</CFormLabel>
+              <CFormLabel>Clone URL{isLocal ? ' (not needed)' : ''}</CFormLabel>
               <CFormInput
                 name="clone_url"
-                value={formData.clone_url}
+                value={isLocal ? '' : formData.clone_url}
                 onChange={handleChange}
-                placeholder="https://github.com/owner/repo.git"
-                required
+                placeholder={isLocal ? '' : 'https://github.com/owner/repo.git'}
+                required={!isLocal}
+                disabled={isLocal}
               />
             </CCol>
           </CRow>
 
           <CRow className="mb-3">
-            <CCol md={3}>
-              <CFormLabel>{formData.provider === 'github' ? 'Host URL (optional)' : 'Gitea URL'}</CFormLabel>
+            <CCol md={isLocal ? 6 : 3}>
+              <CFormLabel>
+                {isLocal
+                  ? 'Local Root Folder'
+                  : formData.provider === 'github'
+                    ? 'Host URL (optional)'
+                    : 'Gitea URL'}
+              </CFormLabel>
               <CFormInput
                 name="gitea_url"
                 value={formData.gitea_url}
                 onChange={handleChange}
-                placeholder={formData.provider === 'github' ? 'https://github.com' : 'https://gitea.example.com'}
+                placeholder={
+                  isLocal
+                    ? '/path/to/local/git/repo'
+                    : formData.provider === 'github'
+                      ? 'https://github.com'
+                      : 'https://gitea.example.com'
+                }
+                required={isLocal}
               />
             </CCol>
-            <CCol md={3}>
-              <CFormLabel>Owner</CFormLabel>
-              <CFormInput name="gitea_owner" value={formData.gitea_owner} onChange={handleChange} placeholder="org or user" />
+            <CCol md={isLocal ? 2 : 3}>
+              <CFormLabel>Owner{isLocal ? ' (not needed)' : ''}</CFormLabel>
+              <CFormInput
+                name="gitea_owner"
+                value={isLocal ? '' : formData.gitea_owner}
+                onChange={handleChange}
+                placeholder={isLocal ? '' : 'org or user'}
+                disabled={isLocal}
+              />
             </CCol>
-            <CCol md={3}>
-              <CFormLabel>Repo</CFormLabel>
-              <CFormInput name="gitea_repo" value={formData.gitea_repo} onChange={handleChange} placeholder="repository name" />
+            <CCol md={isLocal ? 2 : 3}>
+              <CFormLabel>Repo{isLocal ? ' (not needed)' : ''}</CFormLabel>
+              <CFormInput
+                name="gitea_repo"
+                value={isLocal ? '' : formData.gitea_repo}
+                onChange={handleChange}
+                placeholder={isLocal ? '' : 'repository name'}
+                disabled={isLocal}
+              />
             </CCol>
-            <CCol md={3}>
-              <CFormLabel>{formData.provider === 'github' ? 'GitHub Token' : 'Gitea Token'}</CFormLabel>
+            <CCol md={isLocal ? 2 : 3}>
+              <CFormLabel>
+                {isLocal
+                  ? 'Token (not needed)'
+                  : formData.provider === 'github'
+                    ? 'GitHub Token'
+                    : 'Gitea Token'}
+              </CFormLabel>
               <CFormInput
                 name="gitea_token"
                 type="password"
-                value={formData.gitea_token}
+                value={isLocal ? '' : formData.gitea_token}
                 onChange={handleChange}
-                placeholder={formData.provider === 'github' ? 'ghp_… (repo scope)' : 'API token'}
+                placeholder={isLocal ? '' : formData.provider === 'github' ? 'ghp_… (repo scope)' : 'API token'}
+                disabled={isLocal}
               />
             </CCol>
           </CRow>

@@ -8,7 +8,6 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-export const ProLoader = ({ children }: { children: any }) => children;
 export const PatchesPanel = (_props: any) => null;
 export const NightCyclePanel = (_props: any) => null;
 export const MessagesPanel = (_props: any) => null;

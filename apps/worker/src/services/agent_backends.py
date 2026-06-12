@@ -72,13 +72,16 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
     "google": [
         {"id": "gemini-3.1-pro-preview",       "label": "Gemini 3.1 Pro Preview (latest, AI Pro plan)"},
         {"id": "gemini-3-pro-preview",         "label": "Gemini 3 Pro Preview (strong coding)"},
+        {"id": "gemini-3.5-flash",             "label": "Gemini 3.5 Flash (GA, frontier-fast agentic)"},
+        {"id": "gemini-3.1-flash-lite",        "label": "Gemini 3.1 Flash-Lite (most cost-effective)"},
         {"id": "gemini-3-flash-preview",       "label": "Gemini 3 Flash Preview (cheap, fast)"},
         {"id": "gemini-2.5-pro",               "label": "Gemini 2.5 Pro (stable, free tier)"},
         {"id": "gemini-pro-latest",            "label": "Gemini Pro (latest alias)"},
     ],
     "openai": [
+        {"id": "gpt-5.5-codex",                "label": "GPT-5.5 Codex (latest frontier, 1M ctx)"},
+        {"id": "gpt-5.3-codex",                "label": "GPT-5.3 Codex (heavy reasoning, agentic)"},
         {"id": "gpt-5.4-mini",                 "label": "GPT-5.4 Mini (Azure Foundry test)"},
-        {"id": "gpt-5.3-codex",                "label": "GPT-5.3 Codex (coding-tuned)"},
         {"id": "gpt-5.2",                      "label": "GPT-5.2 (reasoning)"},
         {"id": "o4-mini",                      "label": "o4-mini (cheap reasoning)"},
     ],

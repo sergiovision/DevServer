@@ -19,6 +19,7 @@ import { AgentCard } from './AgentCard';
 import { WorkerToolbar } from './WorkerToolbar';
 import { NightCyclePanel } from './pro-loader';
 import { DashboardCharts } from './DashboardCharts';
+import { DecisionsBanner } from './DecisionsBanner';
 import type { Task, QueueStatsResponse } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 
@@ -70,6 +71,7 @@ export function Dashboard({ runningTasks, queuedTasks, todayStats }: DashboardPr
     <>
       {/* Worker status + controls */}
       <WorkerToolbar />
+      <DecisionsBanner />
       <NightCyclePanel />
 
       {/* Running Agents */}

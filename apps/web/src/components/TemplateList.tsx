@@ -143,7 +143,7 @@ export function TemplateList({ templates }: TemplateListProps) {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
 
-  const GIT_FLOW_LABELS: Record<string, string> = { branch: 'Branch + PR', commit: 'Direct commit', patch: 'Patch only' };
+  const GIT_FLOW_LABELS: Record<string, string> = { branch: 'Branch + PR', commit: 'Direct commit', patch: 'Patch only', untracked: 'Untracked changes' };
   const BILLING_LABELS: Record<string, string> = { max: 'Max', api: 'API' };
 
   return (

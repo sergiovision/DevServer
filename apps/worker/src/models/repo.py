@@ -28,8 +28,11 @@ class Repo(Base):
     timeout_minutes: Mapped[int] = mapped_column(Integer, default=60)
     claude_md_path: Mapped[str] = mapped_column(String(256), default="CLAUDE.md")
     gitea_token: Mapped[str] = mapped_column(String(256), default="")
-    # Git host provider: "gitea" (default/legacy) or "github". Drives the
-    # clone-URL auth scheme and the pull-request REST API in git_ops.
+    # Git host provider: "gitea" (default/legacy), "github", or "local".
+    # Drives the clone-URL auth scheme and the pull-request REST API in
+    # git_ops. "local" means a folder on the worker host (path stored in
+    # gitea_url — the "Local Root Folder"): no clone, no worktree copy, no
+    # push, no PR; the agent runs git directly inside the folder.
     provider: Mapped[str] = mapped_column(String(16), default="gitea", nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

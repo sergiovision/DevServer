@@ -43,6 +43,8 @@ class Task(Base):
     # Set by POST /api/tasks/[id]/approve (or /reject) from the dashboard.
     plan_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     plan_rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    # 'branch' | 'commit' | 'patch' | 'untracked' — the last is valid only
+    # for local-folder repos (edit files, never branch/commit/push).
     git_flow: Mapped[str] = mapped_column(String(16), default="branch")
     backup_vendor: Mapped[str | None] = mapped_column(String(16), default=None)
     backup_model: Mapped[str | None] = mapped_column(String(32), default="claude-sonnet-4-6")

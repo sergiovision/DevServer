@@ -36,7 +36,7 @@ class TestSchedulerLifecycle:
     async def test_stop_noop_when_empty(self):
         """stop_scheduler is safe when no tasks are running."""
         import services.scheduler as mod
-        mod._scheduler_tasks.clear()
+        mod._JOBS.clear()
 
         await stop_scheduler()  # Should not raise
 

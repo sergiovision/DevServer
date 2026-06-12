@@ -86,7 +86,13 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const [agentVendor, setAgentVendor] = useState<AgentVendor>((task.agent_vendor ?? 'anthropic') as AgentVendor);
   const [agentModel, setAgentModel] = useState<string>(task.claude_model ?? '');
   const [agentBilling, setAgentBilling] = useState<ClaudeMode>((task.claude_mode ?? 'max') as ClaudeMode);
-  const [agentGitFlow, setAgentGitFlow] = useState<GitFlow>((task.git_flow ?? 'branch') as GitFlow);
+  // Local repos never push — only 'patch' and 'untracked' git flows apply.
+  const isLocalRepo = task.repo_provider === 'local';
+  const [agentGitFlow, setAgentGitFlow] = useState<GitFlow>(() => {
+    const flow = (task.git_flow ?? 'branch') as GitFlow;
+    if (isLocalRepo && flow !== 'patch' && flow !== 'untracked') return 'patch';
+    return flow;
+  });
   const [backupVendor, setBackupVendor] = useState<AgentVendor>((task.backup_vendor ?? 'anthropic') as AgentVendor);
   const [backupModel, setBackupModel] = useState<string>(task.backup_model ?? 'claude-sonnet-4-6');
   const [agentSaving, setAgentSaving] = useState(false);
@@ -580,9 +586,18 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   value={agentGitFlow}
                   onChange={(e) => setAgentGitFlow(e.target.value as GitFlow)}
                 >
-                  <option value="branch">Branch + PR</option>
-                  <option value="commit">Direct commit</option>
-                  <option value="patch">Patch only</option>
+                  {isLocalRepo ? (
+                    <>
+                      <option value="untracked">Untracked changes</option>
+                      <option value="patch">Patch only</option>
+                    </>
+                  ) : (
+                    <>
+                      <option value="branch">Branch + PR</option>
+                      <option value="commit">Direct commit</option>
+                      <option value="patch">Patch only</option>
+                    </>
+                  )}
                 </CFormSelect>
               </div>
               <div className="mb-3">

@@ -15,7 +15,9 @@ export interface Repo {
   max_retries: number;
   timeout_minutes: number;
   gitea_token: string;
-  provider: 'gitea' | 'github';
+  // 'local' = a folder on the worker host (path stored in gitea_url, the
+  // "Local Root Folder"): no clone URL, no token, no push, no PR.
+  provider: 'gitea' | 'github' | 'local';
   active: boolean;
   created_at: string;
   updated_at: string;
@@ -34,7 +36,9 @@ export type TaskStatus =
   | 'retired';
 export type TaskMode = 'autonomous' | 'interactive';
 export type ClaudeMode = 'api' | 'max';
-export type GitFlow = 'branch' | 'commit' | 'patch';
+// 'untracked' is only valid for local repos — the agent edits files in the
+// Local Root Folder without creating branches, commits, or pushes.
+export type GitFlow = 'branch' | 'commit' | 'patch' | 'untracked';
 export type AgentVendor = 'anthropic' | 'google' | 'openai' | 'glm';
 
 export interface Task {
@@ -69,6 +73,7 @@ export interface Task {
   // Joined fields
   repo_name?: string;
   repo_clone_url?: string;
+  repo_provider?: 'gitea' | 'github' | 'local';
 }
 
 export interface TaskTemplate {

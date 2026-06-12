@@ -45,10 +45,24 @@ export function RepoList({ repos }: RepoListProps) {
             <CTableRow key={repo.id}>
               <CTableDataCell><strong>{repo.name}</strong></CTableDataCell>
               <CTableDataCell>
-                <CBadge color={repo.provider === 'github' ? 'dark' : 'info'} className="me-2">
-                  {repo.provider === 'github' ? 'GitHub' : 'Gitea'}
-                </CBadge>
-                {repo.gitea_owner}/{repo.gitea_repo}
+                {repo.provider === 'local' ? (
+                  <>
+                    <CBadge
+                      className="me-2"
+                      style={{ backgroundColor: '#1abc9c', color: '#fff' }}
+                    >
+                      Local
+                    </CBadge>
+                    <code className="small" style={{ color: '#1abc9c' }}>{repo.gitea_url}</code>
+                  </>
+                ) : (
+                  <>
+                    <CBadge color={repo.provider === 'github' ? 'dark' : 'info'} className="me-2">
+                      {repo.provider === 'github' ? 'GitHub' : 'Gitea'}
+                    </CBadge>
+                    {repo.gitea_owner}/{repo.gitea_repo}
+                  </>
+                )}
               </CTableDataCell>
               <CTableDataCell>{repo.default_branch}</CTableDataCell>
               <CTableDataCell>{repo.claude_model || '-'}</CTableDataCell>

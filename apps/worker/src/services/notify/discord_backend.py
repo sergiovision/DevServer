@@ -88,6 +88,7 @@ class DiscordBackend(NotifyBackend):
             "branch": f"🔗 [Open PR]({kwargs['pr_url']})" if kwargs.get("pr_url") else "Push failed",
             "commit": "💾 Committed directly",
             "patch": "📦 Patch generated",
+            "untracked": "📂 Untracked changes left in local folder",
         }.get(kwargs["git_flow"], "")
         return await self._post({
             "embeds": [self._embed(

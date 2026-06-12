@@ -9,8 +9,10 @@ currently executing handler task (the outer loop keeps running).
 """
 
 import asyncio
+import json as _json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -229,6 +231,150 @@ async def _cleanup_old_logs() -> int:
     return deleted_count
 
 
+# ─── DB-backed schedules (Phase 1) ───────────────────────────────────────────
+
+_SCHEDULE_GROUP = "schedule"
+
+
+def _parse_cron(expr: str) -> tuple[Optional[int], Optional[int], str]:
+    """Map a small cron subset → (interval_seconds, daily_hour_utc, label).
+
+    Supported: '@hourly', '@daily'/'@midnight', 'every <N>m', 'every <N>h',
+    'HH:MM' (daily UTC). Anything else falls back to hourly.
+    """
+    e = (expr or "").strip().lower()
+    if e == "@hourly":
+        return 3600, None, "every hour"
+    if e in ("@daily", "@midnight"):
+        return None, 0, "daily 00:00 UTC"
+    m = re.match(r"^every\s+(\d+)\s*m(?:in)?$", e)
+    if m:
+        return int(m.group(1)) * 60, None, f"every {m.group(1)}m"
+    m = re.match(r"^every\s+(\d+)\s*h(?:our)?s?$", e)
+    if m:
+        return int(m.group(1)) * 3600, None, f"every {m.group(1)}h"
+    m = re.match(r"^(\d{1,2}):(\d{2})$", e)
+    if m:
+        return None, int(m.group(1)), f"daily {expr.strip()} UTC"
+    return 3600, None, f"{expr} (unrecognised → hourly)"
+
+
+async def _fire_schedule(schedule_id: int) -> str:
+    """Re-run the schedule's bound task and bump bookkeeping.
+
+    A schedule references one existing task (schedules.task_id). Firing it
+    resets that task to 'pending' and enqueues it through the Next.js
+    enqueue endpoint (the single source of truth for the queue). A task
+    that is already in flight (queued/running/verifying) is left alone —
+    the fire is skipped, only the next-run bookkeeping advances.
+    """
+    async with async_session() as db:
+        row = (await db.execute(text(
+            """
+            SELECT s.id, s.name, s.cron_expr, s.task_id,
+                   t.task_key, t.status AS task_status
+            FROM schedules s
+            LEFT JOIN tasks t ON t.id = s.task_id
+            WHERE s.id = :id AND s.enabled
+            """
+        ), {"id": schedule_id})).mappings().fetchone()
+        if not row:
+            return f"schedule {schedule_id} gone or disabled"
+
+        now = datetime.now(timezone.utc)
+        interval, daily_hour, _label = _parse_cron(row["cron_expr"])
+        if interval is not None:
+            next_run = now + timedelta(seconds=interval)
+        else:
+            next_run = datetime.fromtimestamp(_compute_next_daily(daily_hour or 0), tz=timezone.utc)
+        await db.execute(text(
+            "UPDATE schedules SET last_run_at = :now, next_run_at = :nx, updated_at = :now WHERE id = :id"
+        ), {"now": now, "nx": next_run, "id": schedule_id})
+
+        task_id = row["task_id"]
+        task_key = row["task_key"]
+        if not task_id or not task_key:
+            await db.commit()
+            return f"schedule {schedule_id} has no task bound — skipped"
+
+        if row["task_status"] in ("queued", "running", "verifying"):
+            await db.commit()
+            return (f"schedule {schedule_id}: task {task_key} is "
+                    f"{row['task_status']} — skipped this fire")
+
+        await db.execute(text(
+            "UPDATE tasks SET status = 'pending', updated_at = NOW() WHERE id = :t"
+        ), {"t": task_id})
+        await db.execute(text(
+            "INSERT INTO task_events (task_id, event_type, payload) "
+            "VALUES (:t, 'schedule_fired', CAST(:pl AS JSONB))"
+        ), {"t": task_id, "pl": _json.dumps({
+            "schedule_id": schedule_id, "name": row["name"],
+            "task_key": task_key,
+        })})
+        await db.commit()
+
+    enqueued = False
+    try:
+        from services.decomposer import _enqueue_task
+        enqueued = await _enqueue_task(task_id)
+    except Exception:
+        logger.exception("schedule %s enqueue failed", schedule_id)
+    return f"fired schedule {schedule_id} → task {task_key} (enqueued={enqueued})"
+
+
+def _make_schedule_handler(schedule_id: int) -> Callable[[], Awaitable[str]]:
+    async def _handler() -> str:
+        return await _fire_schedule(schedule_id)
+    return _handler
+
+
+async def _register_db_schedules(*, start_loops: bool = False) -> int:
+    """Load enabled schedules from the DB and register each as a Job.
+
+    When ``start_loops`` is True (runtime reload), also starts the outer loop
+    task for each newly-registered schedule job.
+    """
+    async with async_session() as db:
+        rows = (await db.execute(text(
+            "SELECT id, name, cron_expr, next_run_at FROM schedules WHERE enabled ORDER BY id"
+        ))).mappings().all()
+
+    count = 0
+    for row in rows:
+        interval, daily_hour, label = _parse_cron(row["cron_expr"])
+        if interval is not None:
+            next_time = time.time() + interval
+        else:
+            next_time = _compute_next_daily(daily_hour or 0)
+        job = Job(
+            name=f"{_SCHEDULE_GROUP}:{row['id']}",
+            group=_SCHEDULE_GROUP,
+            schedule=f"{row['name']} — {label}",
+            interval_seconds=interval,
+            daily_hour_utc=daily_hour,
+            next_time=next_time,
+        )
+        _register(job, _make_schedule_handler(row["id"]))
+        if start_loops:
+            job.loop_task = asyncio.create_task(_job_loop(job))
+        count += 1
+    return count
+
+
+async def reload_schedules() -> int:
+    """Re-sync schedule jobs after a CRUD change. Cancels existing schedule
+    loops and re-registers from the DB. Returns the new schedule count."""
+    for name, job in list(_JOBS.items()):
+        if job.group == _SCHEDULE_GROUP:
+            if job.loop_task and not job.loop_task.done():
+                job.loop_task.cancel()
+            _JOBS.pop(name, None)
+    count = await _register_db_schedules(start_loops=True)
+    logger.info("Reloaded %d DB schedules", count)
+    return count
+
+
 # ─── Public API ─────────────────────────────────────────────────────────────
 
 async def start_scheduler() -> list[asyncio.Task]:
@@ -266,6 +412,15 @@ async def start_scheduler() -> list[asyncio.Task]:
             ),
             _run_memory_archive,
         )
+
+    # DB-backed schedules (Phase 1). Registered here so the loop-creation
+    # below starts their outer loops alongside the built-in jobs.
+    try:
+        n = await _register_db_schedules()
+        if n:
+            logger.info("Registered %d DB schedules", n)
+    except Exception:
+        logger.exception("failed to register DB schedules")
 
     loops: list[asyncio.Task] = []
     for job in _JOBS.values():

@@ -32,6 +32,14 @@ interface TaskFormProps {
   templates?: TaskTemplate[];
 }
 
+// Local repos never push: only 'patch' and 'untracked' are valid there;
+// 'untracked' is meaningless anywhere else.
+function normalizeGitFlow(flow: GitFlow, local: boolean): GitFlow {
+  if (local && flow !== 'patch' && flow !== 'untracked') return 'patch';
+  if (!local && flow === 'untracked') return 'branch';
+  return flow;
+}
+
 export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -45,7 +53,10 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     title: task?.title || '',
     description: task?.description || prefillDescription || '',
     acceptance: task?.acceptance || '',
-    git_flow: (task?.git_flow || 'branch') as GitFlow,
+    git_flow: normalizeGitFlow(
+      (task?.git_flow || 'branch') as GitFlow,
+      repos.find((r) => r.id === task?.repo_id)?.provider === 'local',
+    ),
     claude_mode: task?.claude_mode || 'max',
     agent_vendor: (task?.agent_vendor || 'anthropic') as AgentVendor,
     claude_model: task?.claude_model || '',
@@ -65,11 +76,13 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     if (!templateId) return;
     const t = templates.find((tpl) => tpl.id === parseInt(templateId));
     if (!t) return;
-    setFormData((prev) => ({
+    setFormData((prev) => {
+      const repo = repos.find((r) => r.id === parseInt(prev.repo_id));
+      return {
       ...prev,
       description: t.description ?? prev.description,
       acceptance: t.acceptance ?? prev.acceptance,
-      git_flow: t.git_flow ?? prev.git_flow,
+      git_flow: normalizeGitFlow(t.git_flow ?? prev.git_flow, repo?.provider === 'local'),
       claude_mode: t.claude_mode ?? prev.claude_mode,
       agent_vendor: (t.agent_vendor ?? prev.agent_vendor) as AgentVendor,
       claude_model: t.claude_model ?? prev.claude_model,
@@ -77,13 +90,25 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
       backup_model: t.backup_model ?? prev.backup_model,
       max_turns: t.max_turns ?? prev.max_turns,
       skip_verify: t.skip_verify ?? prev.skip_verify,
-    }));
+      };
+    });
   };
+
+  const selectedRepo = repos.find((r) => r.id === parseInt(formData.repo_id));
+  const isLocalRepo = selectedRepo?.provider === 'local';
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
   ) => {
-    setFormData((prev) => ({ ...prev, [e.target.name]: e.target.value }));
+    const { name, value } = e.target;
+    setFormData((prev) => {
+      const next = { ...prev, [name]: value };
+      if (name === 'repo_id') {
+        const repo = repos.find((r) => r.id === parseInt(value));
+        next.git_flow = normalizeGitFlow(next.git_flow, repo?.provider === 'local');
+      }
+      return next;
+    });
   };
 
   const handleCheck = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -336,11 +361,16 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
             <CFormLabel>Git flow</CFormLabel>
             <div className="btn-group w-100" role="group">
               {(
-                [
-                  { value: 'branch', label: 'Branch + PR',     title: 'Create agent/… branch and open a pull request (default)' },
-                  { value: 'commit', label: 'Direct commit',   title: 'Squash-merge directly onto the default branch — no PR' },
-                  { value: 'patch',  label: 'Patch only',      title: 'Generate a combined.mbox patch file — no push, no PR' },
-                ] as { value: GitFlow; label: string; title: string }[]
+                (isLocalRepo
+                  ? [
+                      { value: 'untracked', label: 'Untracked changes', title: 'Edit files directly in the Local Root Folder — no branch, no commit, no push' },
+                      { value: 'patch',     label: 'Patch only',        title: 'Commit on a local agent/… branch and generate a combined.mbox patch file — no push' },
+                    ]
+                  : [
+                      { value: 'branch', label: 'Branch + PR',     title: 'Create agent/… branch and open a pull request (default)' },
+                      { value: 'commit', label: 'Direct commit',   title: 'Squash-merge directly onto the default branch — no PR' },
+                      { value: 'patch',  label: 'Patch only',      title: 'Generate a combined.mbox patch file — no push, no PR' },
+                    ]) as { value: GitFlow; label: string; title: string }[]
               ).map(({ value, label, title }) => (
                 <React.Fragment key={value}>
                   <input

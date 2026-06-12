@@ -20,13 +20,15 @@ logger = logging.getLogger(__name__)
 def _detect_provider(clone_url: str, provider: str | None) -> str:
     """Resolve the git-host provider for a repo.
 
-    An explicit ``provider`` ('gitea' | 'github') wins. When it is missing
-    or unrecognised the host of the clone URL is sniffed so a github.com
-    repo always behaves correctly even if the column was never set.
+    An explicit ``provider`` ('gitea' | 'github' | 'local') wins. When it
+    is missing or unrecognised the host of the clone URL is sniffed so a
+    github.com repo always behaves correctly even if the column was never
+    set. 'local' is never sniffed — it must be explicit (local repos have
+    no clone URL at all).
     """
     if provider:
         p = provider.strip().lower()
-        if p in ("gitea", "github"):
+        if p in ("gitea", "github", "local"):
             return p
     host = (urlsplit(clone_url).hostname or "").lower()
     if host == "github.com" or host.endswith(".github.com"):
@@ -39,8 +41,11 @@ def _resolve_token(repo_token: str | None, provider: str) -> str:
 
     A per-repo token always wins. The global fallback is provider-specific:
     GitHub never falls back to ``settings.gitea_token`` (GitHub would reject
-    it with a misleading "Invalid username or token" error).
+    it with a misleading "Invalid username or token" error). Local repos
+    need no auth at all.
     """
+    if provider == "local":
+        return ""
     if repo_token:
         return repo_token
     if provider == "github":
@@ -361,6 +366,172 @@ async def reset_worktree(repo_name: str, default_branch: str) -> None:
     await _run(["git", "-C", worktree_path, "clean", "-fdx", "--exclude=.env"])
 
 
+# ── Local repos (provider='local') ────────────────────────────────────────────
+#
+# A local repo is defined by a folder on the worker host that already holds
+# a git checkout (``repos.gitea_url`` stores the path — the UI labels the
+# field "Local Root Folder"). There is no remote, no clone, no bare repo and
+# no per-repo worktree copy: the agent runs git commands directly inside the
+# operator's folder. Nothing is ever pushed, and the folder is never
+# hard-reset or cleaned — it belongs to the operator.
+
+
+def is_local_provider(provider: str | None) -> bool:
+    """True when the repo is a local-folder repo (provider='local')."""
+    return (provider or "").strip().lower() == "local"
+
+
+def resolve_local_root(local_root: str | None) -> str:
+    """Normalise the Local Root Folder path. Raises on an empty value."""
+    path = os.path.expanduser((local_root or "").strip())
+    if not path:
+        raise RuntimeError(
+            "Local repo has no Local Root Folder configured "
+            "(set it on the repository form)"
+        )
+    return os.path.abspath(path)
+
+
+async def _assert_local_git_repo(local_root: str) -> None:
+    if not os.path.isdir(local_root):
+        raise RuntimeError(f"Local Root Folder does not exist: {local_root}")
+    rc, out, err = await _run(
+        ["git", "-C", local_root, "rev-parse", "--is-inside-work-tree"],
+    )
+    if rc != 0 or out.strip() != "true":
+        raise RuntimeError(
+            f"Local Root Folder is not a git repository: {local_root}"
+            + (f" ({err.strip()})" if err.strip() else "")
+        )
+
+
+async def get_current_branch(repo_path: str) -> str:
+    """Name of the currently checked-out branch ('' on detached HEAD/error)."""
+    rc, out, _ = await _run(
+        ["git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+    )
+    branch = out.strip() if rc == 0 else ""
+    return "" if branch == "HEAD" else branch
+
+
+async def setup_local_repo(
+    local_root: str,
+    task_key: str,
+    git_flow: str,
+    *,
+    continuation: bool = False,
+) -> tuple[str, str]:
+    """Prepare a local-folder repo for a task. Returns (root_path, branch_name).
+
+    Unlike :func:`setup_worktree` this NEVER clones, fetches, resets or
+    cleans — the folder is the operator's own checkout.
+
+    - ``git_flow='untracked'``: leave the repo exactly as it is; the agent
+      only edits files and nothing is ever committed. The returned branch
+      name is the currently checked-out branch (informational only).
+    - ``git_flow='patch'``: check out a local ``agent/{task_key}`` branch
+      from the current HEAD; the agent commits there and patches are
+      exported. Requires a clean working tree, otherwise the operator's own
+      uncommitted changes would be swept into the agent's commits.
+    """
+    root = resolve_local_root(local_root)
+    await _assert_local_git_repo(root)
+
+    current_branch = await get_current_branch(root)
+
+    if git_flow == "untracked":
+        logger.info(
+            "Local repo ready (untracked flow): %s on %s",
+            root, current_branch or "detached HEAD",
+        )
+        return root, current_branch or "HEAD"
+
+    safe_key = task_key.replace(" ", "-").replace("/", "-").strip("-")
+    branch_name = f"agent/{safe_key}"
+
+    rc_branch, _, _ = await _run(
+        ["git", "-C", root, "rev-parse", "--verify", branch_name],
+    )
+    branch_exists = rc_branch == 0
+
+    # Refuse to start on a dirty tree — `git add -A` after the run would
+    # otherwise swallow the operator's own work into the agent's commit.
+    # Continuation is exempt: leftover changes there are the agent's own.
+    if not continuation and not (branch_exists and current_branch == branch_name):
+        rc, status_out, _ = await _run(["git", "-C", root, "status", "--porcelain"])
+        if status_out.strip():
+            raise RuntimeError(
+                f"Local repo {root} has uncommitted changes. Commit or stash "
+                "them first, or use the 'Untracked changes' git flow."
+            )
+
+    if branch_exists:
+        if current_branch != branch_name:
+            rc, _, err = await _run(["git", "-C", root, "checkout", branch_name])
+            if rc != 0:
+                raise RuntimeError(
+                    f"git checkout {branch_name} failed in {root}: {err.strip()}"
+                )
+        logger.info("Local repo ready (resumed branch): %s on %s", root, branch_name)
+        return root, branch_name
+
+    rc, _, err = await _run(["git", "-C", root, "checkout", "-b", branch_name])
+    if rc != 0:
+        raise RuntimeError(
+            f"git checkout -b {branch_name} failed in {root}: {err.strip()}"
+        )
+    logger.info("Local repo ready: %s on new branch %s", root, branch_name)
+    return root, branch_name
+
+
+async def restore_local_branch(local_root: str, original_branch: str | None) -> None:
+    """Best-effort: put the operator's checkout back on its original branch.
+
+    Called from the task's finally block for local repos using the 'patch'
+    flow. Skipped when the tree is dirty (a failed run may leave work the
+    operator wants to inspect) — never force-checkouts, never resets.
+    """
+    if not original_branch:
+        return
+    try:
+        root = resolve_local_root(local_root)
+    except RuntimeError:
+        return
+    current = await get_current_branch(root)
+    if not current or current == original_branch:
+        return
+    _, status_out, _ = await _run(["git", "-C", root, "status", "--porcelain"])
+    if status_out.strip():
+        logger.info(
+            "Local repo %s left on %s (dirty tree, not restoring %s)",
+            root, current, original_branch,
+        )
+        return
+    rc, _, err = await _run(["git", "-C", root, "checkout", original_branch])
+    if rc != 0:
+        logger.warning(
+            "Could not restore %s to branch %s: %s", root, original_branch, err.strip(),
+        )
+    else:
+        logger.info("Restored local repo %s to branch %s", root, original_branch)
+
+
+async def refresh_local_repo(local_root: str) -> dict:
+    """'Refresh' for a local repo — validate only, never clone or fetch."""
+    try:
+        root = resolve_local_root(local_root)
+        await _assert_local_git_repo(root)
+    except RuntimeError as exc:
+        return {"ok": False, "message": str(exc)}
+    branch = await get_current_branch(root)
+    return {
+        "ok": True,
+        "message": f"Local repository OK at {root} (on {branch or 'detached HEAD'})",
+        "cloned": False,
+        "fetched": False,
+    }
+
+
 async def ensure_committed(worktree_path: str, task_key: str, title: str) -> bool:
     """Commit any uncommitted changes. Returns True if a commit was made."""
     rc, stdout, _ = await _run(["git", "status", "--porcelain"], cwd=worktree_path)
@@ -370,7 +541,15 @@ async def ensure_committed(worktree_path: str, task_key: str, title: str) -> boo
     logger.info("Uncommitted changes detected — committing")
     await _run(["git", "add", "-A"], cwd=worktree_path)
     msg = f"[{task_key}] {title}\n\nGenerated by DevServer autonomous agent"
-    await _run(["git", "commit", "-m", msg], cwd=worktree_path)
+    # Pass the agent identity inline: worktrees already have it in repo
+    # config (no-op there), but local-folder repos deliberately keep the
+    # operator's own config untouched and still need agent-attributed commits.
+    await _run([
+        "git",
+        "-c", f"user.email={settings.git_user_email}",
+        "-c", f"user.name={settings.git_user_name}",
+        "commit", "-m", msg,
+    ], cwd=worktree_path)
     return True
 
 
@@ -491,6 +670,13 @@ async def create_gitea_pr(
     for both because ``origin`` was rewritten to a provider-correct
     authenticated URL in ``setup_worktree``.
     """
+    # Safety net: local-folder repos must never push anywhere. The agent
+    # runner coerces their git_flow away from 'branch', so reaching this
+    # indicates a misconfiguration — refuse rather than touch a remote.
+    if is_local_provider(provider):
+        logger.error("create_gitea_pr called for a local repo — refusing to push")
+        return None
+
     # Push branch (origin already carries provider-correct auth from setup)
     rc, out, err = await _run(
         ["git", "push", "origin", branch_name, "--force-with-lease"],

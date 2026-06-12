@@ -5,7 +5,7 @@
 
 ### An autonomous coding pipeline for AI coding agents.
 
-**Dispatches coding tasks → runs the agent in an isolated git worktree → verifies build/test/lint → opens a pull request on Gitea.**
+**Dispatches coding tasks → runs the agent in an isolated git worktree → verifies build/test/lint → opens a pull request on Gitea or GitHub. Or point it at any local git folder — no remote, no tokens, works with every git provider.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=next.js&logoColor=white)](https://nextjs.org/)
@@ -39,8 +39,6 @@ Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a C
 
 All of the above are real code paths, not marketing bullets. See [`apps/worker/src/services/`](apps/worker/src/services/) for the implementations.
 
-> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, night cycle, inter-task messaging bus + operator inbox, and webhook triggers are available in the [Pro edition](README.PRO.md).
-
 ## Features
 
 ### Dashboard — what's running, what's queued, what cost what
@@ -71,7 +69,7 @@ The single most information-dense view in the product. From left:
 
 - **Live event log** — every agent step (`repo_map_built`, `reality_signal`, `error_classified`, `pr_preflight_pass`, `rate_limit_backoff`, `vendor_failover`) as it streams in over PG `NOTIFY` → WebSocket.
 - **Task log** — real-time tail of the per-task log file with run result, diff stats, and `git am`-ready output.
-- **Agent settings sidebar** — per-task overrides for billing mode (API / Max subscription), vendor + model picker, backup vendor + model for auto-failover, git flow (Branch + PR / Direct commit / Patch only), verification toggle, and a Save button.
+- **Agent settings sidebar** — per-task overrides for billing mode (API / Max subscription), vendor + model picker, backup vendor + model for auto-failover, git flow (Branch + PR / Direct commit / Patch only — Local Git repos offer Untracked changes / Patch only instead), verification toggle, and a Save button.
 - **Patches panel** — commit count, diff stats (files changed, lines added/removed), generated-at timestamp, and a prominent **Download combined.mbox** button.
 
 📂 [`apps/web/src/app/tasks/[id]/page.tsx`](apps/web/src/app/tasks/[id]/page.tsx) · [`apps/web/src/components/TaskDetail.tsx`](apps/web/src/components/TaskDetail.tsx)
@@ -115,6 +113,33 @@ A real-time log viewer with two tabs — `worker.log` and `web.log` — polled e
 A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
 
 📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx)
+
+---
+
+### Repositories — Gitea, GitHub, or any local git folder
+
+Three repository types, selected per repo:
+
+- **Gitea / Forgejo** — clones over HTTPS with a per-repo or global token, opens PRs through the Gitea REST API.
+- **GitHub** — same pipeline with GitHub-correct auth (`x-access-token` works for classic PATs, fine-grained PATs and App tokens alike) and the GitHub PR API. GitHub Enterprise Server is supported too.
+- **Local Git** — defined by a **Local Root Folder** instead of a clone URL. DevServer runs git directly inside that folder: no clone, no worktree copy, no tokens, and — by hard guarantee — **no push, ever**.
+
+Why Local Git matters: it makes DevServer **provider-agnostic**. Clone a repo from **GitHub, GitLab, Bitbucket, Azure DevOps, a private bare repo on a NAS — anything** — and point DevServer at the folder. Since all work happens against the local clone, there is no host API to integrate, no token to provision, and nothing ever leaves your machine. Two git flows fit this model:
+
+- **Untracked changes** — the agent only edits files in your working tree. No branch, no commit, no push; you review the diff with your normal tools and commit it yourself.
+- **Patch only** — the agent commits on a local `agent/…` branch (your original branch is restored afterwards) and the changes are exported as a `combined.mbox` you can `git am` anywhere.
+
+Safety guarantees for your folder: DevServer never hard-resets or cleans it, refuses to start a patch-flow task on a dirty working tree (so your own uncommitted work can never be swept into agent commits), and the agent is explicitly instructed to never touch remotes. Local repos show a turquoise **Local** badge on the Repos page.
+
+📂 [`apps/worker/src/services/git_ops.py`](apps/worker/src/services/git_ops.py) · [`apps/web/src/components/RepoForm.tsx`](apps/web/src/components/RepoForm.tsx)
+
+---
+
+### Jobs — cron schedules that re-run tasks
+
+A schedule binds a name + cron expression (`@hourly`, `@daily`, `every 30m`, `every 2h`, `HH:MM` UTC) to an **existing task**. On every fire the task is reset to pending and enqueued through the normal pipeline; a task that is already queued or running is left alone — no double-runs. Run history lands in the task's own runs/events, so there is nothing extra to monitor.
+
+📂 [`apps/web/src/components/SchedulesPanel.tsx`](apps/web/src/components/SchedulesPanel.tsx) · [`apps/worker/src/services/scheduler.py`](apps/worker/src/services/scheduler.py)
 
 ## Architecture
 
@@ -233,7 +258,7 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 | **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
 | **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
 | **AI engines** | Claude, Gemini, Codex, GLM CLIs | DevServer *orchestrates* existing CLIs instead of reimplementing agent logic. |
-| **Git platform** | Gitea / Forgejo | Self-hosted and API-compatible. |
+| **Git platform** | Gitea / Forgejo / GitHub / Local Git | Gitea and GitHub get PRs via their REST APIs; Local Git repos work on a plain local clone — any provider, no API, no tokens. |
 | **Notifications** | Telegram Bot API | Basic task lifecycle alerts. |
 | **Charts** | Chart.js + react-chartjs-2 | Lightweight, no-frills analytics visualizations. |
 | **Package mgmt** | `uv` (Python) · `npm` (Node) | Fast, cacheable, boring. |
@@ -247,7 +272,7 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 - PostgreSQL >= 16
 - At least one agent CLI installed and authenticated (e.g. `claude login`)
 - `uv` for Python dependency management — [install guide](https://docs.astral.sh/uv/)
-- A Gitea (or Forgejo) instance with a personal access token
+- A Gitea (or Forgejo) instance with a personal access token — or skip the git host entirely and use a **Local Git** repo (any local clone, no token needed)
 
 ### Local setup (host processes)
 
@@ -391,7 +416,7 @@ apps/
       app_settings.py                 → Typed reader for the key/value settings table
       llm_client.py                   → Vendor-agnostic system LLM client
       verifier.py                     → Pre/build/test/lint runner
-      git_ops.py                      → Git worktree management + Gitea PR creation
+      git_ops.py                      → Git worktree management, Gitea/GitHub PRs, local-folder repos
     src/routes/
       internal.py                     → Status, pause, cancel, generate-task, prediction
 database/
@@ -425,7 +450,9 @@ DevServer ships as two editions:
 | Settings / system LLM configuration | ✅ | ✅ |
 | Basic Telegram notifications | ✅ | ✅ |
 | Backup & restore scripts | ✅ | ✅ |
-| Git worktree isolation + Gitea PRs | ✅ | ✅ |
+| Git worktree isolation + Gitea/GitHub PRs | ✅ | ✅ |
+| Local Git repos (any provider's local clone — no remote, no tokens) | ✅ | ✅ |
+| Cron schedules that re-run tasks | ✅ | ✅ |
 | Full build/test/lint verifier | ✅ | ✅ |
 | Outcome forecast (success probability + duration) | ✅ repo baseline | ✅ similar-task |
 | Reality gate (0–100 evidence scoring) | — | ✅ |
@@ -447,8 +474,6 @@ DevServer ships as two editions:
 The free edition compiles and runs without errors — the agent runner
 gracefully degrades when pro modules are absent, falling back to no-op
 stubs in `_free_hooks.py`.
-
-See [README.PRO.md](README.PRO.md) for full Pro feature documentation.
 
 ## Roadmap
 

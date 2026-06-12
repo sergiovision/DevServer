@@ -31,5 +31,24 @@ export function apiErrorResponse(err: unknown, label?: string): NextResponse {
     );
   }
 
+  // Postgres integrity violations (sqlstate class 23: not-null, unique,
+  // foreign-key, check). These are request/schema problems, not outages —
+  // surface the real constraint message instead of a blank 500 so the UI
+  // (and the operator) can see exactly which column/constraint rejected
+  // the write.
+  if (err && typeof err === 'object' && 'code' in err) {
+    const pgErr = err as { code?: string; message?: string; detail?: string };
+    if (typeof pgErr.code === 'string' && pgErr.code.startsWith('23')) {
+      return NextResponse.json(
+        {
+          error: pgErr.message || 'Database constraint violation',
+          detail: pgErr.detail ?? null,
+          code: pgErr.code,
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
 }

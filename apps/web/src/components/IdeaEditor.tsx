@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { CButton, CFormInput, CFormTextarea, CBadge } from '@coreui/react-pro';
-import type { Idea } from './IdeasView';
+import type { Idea, NodeStatus } from './IdeasView';
 
 interface IdeaEditorProps {
   idea: Idea | null;
@@ -10,9 +10,32 @@ interface IdeaEditorProps {
   onConvertToTask: () => void;
   onConvertToPlan: () => void;
   convertingPlan: boolean;
+  onExpand: () => void;
+  onRollup: () => void;
+  busy: boolean;
 }
 
-export function IdeaEditor({ idea, onSave, onConvertToTask, onConvertToPlan, convertingPlan }: IdeaEditorProps) {
+const STATUS_COLOR: Record<NodeStatus, string> = {
+  draft: 'secondary',
+  expanding: 'info',
+  ready: 'primary',
+  blocked: 'warning',
+  running: 'info',
+  done: 'success',
+  failed: 'danger',
+  abandoned: 'dark',
+};
+
+export function IdeaEditor({
+  idea,
+  onSave,
+  onConvertToTask,
+  onConvertToPlan,
+  convertingPlan,
+  onExpand,
+  onRollup,
+  busy,
+}: IdeaEditorProps) {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
@@ -46,14 +69,42 @@ export function IdeaEditor({ idea, onSave, onConvertToTask, onConvertToPlan, con
 
   return (
     <div className="border rounded p-3" style={{ minHeight: 400 }}>
-      <div className="d-flex align-items-center gap-2 mb-3">
+      <div className="d-flex align-items-center gap-2 mb-3 flex-wrap">
         <CBadge color={isIdea ? 'info' : 'warning'}>
           {isIdea ? 'Idea' : 'Folder'}
         </CBadge>
+        {idea.node_type && (
+          <CBadge color="primary" className="text-uppercase">{idea.node_type}</CBadge>
+        )}
+        {idea.node_type && (
+          <CBadge color={STATUS_COLOR[idea.node_status] ?? 'secondary'}>
+            {idea.node_status}
+          </CBadge>
+        )}
+        {idea.evaluator_score != null && (
+          <CBadge color="light" className="text-dark">score {idea.evaluator_score}</CBadge>
+        )}
         {idea.tasked && (
           <CBadge color="success">Tasked{idea.task_id ? ` (#${idea.task_id})` : ''}</CBadge>
         )}
       </div>
+
+      {idea.node_type && (idea.expand_reason || idea.stop_reason || idea.rollup_summary) && (
+        <div className="alert alert-light border small mb-3">
+          {idea.expand_reason && (
+            <div><strong>Expand:</strong> {idea.expand_reason}</div>
+          )}
+          {idea.stop_reason && (
+            <div><strong>Stop:</strong> {idea.stop_reason}</div>
+          )}
+          {idea.rollup_summary && (
+            <details className="mt-1">
+              <summary>Rollup summary</summary>
+              <pre className="mb-0 mt-1" style={{ whiteSpace: 'pre-wrap' }}>{idea.rollup_summary}</pre>
+            </details>
+          )}
+        </div>
+      )}
 
       <div className="mb-3">
         <label className="form-label">Title</label>
@@ -81,12 +132,32 @@ export function IdeaEditor({ idea, onSave, onConvertToTask, onConvertToPlan, con
         </div>
       )}
 
-      <div className="d-flex gap-2">
+      <div className="d-flex gap-2 flex-wrap">
         <CButton color="primary" onClick={save} disabled={!dirty || saving}>
           {saving ? 'Saving…' : 'Save'}
         </CButton>
         {isIdea && (
           <>
+            <CButton
+              color="warning"
+              onClick={onExpand}
+              disabled={busy || idea.node_type === 'leaf'}
+              title={
+                idea.node_type === 'leaf'
+                  ? 'Already a leaf — decompose further with Re-detalize (not in this build)'
+                  : 'Classify this node: make it a leaf (creates a task) or split it into subtasks'
+              }
+            >
+              {busy ? 'Working…' : 'Expand / Decompose'}
+            </CButton>
+            <CButton
+              color="dark"
+              onClick={onRollup}
+              disabled={busy || idea.node_type === 'leaf' || idea.node_type == null}
+              title="Synthesise completed children into this node's summary + score"
+            >
+              Roll up
+            </CButton>
             <CButton
               color="success"
               onClick={onConvertToTask}

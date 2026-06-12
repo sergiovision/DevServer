@@ -18,7 +18,8 @@ export default async function TaskDetailPage({ params }: PageProps) {
 
   const r = await tryDbPage(async () => {
     const taskResult = await query<Task>(
-      `SELECT t.*, r.name as repo_name, r.clone_url as repo_clone_url FROM tasks t
+      `SELECT t.*, r.name as repo_name, r.clone_url as repo_clone_url,
+              r.provider as repo_provider FROM tasks t
        LEFT JOIN repos r ON r.id = t.repo_id
        WHERE t.id = $1`,
       [taskId]
