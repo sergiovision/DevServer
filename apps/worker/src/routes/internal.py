@@ -34,6 +34,33 @@ from services import skills as skills_svc
 router = APIRouter(prefix="/internal")
 
 
+def _extract_json_object(text_content: str) -> dict:
+    """Best-effort parse of an LLM response into a JSON object.
+
+    Models — Gemini especially, with its "thinking" output — sometimes wrap the
+    JSON in markdown fences or add a prose preamble. Try a direct parse after
+    stripping fences; on failure, fall back to slicing the outermost ``{...}``
+    span. Raises ``ValueError`` (with a snippet of the raw text) when nothing
+    parses, so the caller can surface a useful diagnostic instead of a blank
+    "could not parse" 500.
+    """
+    cleaned = (text_content or "").replace("```json", "").replace("```", "").strip()
+    if cleaned:
+        try:
+            return _json.loads(cleaned)
+        except _json.JSONDecodeError:
+            pass
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if 0 <= start < end:
+            try:
+                return _json.loads(cleaned[start:end + 1])
+            except _json.JSONDecodeError:
+                pass
+    snippet = (text_content or "").strip()[:300] or "(empty response)"
+    raise ValueError(f"response was not valid JSON: {snippet}")
+
+
 # ─── Models ─────────────────────────────────────────────────────────────────
 
 class ModeRequest(BaseModel):
@@ -339,7 +366,9 @@ async def continue_task(task_key: str, req: ContinueTaskRequest):
         # re-enqueued job can acquire it immediately. The old run_task
         # finally-block will attempt to release the same lock later but
         # that is a harmless no-op (DELETE … WHERE task_key = :key).
-        repo = await db.get(Repo, task.repo_id)
+        # Repo-less tasks (skill/research) have no lock to release — guard the
+        # lookup so db.get is never called with a NULL primary key.
+        repo = await db.get(Repo, task.repo_id) if task.repo_id else None
         if repo:
             await db.execute(text(
                 "DELETE FROM repo_locks WHERE repo_name = :repo_name"
@@ -406,12 +435,9 @@ async def task_prediction(task_key: str):
 
         pred = None
         try:  # Pro: similarity-based forecast (absent in free → ImportError)
-            from services.pro import memory as pro_memory
-            pred = await pro_memory.predict_outcome(
-                session=db,
-                repo_id=task.repo_id,
-                title=task.title,
-                description=task.description or "",
+            from services.pro import hooks as pro
+            pred = await pro.repo_memory(db, task.repo_id).predict_outcome(
+                task.title, task.description or "",
             )
         except ImportError:
             pred = None
@@ -422,6 +448,45 @@ async def task_prediction(task_key: str):
             pred = await outcome.predict_outcome_basic(db, task.repo_id)
 
     return {"prediction": pred}
+
+
+# ─── System LLM settings ────────────────────────────────────────────────────
+
+async def _read_system_llm_settings() -> tuple[str, str, str]:
+    """Return (vendor, model, mode) for the system LLM from the settings table.
+
+    Settings store values as JSON strings — strip the outer quotes. Defaults
+    to GLM-5.1 and ``mode='max'`` (subscription) when a key is unset. ``mode``
+    is the billing/transport path forwarded to ``llm_client.complete``
+    (``'max'`` = subscription via vendor CLI, ``'api'`` = direct HTTP).
+    """
+    async with async_session() as db:
+        vendor_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_vendor")
+        )
+        model_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_model")
+        )
+        mode_row = await db.execute(
+            select(Setting).where(Setting.key == "system_llm_mode")
+        )
+        vendor_setting = vendor_row.scalar_one_or_none()
+        model_setting = model_row.scalar_one_or_none()
+        mode_setting = mode_row.scalar_one_or_none()
+
+    sys_vendor = "glm"
+    sys_model = "glm-5.1"
+    sys_mode = "max"
+    if vendor_setting and vendor_setting.value:
+        v = vendor_setting.value
+        sys_vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    if model_setting and model_setting.value:
+        v = model_setting.value
+        sys_model = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    if mode_setting and mode_setting.value:
+        v = mode_setting.value
+        sys_mode = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    return sys_vendor, sys_model, sys_mode
 
 
 # ─── DevTask Skill ──────────────────────────────────────────────────────────
@@ -438,26 +503,8 @@ async def generate_task(body: GenerateTaskRequest):
     and ``system_llm_model`` settings (editable on the /settings page).
     Defaults to GLM-5.1 if the settings haven't been created yet.
     """
-    # Read system LLM vendor/model from settings table
-    async with async_session() as db:
-        vendor_row = await db.execute(
-            select(Setting).where(Setting.key == "system_llm_vendor")
-        )
-        model_row = await db.execute(
-            select(Setting).where(Setting.key == "system_llm_model")
-        )
-        vendor_setting = vendor_row.scalar_one_or_none()
-        model_setting = model_row.scalar_one_or_none()
-
-    # Settings store values as JSON strings — strip the outer quotes
-    sys_vendor = "glm"
-    sys_model = "glm-5.1"
-    if vendor_setting and vendor_setting.value:
-        v = vendor_setting.value
-        sys_vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
-    if model_setting and model_setting.value:
-        v = model_setting.value
-        sys_model = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    # Read system LLM vendor/model/mode from settings table
+    sys_vendor, sys_model, sys_mode = await _read_system_llm_settings()
 
     # Read skill prompt, strip YAML frontmatter
     devserver_root = os.environ.get("DEVSERVER_ROOT")
@@ -477,19 +524,21 @@ async def generate_task(body: GenerateTaskRequest):
             vendor=sys_vendor,
             model=sys_model,
             prompt=prompt,
-            max_tokens=1024,
+            max_tokens=2048,
+            json_mode=True,
+            mode=sys_mode,
         )
     except ValueError as exc:
         raise HTTPException(502, str(exc))
     except Exception as exc:
         raise HTTPException(502, f"System LLM error: {exc}")
 
-    # Strip markdown fences if any
-    cleaned = text_content.replace("```json", "").replace("```", "").strip()
     try:
-        task = _json.loads(cleaned)
-    except _json.JSONDecodeError:
-        raise HTTPException(502, "Failed to parse devtask response as JSON")
+        task = _extract_json_object(text_content)
+    except ValueError as exc:
+        raise HTTPException(
+            502, f"Failed to parse devtask response as JSON ({sys_vendor}) — {exc}"
+        )
 
     return task
 
@@ -508,25 +557,8 @@ async def generate_plan(body: GeneratePlanRequest):
     Returns ``{"plan_key": "...", "prompt": "..."}``.  When ``OBSIDIAN_FOLDER``
     is configured the prompt is also saved as ``<plan_key>.md`` in that folder.
     """
-    # Read system LLM vendor/model from settings table
-    async with async_session() as db:
-        vendor_row = await db.execute(
-            select(Setting).where(Setting.key == "system_llm_vendor")
-        )
-        model_row = await db.execute(
-            select(Setting).where(Setting.key == "system_llm_model")
-        )
-        vendor_setting = vendor_row.scalar_one_or_none()
-        model_setting = model_row.scalar_one_or_none()
-
-    sys_vendor = "glm"
-    sys_model = "glm-5.1"
-    if vendor_setting and vendor_setting.value:
-        v = vendor_setting.value
-        sys_vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
-    if model_setting and model_setting.value:
-        v = model_setting.value
-        sys_model = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
+    # Read system LLM vendor/model/mode from settings table
+    sys_vendor, sys_model, sys_mode = await _read_system_llm_settings()
 
     # Read skill prompt, strip YAML frontmatter
     devserver_root = os.environ.get("DEVSERVER_ROOT")
@@ -549,19 +581,21 @@ async def generate_plan(body: GeneratePlanRequest):
             vendor=sys_vendor,
             model=sys_model,
             prompt=prompt,
-            max_tokens=2048,
+            max_tokens=4096,
+            json_mode=True,
+            mode=sys_mode,
         )
     except ValueError as exc:
         raise HTTPException(502, str(exc))
     except Exception as exc:
         raise HTTPException(502, f"System LLM error: {exc}")
 
-    # Strip markdown fences if any
-    cleaned = text_content.replace("```json", "").replace("```", "").strip()
     try:
-        plan = _json.loads(cleaned)
-    except _json.JSONDecodeError:
-        raise HTTPException(502, "Failed to parse devplan response as JSON")
+        plan = _extract_json_object(text_content)
+    except ValueError as exc:
+        raise HTTPException(
+            502, f"Failed to parse devplan response as JSON ({sys_vendor}) — {exc}"
+        )
 
     # Save to Obsidian folder if configured
     obsidian_folder = settings.obsidian_folder

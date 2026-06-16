@@ -451,6 +451,17 @@ async def _poll() -> None:
 
         except asyncio.CancelledError:
             break
+        except httpx.HTTPError as exc:
+            # Transient network/HTTP failures — TCP connect errors, timeouts,
+            # protocol resets. httpx maps the underlying httpcore exceptions
+            # (see the connect_tcp traceback) into httpx.HTTPError subclasses,
+            # so a single catch covers them. Log concisely and keep polling
+            # instead of dumping a full traceback on every blip.
+            logger.warning(
+                "Telegram poll network error (%s: %s) — retrying in 5s",
+                type(exc).__name__, exc,
+            )
+            await asyncio.sleep(5)
         except Exception:
             logger.exception("Telegram poll error — retrying in 5s")
             await asyncio.sleep(5)

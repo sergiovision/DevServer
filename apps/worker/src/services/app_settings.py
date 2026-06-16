@@ -49,6 +49,15 @@ async def get_int_setting(session: AsyncSession, key: str, default: int) -> int:
         return default
 
 
+async def get_float_setting(session: AsyncSession, key: str, default: float) -> float:
+    """Return ``key`` coerced to float, or ``default`` on miss/parse failure."""
+    v = await get_setting(session, key, default)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
 async def get_bool_setting(session: AsyncSession, key: str, default: bool) -> bool:
     """Return ``key`` coerced to bool, or ``default`` on miss."""
     v = await get_setting(session, key, default)

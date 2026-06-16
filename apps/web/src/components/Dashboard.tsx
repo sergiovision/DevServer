@@ -36,7 +36,7 @@ export function Dashboard({ runningTasks, queuedTasks, todayStats }: DashboardPr
   const [queueStats, setQueueStats] = useState<QueueStatsResponse | null>(null);
 
   useEffect(() => {
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3000/api/ws';
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3200/api/ws';
     let ws: WebSocket | null = null;
 
     function connect() {

@@ -35,6 +35,9 @@ export type TaskStatus =
   | 'cancelled'
   | 'retired';
 export type TaskMode = 'autonomous' | 'interactive';
+// What kind of work a task performs. Chosen at creation, immutable afterwards.
+// See lib/task-types.ts for per-type field visibility + behaviour.
+export type TaskType = 'coding' | 'test' | 'skill' | 'script' | 'research';
 export type ClaudeMode = 'api' | 'max';
 // 'untracked' is only valid for local repos — the agent edits files in the
 // Local Root Folder without creating branches, commits, or pushes.
@@ -43,7 +46,7 @@ export type AgentVendor = 'anthropic' | 'google' | 'openai' | 'glm';
 
 export interface Task {
   id: number;
-  repo_id: number;
+  repo_id: number | null;
   task_key: string;
   title: string;
   description: string | null;
@@ -51,6 +54,7 @@ export interface Task {
   priority: TaskPriority;
   labels: string[];
   mode: TaskMode;
+  task_type: TaskType;
   claude_mode: ClaudeMode;
   agent_vendor: AgentVendor;
   claude_model: string | null;
@@ -81,6 +85,7 @@ export interface TaskTemplate {
   name: string;
   description: string | null;
   acceptance: string | null;
+  task_type: TaskType;
   git_flow: GitFlow;
   claude_mode: ClaudeMode;
   agent_vendor: AgentVendor;

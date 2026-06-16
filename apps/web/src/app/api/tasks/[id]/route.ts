@@ -42,6 +42,8 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
   try {
     const body = await request.json();
+    // NOTE: 'task_type' is intentionally NOT updatable — it is chosen at
+    // creation and immutable thereafter (it changes how the task runs).
     const allowed = [
       'task_key', 'title', 'description', 'acceptance',
       'priority', 'labels', 'mode', 'claude_mode', 'agent_vendor', 'claude_model', 'max_turns', 'skip_verify', 'git_flow', 'backup_vendor', 'backup_model', 'status', 'depends_on', 'queue_job_id',

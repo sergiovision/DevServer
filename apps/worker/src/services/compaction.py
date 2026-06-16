@@ -35,7 +35,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.setting import Setting
-from services import llm_client
+from services import app_settings, llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -85,18 +85,27 @@ on external state.
 Stay under 1500 words. No preamble, no sign-off."""
 
 
-async def _read_system_llm(session: AsyncSession) -> tuple[str, str]:
-    """Fetch (vendor, model) from the settings table. Defaults to GLM."""
+async def _read_system_llm(session: AsyncSession) -> tuple[str, str, str]:
+    """Fetch (vendor, model, mode) from the settings table.
+
+    Defaults to GLM and ``mode='max'`` (subscription). ``mode`` is the
+    billing/transport path forwarded to ``llm_client.complete``.
+    """
     vendor_row = await session.execute(
         text("SELECT value FROM settings WHERE key = 'system_llm_vendor'")
     )
     model_row = await session.execute(
         text("SELECT value FROM settings WHERE key = 'system_llm_model'")
     )
+    mode_row = await session.execute(
+        text("SELECT value FROM settings WHERE key = 'system_llm_mode'")
+    )
     v = vendor_row.scalar_one_or_none()
     m = model_row.scalar_one_or_none()
+    md = mode_row.scalar_one_or_none()
     vendor = "glm"
     model = "glm-5.1"
+    mode = "max"
     if v:
         try:
             vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
@@ -107,7 +116,12 @@ async def _read_system_llm(session: AsyncSession) -> tuple[str, str]:
             model = _json.loads(m) if isinstance(m, str) and m.startswith('"') else str(m)
         except Exception:
             pass
-    return vendor, model
+    if md:
+        try:
+            mode = _json.loads(md) if isinstance(md, str) and md.startswith('"') else str(md)
+        except Exception:
+            pass
+    return vendor, model, mode
 
 
 async def compact_task(
@@ -133,7 +147,7 @@ async def compact_task(
         text(
             """
             SELECT t.task_key, t.title, t.status, t.description, t.acceptance,
-                   t.compact_count, r.name
+                   t.compact_count, r.name, t.repo_id
             FROM tasks t
             LEFT JOIN repos r ON r.id = t.repo_id
             WHERE t.id = :tid
@@ -145,7 +159,27 @@ async def compact_task(
         return {"ok": False, "summary": "", "chars_in": 0, "chars_out": 0,
                 "error": f"task {task_id} not found"}
 
-    task_key, title, status, description, acceptance, compact_count, repo_name = row
+    task_key, title, status, description, acceptance, compact_count, repo_name, repo_id = row
+
+    # Tier 1.1 — verbatim pre-compaction save. Archive the raw transcript into
+    # the per-repo memory drawers BEFORE it's distilled into a lossy summary,
+    # so the exact prior reasoning stays retrievable. Pro-only + opt-in; a
+    # no-op in the free build. Best-effort — never blocks compaction.
+    if repo_id is not None:
+        try:
+            if await app_settings.get_bool_setting(
+                session, "memory_verbatim_transcripts", True
+            ):
+                try:
+                    from services.pro import hooks as _pro
+                except ImportError:
+                    from services._free_hooks import FreeHooks
+                    _pro = FreeHooks()
+                await _pro.repo_memory(session, repo_id).archive_transcript(
+                    task_id, task_key=task_key
+                )
+        except Exception:
+            logger.debug("pre-compaction transcript archive failed for %s", task_key)
 
     # Collect the last N runs and stitch them in chronological order (newest first)
     run_rows = (await session.execute(
@@ -211,7 +245,7 @@ async def compact_task(
     )
 
     chars_in = len(prompt)
-    vendor, model = await _read_system_llm(session)
+    vendor, model, mode = await _read_system_llm(session)
 
     try:
         summary = await llm_client.complete(
@@ -220,6 +254,7 @@ async def compact_task(
             prompt=prompt,
             max_tokens=3072,
             timeout=120,
+            mode=mode,
         )
     except Exception as exc:
         logger.exception("compaction LLM call failed for task %s", task_key)

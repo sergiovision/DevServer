@@ -54,6 +54,23 @@ except ImportError:
     _HAS_PRO = False
 
 
+def _derive_topic(paths: list[str] | None) -> str | None:
+    """Best-effort 'room' label (Tier 2.5) from changed files: the most common
+    top-level directory. Pure/free-safe; returns None when nothing usable."""
+    from collections import Counter
+
+    tops = []
+    for p in paths or []:
+        if not isinstance(p, str):
+            continue
+        seg = p.strip().lstrip("./").split("/")
+        if len(seg) > 1 and seg[0]:
+            tops.append(seg[0])
+    if not tops:
+        return None
+    return Counter(tops).most_common(1)[0][0][:120]
+
+
 # Rate-limit handling applies to every vendor — when the agent CLI
 # subprocess fails with a 429, we sleep and retry the SAME call without
 # consuming a task-level retry attempt. Burning a full retry on a transient
@@ -144,6 +161,7 @@ def _build_prompt(
     skill_prompt: str = "",
     git_flow: str = "branch",
     is_local: bool = False,
+    task_type: str = "coding",
 ) -> str:
     """Build the user-message prompt for one Claude CLI invocation.
 
@@ -175,17 +193,27 @@ def _build_prompt(
             "and finish the implementation. Commit your changes when done."
         )
 
+    _ROLE_BY_TYPE = {
+        "test": "an autonomous test-running agent working on repository",
+        "script": "an autonomous agent that runs an operator-specified script "
+                  "in repository",
+    }
+    role = _ROLE_BY_TYPE.get(task_type, "an autonomous coding agent working on repository")
     parts = [
-        f"You are an autonomous coding agent working on repository: {repo_name}",
+        f"You are {role}: {repo_name}",
         f"Branch: {branch_name}",
         f"Task: {task_key} - {title}",
         "",
         "## Task Description",
         description or "(no description provided)",
-        "",
-        "## Acceptance Criteria",
-        acceptance or "(none specified)",
     ]
+    # Acceptance criteria — hidden for task types that don't use it.
+    if task_type not in ("skill", "research"):
+        _accept_heading = (
+            "## Tests that must pass" if task_type == "test"
+            else "## Acceptance Criteria"
+        )
+        parts += ["", _accept_heading, acceptance or "(none specified)"]
 
     # Evidence-before-action blocks (Phase 1). Injected only when available so
     # the prompt stays clean for tasks where a block failed to generate.
@@ -226,6 +254,45 @@ def _build_prompt(
             "8. This is a LOCAL-ONLY repository: NEVER run `git push`, never "
             "add or change git remotes, and never open pull requests"
         )
+
+    # Type-specific execution contract. These tasks run their own checks
+    # (the worker verifier is bypassed for them), so the agent itself is
+    # responsible for executing and reporting results.
+    if task_type == "test":
+        parts.extend([
+            "",
+            "## Test task — what to do",
+            "This is a TEST task, not a feature-implementation task. The tests "
+            "to run are described in the Task Description above.",
+            "1. Identify and run exactly the tests the description specifies "
+            "(use the project's own test runner — e.g. pytest, npm test, go "
+            "test, dotnet test, cargo test).",
+            "2. Print the FULL test command and its complete output so the "
+            "operator can read it in the Task Log.",
+            "3. The task SUCCEEDS only if every test listed under "
+            "'Tests that must pass' passes. If any required test fails, "
+            "report which ones failed and why — do NOT modify product code to "
+            "force a pass unless the description explicitly asks you to fix "
+            "failing tests.",
+            "4. End with a concise PASS/FAIL summary line.",
+        ])
+    elif task_type == "script":
+        parts.extend([
+            "",
+            "## Script task — what to do",
+            "This is a SCRIPT task. The Task Description specifies a script to "
+            "run: its location, the interpreter/language (bash, python, ts, "
+            "…), any parameters, and the working folder.",
+            "1. Locate the script at the path given and run it from the "
+            "specified working folder with the specified parameters.",
+            "2. Use the correct interpreter (e.g. `bash x.sh`, `python x.py`, "
+            "`npx tsx x.ts` / `node x.js`). Install nothing unless the "
+            "description says to.",
+            "3. Print the EXACT command you ran and stream its full stdout/"
+            "stderr to the Task Log.",
+            "4. Report the script's exit code and a short PASS/FAIL summary. "
+            "Do not edit unrelated files.",
+        ])
 
     if skip_verify:
         parts.extend([
@@ -292,6 +359,51 @@ def _build_prompt(
             "           \"alternatives\":[\"...\"],\"reasoning\":\"...\"}'",
             "Only record genuine decisions (a library choice, a schema shape, a",
             "trade-off) — not routine edits.",
+        ])
+        parts.extend([
+            "",
+            "## Recording facts (optional)",
+            "Record durable, factual project knowledge so future tasks start",
+            "informed (subject → predicate → object). A new fact for the same",
+            "subject+predicate supersedes the old one — use this to correct",
+            "stale knowledge instead of leaving it to mislead later tasks:",
+            "    curl -s -X POST \\",
+            "      \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/facts\" \\",
+            "      -H 'content-type: application/json' \\",
+            "      -d '{\"subject\":\"auth\",\"predicate\":\"uses\",\"object\":\"JWT in src/auth.py\"}'",
+            "Record facts like build/test commands, where a subsystem lives, or",
+            "an invariant — not transient state.",
+        ])
+        parts.extend([
+            "",
+            "## Project memory (optional)",
+            "Recall what past tasks learned in this repo, and jot durable notes",
+            "for future tasks:",
+            "- Recall before diving in when unsure how something works here:",
+            "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/memory/recall\" \\",
+            "      --data-urlencode 'q=how does auth work'",
+            "- Remember a durable insight (a gotcha, a convention) — not transient state:",
+            "    curl -s -X POST \\",
+            "      \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/memory/remember\" \\",
+            "      -H 'content-type: application/json' \\",
+            "      -d '{\"content\":\"...\",\"kind\":\"note\"}'",
+            "",
+            "Pull deeper lanes on demand instead of guessing — only a couple of",
+            "prior memories are pushed above:",
+            "- BEFORE retrying an approach, check whether a past attempt already",
+            "  failed it (searches the full verbatim transcripts):",
+            "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/memory/transcripts\" \\",
+            "      --data-urlencode 'q=<approach you are about to try>'",
+            "- Established project facts (build/test commands, where things live):",
+            "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/memory/facts\" \\",
+            "      --data-urlencode 'q=...'",
+            "- Past design decisions and their reasoning:",
+            "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/memory/decisions\" \\",
+            "      --data-urlencode 'q=...'",
+            "- Need a deeper symbol map of the directory you're editing (the",
+            "  pushed repo map is a small global snapshot)?",
+            "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/repo-map\" \\",
+            "      --data-urlencode 'subdir=apps/worker'",
         ])
 
     # Domain Skill — reusable procedure injected when the task links a skill.
@@ -519,13 +631,16 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             logger.error("Task %d not found", task_id)
             return False
 
-        # Non-coding / skill tasks have no repo — they run a Skill via the
-        # agent CLI without a worktree, verifier, or PR. Delegate to the
-        # skill runner before any repo/lock/worktree machinery.
-        if task.repo_id is None:
+        # Conversational task types ('skill', 'research') and any repo-less
+        # task run via the agent CLI without a worktree, verifier, or PR.
+        # Delegate to the lightweight runner before any repo/lock/worktree
+        # machinery. 'research' prints the model's answer to the Task Log.
+        task_type = (getattr(task, "task_type", None) or "coding").lower()
+        if task_type in ("skill", "research") or task.repo_id is None:
             from services import skill_runner
-            return await skill_runner.run_skill_task(
-                db, task_id=task_id, claude_mode=claude_mode, max_turns=max_turns,
+            return await skill_runner.run_lightweight_task(
+                db, task_id=task_id, task_type=task_type,
+                claude_mode=claude_mode, max_turns=max_turns,
             )
 
         repo = await db.get(Repo, task.repo_id)
@@ -538,6 +653,13 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         description = task.description or ""
         acceptance = task.acceptance or ""
         skip_verify = bool(task.skip_verify)
+        # Test/Script tasks run their own checks (the agent invokes the test
+        # suite or the script described in the task), so the generic worker
+        # verifier (repo build/test/lint) is bypassed for them — but the agent
+        # is NOT told to skip testing (unlike a coding task's skip_verify). The
+        # type-specific prompt block makes running the tests/script the point.
+        runs_own_checks = task_type in ("test", "script")
+        verifier_off = skip_verify or runs_own_checks
         is_continuation = bool(getattr(task, "is_continuation", False))
         # Context compaction — when a prior attempt called ``/compact`` (or the
         # auto-compaction branch below fired on a previous run), this column
@@ -788,26 +910,26 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
               # Memory recall — Tier 2 #5. Query once, inject into the prompt.
               # When `memory_iterative_recall` is enabled, use the LLM-planned
               # multi-hop variant (migration 010); otherwise single-pass.
+              # RLM E1: only a small recall is *pushed* (default 2) — the agent
+              # pulls deeper lanes on demand via /memory/{transcripts,facts,...}.
+              # Set `memory_pushed_recall_limit=0` for fully pull-first, or 3 to
+              # reproduce the pre-RLM behaviour.
               try:
                 memory_query = f"{task_key} {title}\n{description}"
                 _iterative = await app_settings.get_bool_setting(
                     db, "memory_iterative_recall", False
                 )
-                if _iterative:
-                    prior_memories = await pro.search_memory_iterative(
-                        session=db,
-                        repo_id=repo.id,
-                        query=memory_query,
-                        limit=3,
-                    )
+                _pushed = await app_settings.get_int_setting(
+                    db, "memory_pushed_recall_limit", 2
+                )
+                kb = pro.repo_memory(db, repo.id)
+                if _pushed <= 0:
+                    prior_memories = []
+                elif _iterative:
+                    prior_memories = await kb.recall_iterative(memory_query, limit=_pushed)
                 else:
-                    prior_memories = await pro.search_memory(
-                        session=db,
-                        repo_id=repo.id,
-                        query=memory_query,
-                        limit=3,
-                    )
-                memory_recall_text = pro.render_memory_recall(prior_memories)
+                    prior_memories = await kb.recall(memory_query, limit=_pushed)
+                memory_recall_text = kb.render_recall(prior_memories)
                 if prior_memories:
                     await _emit_event(db, task_id, None, "memory_recall", {
                         "count": len(prior_memories),
@@ -818,6 +940,22 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         f"top sim={prior_memories[0].get('similarity', 0.0):.2f}\n"
                     )
                     task_log.flush()
+                # Tier 3.6 — cheap L0/L1 wake-up digest (repo identity + top
+                # current facts/decisions/topics), cached + TTL-refreshed.
+                # Prepended once (first attempt) via the existing recall channel.
+                if _HAS_PRO:
+                    try:
+                        digest = await kb.wake_up_digest()
+                        if digest:
+                            memory_recall_text = (
+                                f"{digest}\n\n{memory_recall_text}".strip()
+                                if memory_recall_text else digest
+                            )
+                            await _emit_event(db, task_id, None, "wake_digest_built", {
+                                "chars": len(digest),
+                            })
+                    except Exception:
+                        logger.exception("wake-up digest failed for %s", task_key)
               except Exception:
                 logger.exception("memory_recall failed for %s", task_key)
 
@@ -1047,6 +1185,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     skill_prompt=skill_prompt_block,
                     git_flow=git_flow,
                     is_local=is_local_repo,
+                    task_type=task_type,
                 )
 
                 # Run the agent via the resolved backend. The variable is
@@ -1255,11 +1394,16 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     "duration_ms": duration_ms,
                 })
 
-                # Verify (unless skip_verify is set for this task)
-                if skip_verify:
-                    logger.info("Skipping verification (skip_verify=True)")
+                # Verify (unless skip_verify is set, or this is a test/script
+                # task that ran its own checks via the agent).
+                if verifier_off:
+                    _why = (
+                        f"{task_type} task runs its own checks"
+                        if runs_own_checks else "skip_verify flag set"
+                    )
+                    logger.info("Skipping worker verifier (%s)", _why)
                     if task_log:
-                        task_log.write("\n[Verification skipped — skip_verify flag set]\n")
+                        task_log.write(f"\n[Worker verification skipped — {_why}]\n")
                         task_log.flush()
                     verify_ok, verify_error = True, ""
                 else:
@@ -1393,7 +1537,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         if not commit_ok:
                             logger.warning("Direct commit failed for %s", task_key)
 
-                    elif git_flow == "untracked":  # local repos — edits only
+                    elif git_flow == "untracked":  # local repos + non-coding types — edits only, no push/PR
                         commit_ok = True
                         pr_url = None
                         logger.info(
@@ -1510,12 +1654,15 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                             f"{num_turns} turns, PR: {pr_url or 'none'}\n"
                             f"Result: {(result_text or '')[:600]}"
                         )
-                        await pro.store_memory(
-                            session=db,
-                            repo_id=repo.id,
-                            content=summary,
-                            memory_type="experience",
+                        try:
+                            _topic = _derive_topic(list(getattr(preflight, "files_changed", []) or []))
+                        except Exception:
+                            _topic = None
+                        await pro.repo_memory(db, repo.id).remember(
+                            summary,
+                            kind="experience",
                             task_id=task_id,
+                            topic=_topic,
                             metadata={
                                 "task_key": task_key,
                                 "attempts": attempt,
@@ -1526,6 +1673,26 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         )
                     except Exception:
                         logger.exception("Failed to store success memory for %s", task_key)
+
+                    # Tier 1.1 — verbatim drawer: archive the winning transcript
+                    # so the exact prior reasoning stays retrievable. Opt-in,
+                    # best-effort, idempotent (deduped by chunk_id).
+                    try:
+                        if await app_settings.get_bool_setting(
+                            db, "memory_verbatim_transcripts", True
+                        ):
+                            await pro.repo_memory(db, repo.id).archive_transcript(
+                                task_id, task_key=task_key
+                            )
+                    except Exception:
+                        logger.exception("transcript archive failed for %s", task_key)
+
+                    # Tier 3.6 — refresh the wake-up digest so facts/decisions
+                    # recorded during this task surface for the next one.
+                    try:
+                        await pro.repo_memory(db, repo.id).wake_up_digest(force=True)
+                    except Exception:
+                        logger.debug("wake-up digest refresh failed for %s", task_key)
 
                     success = True
                     break
@@ -1680,6 +1847,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                         skill_prompt=skill_prompt_block,
                         git_flow=git_flow,
                         is_local=is_local_repo,
+                        task_type=task_type,
                     )
 
                     await _extend_lock(db, repo_name)
@@ -1802,7 +1970,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     )
                     await db.commit()
 
-                    if skip_verify:
+                    if verifier_off:
                         verify_ok, verify_error = True, ""
                     else:
                         await _update_task_status(db, task_id, "verifying")
@@ -1940,13 +2108,26 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                                 f"Outcome: completed by backup model {effective_model}\n"
                                 f"Result: {(result_text or '')[:600]}"
                             )
-                            await pro.store_memory(
-                                session=db, repo_id=repo.id, content=summary,
-                                memory_type="experience", task_id=task_id,
+                            try:
+                                _topic = _derive_topic(list(getattr(preflight, "files_changed", []) or []))
+                            except Exception:
+                                _topic = None
+                            await pro.repo_memory(db, repo.id).remember(
+                                summary, kind="experience", task_id=task_id, topic=_topic,
                                 metadata={"task_key": task_key, "backup_model": effective_model},
                             )
                         except Exception:
                             logger.exception("Failed to store memory for %s (backup)", task_key)
+
+                        try:
+                            if await app_settings.get_bool_setting(
+                                db, "memory_verbatim_transcripts", True
+                            ):
+                                await pro.repo_memory(db, repo.id).archive_transcript(
+                                    task_id, task_key=task_key
+                                )
+                        except Exception:
+                            logger.exception("transcript archive failed for %s (backup)", task_key)
 
                         success = True
                         break

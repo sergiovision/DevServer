@@ -4,12 +4,12 @@
 # Usage:
 #   ./scripts/stop.sh             # dev (default): stop host processes + sweep orphans
 #   ./scripts/stop.sh --dev        # same
-#   ./scripts/stop.sh --prod       # same (dev/prod share ports 3000/8000)
+#   ./scripts/stop.sh --prod       # same (dev/prod share the WEB_PORT/WORKER_PORT, default 3200/8000)
 #   ./scripts/stop.sh --docker     # docker compose down
 #
 # Host modes (--dev/--prod) ALWAYS:
 #   • SIGTERM tracked pids
-#   • Free ports 3000 and 8000
+#   • Free the WEB_PORT and WORKER_PORT (default 3200 and 8000)
 #   • Sweep any process spawned from apps/web or apps/worker (orphan cleanup)
 #   • Verify ports are free; escalate to SIGKILL if not
 #

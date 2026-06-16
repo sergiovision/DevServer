@@ -180,12 +180,15 @@ def _extract_symbols(text: str, lang: str) -> list[tuple[str, str]]:
     return out
 
 
-def _scan_worktree(worktree_path: str, max_files: int) -> list[FileEntry]:
+def _scan_worktree(worktree_path: str, max_files: int, subdir: str | None = None) -> list[FileEntry]:
     entries: list[FileEntry] = []
-    if not os.path.isdir(worktree_path):
+    # Scan a sub-tree when requested (RLM E4 drill-down) but keep rel_path
+    # relative to the repo root so rendered paths stay meaningful.
+    scan_root = os.path.join(worktree_path, subdir) if subdir else worktree_path
+    if not os.path.isdir(scan_root):
         return entries
 
-    for dirpath, dirnames, filenames in os.walk(worktree_path):
+    for dirpath, dirnames, filenames in os.walk(scan_root):
         # Prune skip dirs in place so os.walk doesn't descend into them.
         dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
 
@@ -259,19 +262,41 @@ def _render(entries: list[FileEntry], max_chars: int) -> str:
     return "\n".join(lines)
 
 
+def _safe_subdir(worktree_path: str, subdir: str | None) -> str | None:
+    """Validate a drill-down subdir stays inside the worktree (RLM E4).
+
+    Returns the cleaned relative subdir, or None when absent/invalid/escaping.
+    """
+    if not subdir:
+        return None
+    sub = subdir.strip().strip("/")
+    if not sub or os.path.isabs(subdir):
+        return None
+    base = os.path.realpath(worktree_path)
+    target = os.path.realpath(os.path.join(base, sub))
+    if target != base and not target.startswith(base + os.sep):
+        return None  # traversal attempt (.. escaping the worktree)
+    return sub
+
+
 def build_repo_map(
     worktree_path: str,
     max_files: int = 500,
     max_chars: int = DEFAULT_MAX_CHARS,
+    subdir: str | None = None,
 ) -> tuple[str, dict]:
     """Build a repo map for the given worktree.
+
+    ``subdir`` (RLM E4) scopes the scan to a sub-tree for a deeper map of the
+    area the agent is editing; it is path-traversal–guarded.
 
     Returns (rendered_text, stats_dict). Both are always returned — on any
     internal error we return a stub map and log the exception so the task
     can still proceed.
     """
+    safe_sub = _safe_subdir(worktree_path, subdir)
     try:
-        entries = _scan_worktree(worktree_path, max_files=max_files)
+        entries = _scan_worktree(worktree_path, max_files=max_files, subdir=safe_sub)
     except Exception:
         logger.exception("repo_map scan failed for %s", worktree_path)
         return ("(repo map unavailable: scan error)", {"files": 0, "symbols": 0, "error": True})

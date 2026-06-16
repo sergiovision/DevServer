@@ -179,7 +179,7 @@ async def classify_with_llm(action: str, *, vendor: str, model: str) -> GateClas
     try:
         raw = await llm_client.complete(
             vendor=vendor, model=model, prompt=_LLM_PROMPT.format(action=action[:2000]),
-            max_tokens=256, timeout=45,
+            max_tokens=256, timeout=45, json_mode=True,
         )
         cleaned = raw.strip()
         m = re.search(r"\{.*\}", cleaned, re.DOTALL)

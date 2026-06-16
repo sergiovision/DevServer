@@ -18,7 +18,9 @@ if [[ -f "${ROOT}/.env" ]]; then
 fi
 
 WORKER_PORT="${WORKER_PORT:-8000}"
-WEB_PORT="${PORT:-3000}"
+WEB_PORT="${WEB_PORT:-${PORT:-3200}}"
+# Export so `npm run dev` / `node server.js` (server.ts) bind to it.
+export WEB_PORT
 
 # ── Output ────────────────────────────────────────────────────────────────────
 red()    { printf '\033[31m%s\033[0m\n' "$*"; }

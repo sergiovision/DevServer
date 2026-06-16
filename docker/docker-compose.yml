@@ -65,11 +65,13 @@ services:
       DEPLOY_MODE: docker
       # /logs viewer reads files from this dir. Shared volume with the worker.
       DS_LOG_DIR: /app/logs
+      # Port the Next.js server binds to inside the container.
+      WEB_PORT: ${WEB_PORT:-3200}
       # Public URLs for browser clients
-      NEXT_PUBLIC_WS_URL:  ${NEXT_PUBLIC_WS_URL:-ws://localhost:3000/api/ws}
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3000/api}
+      NEXT_PUBLIC_WS_URL:  ${NEXT_PUBLIC_WS_URL:-ws://localhost:3200/api/ws}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3200/api}
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3200}:${WEB_PORT:-3200}"
     depends_on:
       postgres:
         condition: service_healthy

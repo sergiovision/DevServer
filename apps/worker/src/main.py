@@ -3,6 +3,7 @@
 Starts the PgQueuer consumer on startup, mounts health and internal routes.
 """
 
+import asyncio
 import logging
 import os
 import sys
@@ -18,8 +19,10 @@ if _SRC_DIR not in sys.path:
 
 from config import settings
 from routes.health import router as health_router
+from routes.enhanced_health import router as enhanced_health_router
 from routes.internal import router as internal_router
 from routes.env_config import router as env_config_router
+from services import embeddings
 from services.queue_consumer import start_consumer, stop_consumer
 from services.scheduler import start_scheduler, stop_scheduler
 from services.telegram_polling import start_polling, stop_polling
@@ -56,6 +59,12 @@ async def lifespan(app: FastAPI):
     await resume_if_active()
     await start_scheduler()
     start_polling()
+    # Pre-load the local embedding model in the background so the first
+    # memory recall/store isn't blocked on a cold ONNX model load. Only the
+    # Pro memory KB consumes embeddings today, so skip the (~200 MB) model
+    # load entirely in the free edition (services/pro/ absent).
+    if _has_pro_routes:
+        asyncio.create_task(embeddings.warm_up())
     logger.info("DevServer worker ready (port=%d, concurrency=%d)",
                 settings.worker_port, settings.worker_concurrency)
     yield
@@ -72,6 +81,7 @@ app = FastAPI(
 )
 
 app.include_router(health_router)
+app.include_router(enhanced_health_router)
 app.include_router(internal_router)
 app.include_router(env_config_router)
 if _has_pro_routes:

@@ -325,7 +325,6 @@ class GeminiBackend(AgentBackend):
     #: user's Google AI Pro / Ultra subscription is never used.
     _SUBSCRIPTION_BLOCKING_ENV = (
         "GEMINI_API_KEY",       # AI Studio API key
-        "GOOGLE_API_KEY",       # alternate Gemini API key name
         "GOOGLE_GENAI_USE_VERTEXAI",  # forces Vertex AI auth
         "GOOGLE_CLOUD_PROJECT",       # Vertex / ADC project selector
         "GOOGLE_CLOUD_LOCATION",
@@ -359,7 +358,7 @@ class GeminiBackend(AgentBackend):
         session_id: str | None,
         max_turns: int | None,
     ) -> list[str]:
-        # AUTONOMOUS / HEADLESS — these two flags are mandatory. Do not remove:
+        # AUTONOMOUS / HEADLESS — these three flags are mandatory. Do not remove:
         #   -p <prompt>           Forces non-interactive headless mode (without
         #                         it Gemini drops into a TUI).
         #   --approval-mode yolo  Auto-approves every tool call. The other
@@ -368,6 +367,17 @@ class GeminiBackend(AgentBackend):
         #                         unattended worker. Combined with the
         #                         stdin=DEVNULL spawn in agent_runner, the
         #                         CLI cannot block on user input.
+        #   --skip-trust          Skips the "is this folder trusted?" gate.
+        #                         DevServer runs Gemini in throwaway temp dirs
+        #                         (system LLM) and fresh worktrees (agent tasks),
+        #                         neither of which is in Gemini's trusted-folders
+        #                         list. Without this flag the CLI silently
+        #                         downgrades --approval-mode yolo back to
+        #                         "default" ("Approval mode overridden to
+        #                         'default' because the current folder is not
+        #                         trusted") and then exits 55 demanding an
+        #                         interactive trust prompt no headless worker
+        #                         can answer.
         #
         # max_turns: Gemini CLI has no flag for this — agent_runner._run_agent
         #   writes ``<worktree>/.gemini/settings.json`` with ``model.maxSessionTurns``
@@ -384,6 +394,7 @@ class GeminiBackend(AgentBackend):
             "--model", model,
             "--output-format", "json",
             "--approval-mode", "yolo",
+            "--skip-trust",
         ]
         if session_id:
             cmd.extend(["--resume", session_id])

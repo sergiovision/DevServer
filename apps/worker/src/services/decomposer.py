@@ -37,6 +37,7 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import settings
 from services import llm_client
 
 logger = logging.getLogger(__name__)
@@ -64,17 +65,25 @@ def _domain_hint(domain: str | None, config: dict | None) -> str:
 
 # ─── shared helpers ──────────────────────────────────────────────────────────
 
-async def _read_system_llm(session: AsyncSession) -> tuple[str, str]:
-    """Fetch (vendor, model) from the settings table. Defaults to GLM."""
+async def _read_system_llm(session: AsyncSession) -> tuple[str, str, str]:
+    """Fetch (vendor, model, mode) from the settings table.
+
+    Defaults to GLM and ``mode='max'`` (subscription). ``mode`` is the
+    billing/transport path forwarded to ``llm_client.complete``.
+    """
     vendor_row = await session.execute(
         text("SELECT value FROM settings WHERE key = 'system_llm_vendor'")
     )
     model_row = await session.execute(
         text("SELECT value FROM settings WHERE key = 'system_llm_model'")
     )
+    mode_row = await session.execute(
+        text("SELECT value FROM settings WHERE key = 'system_llm_mode'")
+    )
     v = vendor_row.scalar_one_or_none()
     m = model_row.scalar_one_or_none()
-    vendor, model = "glm", "glm-5.1"
+    md = mode_row.scalar_one_or_none()
+    vendor, model, mode = "glm", "glm-5.1", "max"
     if v:
         try:
             vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
@@ -85,7 +94,12 @@ async def _read_system_llm(session: AsyncSession) -> tuple[str, str]:
             model = _json.loads(m) if isinstance(m, str) and m.startswith('"') else str(m)
         except Exception:
             pass
-    return vendor, model
+    if md:
+        try:
+            mode = _json.loads(md) if isinstance(md, str) and md.startswith('"') else str(md)
+        except Exception:
+            pass
+    return vendor, model, mode
 
 
 async def _emit(session: AsyncSession, task_id: int | None, event_type: str, payload: dict) -> None:
@@ -267,7 +281,7 @@ async def expand_node(
     # Single system-LLM call = atomicity check + plan-sketch.
     plan: dict | None = None
     if depth < max_depth:
-        vendor, model = await _read_system_llm(session)
+        vendor, model, mode = await _read_system_llm(session)
         prompt = _EXPAND_PROMPT.format(
             domain=domain,
             domain_hint=_domain_hint(domain, None),
@@ -278,7 +292,8 @@ async def expand_node(
         )
         try:
             raw = await llm_client.complete(
-                vendor=vendor, model=model, prompt=prompt, max_tokens=2048, timeout=120
+                vendor=vendor, model=model, prompt=prompt, max_tokens=2048,
+                timeout=120, json_mode=True, mode=mode,
             )
             plan = _parse_json_block(raw)
         except Exception:
@@ -458,7 +473,7 @@ async def rollup_node(session: AsyncSession, node_id: int) -> dict:
         blocks.append(f"### {c['title']}\n{body or '(no summary)'}")
     children_block = "\n\n".join(blocks)
 
-    vendor, model = await _read_system_llm(session)
+    vendor, model, mode = await _read_system_llm(session)
     prompt = _ROLLUP_PROMPT.format(
         title=node["title"],
         content=(node.get("content") or "")[:2000] or "(no detail)",
@@ -467,7 +482,8 @@ async def rollup_node(session: AsyncSession, node_id: int) -> dict:
     summary, score, evidence = "", _ROLLUP_PASS_SCORE, ""
     try:
         raw = await llm_client.complete(
-            vendor=vendor, model=model, prompt=prompt, max_tokens=2048, timeout=120
+            vendor=vendor, model=model, prompt=prompt, max_tokens=2048,
+            timeout=120, json_mode=True, mode=mode,
         )
         parsed = _parse_json_block(raw) or {}
         summary = str(parsed.get("summary") or "").strip()
@@ -528,7 +544,7 @@ async def redetalize_node(session: AsyncSession, node_id: int, *, reason: str = 
 
 # ─── enqueue (best-effort; mirrors night_cycle's Next.js handoff) ────────────
 
-_WEB_PORT = 3000
+_WEB_PORT = settings.web_port  # Next.js port (WEB_PORT in .env, default 3200)
 
 
 async def _enqueue_task(task_id: int) -> bool:

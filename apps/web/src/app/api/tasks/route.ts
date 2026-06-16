@@ -48,12 +48,24 @@ export async function POST(request: NextRequest) {
     const {
       repo_id, task_key, title, description, acceptance,
       priority = 3, labels = [], mode = 'autonomous', claude_mode = 'max',
+      task_type = 'coding',
       agent_vendor = 'anthropic',
       claude_model = null, max_turns = null, skip_verify = false,
       git_flow = 'branch',
       backup_vendor = null,
       backup_model = null,
     } = body;
+
+    // Task type drives execution + which fields apply. 'coding' (default),
+    // 'test' and 'script' need a repo; 'skill' and 'research' do not.
+    const ALLOWED_TASK_TYPES = ['coding', 'test', 'skill', 'script', 'research'];
+    if (!ALLOWED_TASK_TYPES.includes(task_type)) {
+      return NextResponse.json(
+        { error: `task_type must be one of: ${ALLOWED_TASK_TYPES.join(', ')}` },
+        { status: 400 },
+      );
+    }
+    const repoRequired = ['coding', 'test', 'script'].includes(task_type);
 
     const ALLOWED_VENDORS = ['anthropic', 'google', 'openai', 'glm'];
     if (!ALLOWED_VENDORS.includes(agent_vendor)) {
@@ -73,9 +85,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'max_turns must be a positive integer or null' }, { status: 400 });
     }
 
-    if (!repo_id || !task_key || !title) {
+    if (!task_key || !title) {
       return NextResponse.json(
-        { error: 'repo_id, task_key, and title are required' },
+        { error: 'task_key and title are required' },
+        { status: 400 },
+      );
+    }
+    if (repoRequired && !repo_id) {
+      return NextResponse.json(
+        { error: `repo_id is required for ${task_type} tasks` },
         { status: 400 },
       );
     }
@@ -88,10 +106,10 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await query(
-      `INSERT INTO tasks (repo_id, task_key, title, description, acceptance, priority, labels, mode, claude_mode, agent_vendor, claude_model, max_turns, skip_verify, git_flow, backup_vendor, backup_model, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 'pending')
+      `INSERT INTO tasks (repo_id, task_key, title, description, acceptance, priority, labels, mode, task_type, claude_mode, agent_vendor, claude_model, max_turns, skip_verify, git_flow, backup_vendor, backup_model, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'pending')
        RETURNING *`,
-      [repo_id, task_key, title, description || null, acceptance || null, priority, labels, mode, claude_mode, agent_vendor, claude_model || null, max_turns, skip_verify, git_flow, backup_vendor || null, backup_model || null],
+      [repo_id || null, task_key, title, description || null, acceptance || null, priority, labels, mode, task_type, claude_mode, agent_vendor, claude_model || null, max_turns, skip_verify, git_flow, backup_vendor || null, backup_model || null],
     );
 
     return NextResponse.json(result.rows[0], { status: 201 });

@@ -30,6 +30,7 @@ import { PatchesPanel, MessagesPanel } from './pro-loader';
 import { PredictionCard } from './PredictionCard';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
+import { taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 
 interface TaskDetailProps {
   task: Task;
@@ -88,8 +89,9 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const [agentBilling, setAgentBilling] = useState<ClaudeMode>((task.claude_mode ?? 'max') as ClaudeMode);
   // Local repos never push — only 'patch' and 'untracked' git flows apply.
   const isLocalRepo = task.repo_provider === 'local';
+  const typeEntry = taskTypeEntry(task.task_type);
   const [agentGitFlow, setAgentGitFlow] = useState<GitFlow>(() => {
-    const flow = (task.git_flow ?? 'branch') as GitFlow;
+    const flow = (task.git_flow ?? 'untracked') as GitFlow;
     if (isLocalRepo && flow !== 'patch' && flow !== 'untracked') return 'patch';
     return flow;
   });
@@ -461,15 +463,17 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   placeholder="Detailed task description…"
                 />
               </div>
-              <div className="mb-3">
-                <CFormLabel className="mb-1">Acceptance Criteria</CFormLabel>
-                <CFormTextarea
-                  value={acceptance}
-                  onChange={(e) => setAcceptance(e.target.value)}
-                  rows={3}
-                  placeholder="What conditions must be met for this task to be considered done?"
-                />
-              </div>
+              {typeEntry.showAcceptance && (
+                <div className="mb-3">
+                  <CFormLabel className="mb-1">{typeEntry.acceptanceLabel}</CFormLabel>
+                  <CFormTextarea
+                    value={acceptance}
+                    onChange={(e) => setAcceptance(e.target.value)}
+                    rows={3}
+                    placeholder={typeEntry.acceptancePlaceholder}
+                  />
+                </div>
+              )}
               <CButton color="primary" size="sm" disabled={descSaving} onClick={handleSaveDesc}>
                 {descSaving ? 'Saving…' : 'Save'}
               </CButton>
@@ -504,6 +508,12 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
             <CCardHeader><strong>Details</strong></CCardHeader>
             <CCardBody>
               <dl className="mb-0">
+                <dt>Task Type</dt>
+                <dd>
+                  <CBadge color={TASK_TYPE_BADGE[typeEntry.id] ?? 'secondary'}>
+                    {taskTypeLabel(task.task_type)}
+                  </CBadge>
+                </dd>
                 <dt>Billing</dt>
                 <dd>{task.claude_mode === 'max' ? 'Max (subscription)' : 'API Platform'}</dd>
                 <dt>Queue Job ID</dt>
@@ -580,26 +590,23 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                     : ''}
                 </small>
               </div>
+              {typeEntry.showGitFlow && (
               <div className="mb-3">
                 <CFormLabel className="mb-1">Git flow</CFormLabel>
                 <CFormSelect
                   value={agentGitFlow}
                   onChange={(e) => setAgentGitFlow(e.target.value as GitFlow)}
                 >
-                  {isLocalRepo ? (
-                    <>
-                      <option value="untracked">Untracked changes</option>
-                      <option value="patch">Patch only</option>
-                    </>
-                  ) : (
-                    <>
-                      <option value="branch">Branch + PR</option>
-                      <option value="commit">Direct commit</option>
-                      <option value="patch">Patch only</option>
-                    </>
-                  )}
+                  {/* Same ordered option set for every repo type:
+                      Untracked → Direct Commit → Patch → Branch + PR. */}
+                  <option value="untracked">Untracked</option>
+                  <option value="commit">Direct Commit</option>
+                  <option value="patch">Patch</option>
+                  <option value="branch">Branch + PR</option>
                 </CFormSelect>
               </div>
+              )}
+              {typeEntry.showSkipVerify && (
               <div className="mb-3">
                 <CFormLabel className="mb-1">Verification</CFormLabel>
                 <CFormCheck
@@ -616,6 +623,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   }}
                 />
               </div>
+              )}
               <CButton
                 color="primary"
                 size="sm"

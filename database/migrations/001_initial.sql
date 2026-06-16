@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     priority            INT          NOT NULL DEFAULT 3,
     labels              TEXT[]       DEFAULT '{}',
     mode                VARCHAR(16)  DEFAULT 'autonomous',
+    -- What kind of work this task performs. Chosen at creation, immutable
+    -- afterwards. Drives prompt construction, field visibility, and which
+    -- runner executes it (heavy worktree flow vs. lightweight conversational
+    -- flow). 'coding' (default) | 'test' | 'skill' | 'script' | 'research'.
+    task_type           VARCHAR(16)  NOT NULL DEFAULT 'coding',
     status              VARCHAR(24)  DEFAULT 'pending',
     depends_on          INT[]        DEFAULT '{}',
     queue_job_id        VARCHAR(128),
@@ -197,7 +202,10 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     repo_id     INT         REFERENCES repos(id) ON DELETE CASCADE,
     task_id     INT         REFERENCES tasks(id) ON DELETE SET NULL,
     content     TEXT        NOT NULL,
-    embedding   vector(1536),
+    -- 768-dim: local fastembed embeddings (services/embeddings.py). The
+    -- legacy Voyage path was 1536-dim — the DO block below reshapes the
+    -- column on databases created before the local-embeddings switch.
+    embedding   vector(768),
     memory_type VARCHAR(32) DEFAULT 'experience',
     metadata    JSONB       DEFAULT '{}',
     -- Memory decay + auto-archive (formerly migration 010): recency weighting
@@ -205,7 +213,64 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     archived_at      TIMESTAMPTZ,
     last_recalled_at TIMESTAMPTZ,
     recall_count     INT     NOT NULL DEFAULT 0,
+    -- Supersession (Tier 1.2): an invalidated memory/decision drops out of
+    -- recall; supersedes_id points at the row that replaced it.
+    supersedes_id    BIGINT,
+    invalidated_at   TIMESTAMPTZ,
+    -- Topic / "room" scoping (Tier 2.5): coarse label (e.g. a top-level dir)
+    -- for scoped recall and cross-repo "tunnels".
+    topic            VARCHAR(120),
+    -- Lexical lane for hybrid retrieval (Tier 1.3): full-text vector over
+    -- content, fused with the embedding lane via RRF in RepoMemory.recall.
+    content_tsv      tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
     created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+-- Idempotent for databases created before Tier 1.2 / 1.3 / 2.5.
+ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS supersedes_id  BIGINT;
+ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS invalidated_at TIMESTAMPTZ;
+ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS topic VARCHAR(120);
+ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS content_tsv tsvector
+    GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+
+-- ─── Temporal facts (KG-lite, Tier 1.2) ──────────────────────────────────────
+-- subject-predicate-object facts with validity windows + supersession. A new
+-- fact for the same (repo, subject, predicate) closes the prior one; recall
+-- shows only current facts (valid_until IS NULL). Always present; written only
+-- by the Pro memory_facts module.
+CREATE TABLE IF NOT EXISTS memory_facts (
+    id              BIGSERIAL PRIMARY KEY,
+    repo_id         INT REFERENCES repos(id) ON DELETE CASCADE,
+    subject         TEXT NOT NULL,
+    predicate       TEXT NOT NULL,
+    object          TEXT NOT NULL,
+    embedding       vector(768),
+    topic           VARCHAR(120),
+    confidence      REAL        DEFAULT 1.0,
+    valid_from      TIMESTAMPTZ DEFAULT NOW(),
+    valid_until     TIMESTAMPTZ,
+    invalidated_at  TIMESTAMPTZ,
+    superseded_by   BIGINT      REFERENCES memory_facts(id) ON DELETE SET NULL,
+    source_task_id  INT         REFERENCES tasks(id) ON DELETE SET NULL,
+    metadata        JSONB       DEFAULT '{}',
+    created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_facts_repo         ON memory_facts(repo_id);
+CREATE INDEX IF NOT EXISTS idx_facts_repo_current ON memory_facts(repo_id, subject)
+    WHERE valid_until IS NULL;
+CREATE INDEX IF NOT EXISTS idx_facts_embedding    ON memory_facts
+    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- ─── Per-repo Memory Knowledge Base registry (Foundation B) ──────────────────
+-- One row per repo holding KB-level config plus the cached "wake-up" digest
+-- (Tier 3). The schema is always present; only the Pro RepoMemory object
+-- (services/pro/repo_kb.py) reads/writes it — it stays empty in the free build.
+CREATE TABLE IF NOT EXISTS repo_memory (
+    repo_id        INT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
+    embed_model    VARCHAR(80),
+    wake_digest    TEXT,
+    wake_digest_at TIMESTAMPTZ,
+    topics         JSONB DEFAULT '[]',
+    updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ─── PgQueuer ────────────────────────────────────────────────────────────────
@@ -358,6 +423,9 @@ CREATE TABLE IF NOT EXISTS task_templates (
     name                VARCHAR(128) NOT NULL,
     description         TEXT,
     acceptance          TEXT,
+    -- A template belongs to exactly one task type; the create-task form
+    -- pre-fills the type from the template. See tasks.task_type.
+    task_type           VARCHAR(16)  NOT NULL DEFAULT 'coding',
     git_flow            VARCHAR(16)  DEFAULT 'branch',
     claude_mode         VARCHAR(8)   DEFAULT 'max',
     agent_vendor        VARCHAR(16)  DEFAULT 'anthropic',
@@ -435,6 +503,29 @@ CREATE INDEX IF NOT EXISTS idx_task_runs_status     ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_task_events_task_id  ON task_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_events_created  ON task_events(created_at);
 
+-- Embedding-dimension migration (Voyage 1536 -> local fastembed 768).
+-- Idempotent + safe to re-run: only fires when an existing database still
+-- has the legacy 1536-dim column. Old vectors are dropped (the column is
+-- reshaped); regenerate them with scripts/reembed_memory.py. Recall degrades
+-- gracefully to lexical/text search until the backfill completes.
+-- For pgvector, atttypmod holds the declared dimension directly.
+DO $$
+DECLARE
+    cur_dim integer;
+BEGIN
+    SELECT atttypmod INTO cur_dim
+    FROM pg_attribute
+    WHERE attrelid = 'agent_memory'::regclass
+      AND attname = 'embedding'
+      AND NOT attisdropped;
+    IF cur_dim IS NOT NULL AND cur_dim <> 768 THEN
+        DROP INDEX IF EXISTS idx_agent_memory_embedding;
+        ALTER TABLE agent_memory DROP COLUMN embedding;
+        ALTER TABLE agent_memory ADD COLUMN embedding vector(768);
+        RAISE NOTICE 'agent_memory.embedding reshaped from %-dim to 768-dim; run scripts/reembed_memory.py', cur_dim;
+    END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_agent_memory_repo    ON agent_memory(repo_id);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_type    ON agent_memory(memory_type);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_embedding ON agent_memory
@@ -443,6 +534,19 @@ CREATE INDEX IF NOT EXISTS idx_agent_memory_embedding ON agent_memory
 -- (formerly migration 010).
 CREATE INDEX IF NOT EXISTS idx_agent_memory_active
     ON agent_memory (repo_id) WHERE archived_at IS NULL;
+-- Verbatim transcript drawers (Tier 1.1): dedup chunks by their deterministic
+-- chunk_id so re-archiving a task only adds new chunks.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memory_chunk
+    ON agent_memory ((metadata->>'chunk_id'))
+    WHERE memory_type = 'transcript' AND metadata ? 'chunk_id';
+-- Lexical lane index for hybrid retrieval (Tier 1.3).
+CREATE INDEX IF NOT EXISTS idx_agent_memory_tsv
+    ON agent_memory USING gin (content_tsv);
+-- Topic / cross-repo tunnel lookups (Tier 2.5).
+CREATE INDEX IF NOT EXISTS idx_agent_memory_topic
+    ON agent_memory (repo_id, topic) WHERE topic IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_memory_topic_xrepo
+    ON agent_memory (topic) WHERE topic IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS pgqueuer_priority_id_id1_idx ON pgqueuer(priority ASC, id DESC)
     INCLUDE (id) WHERE status = 'queued';
@@ -654,6 +758,11 @@ ALTER TABLE ideas ADD COLUMN IF NOT EXISTS evaluator_score INT;
 ALTER TABLE ideas ADD COLUMN IF NOT EXISTS expand_reason   TEXT;
 ALTER TABLE ideas ADD COLUMN IF NOT EXISTS stop_reason     TEXT;
 ALTER TABLE ideas ADD COLUMN IF NOT EXISTS rollup_summary  TEXT;
+
+-- Generic task types (coding/test/skill/script/research). Older databases
+-- only had implicit coding tasks, so default every existing row to 'coding'.
+ALTER TABLE tasks           ADD COLUMN IF NOT EXISTS task_type VARCHAR(16) NOT NULL DEFAULT 'coding';
+ALTER TABLE task_templates  ADD COLUMN IF NOT EXISTS task_type VARCHAR(16) NOT NULL DEFAULT 'coding';
 
 -- Skill link + side-effect-gate suspension on tasks (formerly 004 + 005).
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS skill_id INT REFERENCES skills(id) ON DELETE SET NULL;

@@ -6,7 +6,7 @@ import { Client } from 'pg';
 
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
-const port = parseInt(process.env.PORT || '3000', 10);
+const port = parseInt(process.env.WEB_PORT || process.env.PORT || '3200', 10);
 
 const app = next({ dev, hostname, port, webpack: true });
 const handle = app.getRequestHandler();

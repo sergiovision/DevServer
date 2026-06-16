@@ -54,10 +54,20 @@ class Settings(BaseSettings):
     # Only needed for Azure OpenAI / Azure AI Foundry — the API version
     # query param Azure requires (e.g. "2024-10-01-preview").
     openai_api_version: str = ""
-    google_api_key: str = ""
+    gemini_api_key: str = ""
     gemini_bin: str = "gemini"
     glm_api_key: str = ""  # Zhipu AI (open.bigmodel.cn)
     # glm_bin is not needed — the ``glm`` launcher is always called ``glm``
+
+    # Local embeddings (semantic memory recall). Fully local via fastembed
+    # (ONNX runtime, CPU) — no cloud API, no key. This replaces the old
+    # Voyage AI HTTP path. The vector dimension is fixed at the
+    # ``agent_memory.embedding`` column DDL (vector(768)), so swapping this
+    # to a model with a different dimension requires a schema migration +
+    # re-embed (scripts/reembed_memory.py). The default is general-purpose
+    # and 768-dim; ``jinaai/jina-embeddings-v2-base-code`` is a code-aware
+    # 768-dim alternative.
+    embedding_model: str = "BAAI/bge-base-en-v1.5"
 
     # Paths
     devserver_root: str = ""
@@ -79,6 +89,10 @@ class Settings(BaseSettings):
     worker_host: str = "0.0.0.0"
     worker_port: int = 8000
     worker_concurrency: int = 2
+
+    # Web UI — port the Next.js dashboard listens on. The worker uses this
+    # to reach the Next.js enqueue / worker API on localhost.
+    web_port: int = 3200
 
     model_config = {"env_file": _ENV_PATH, "env_file_encoding": "utf-8", "extra": "ignore"}
 

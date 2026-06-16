@@ -9,6 +9,11 @@ WORKDIR /app
 COPY pyproject.toml .
 RUN pip install --no-cache-dir .
 
+# Pre-download the local embedding model (must match EMBEDDING_MODEL in .env).
+ARG EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='${EMBEDDING_MODEL}')"
+
 COPY src/ ./src/
 
 ENV PYTHONPATH=/app/src

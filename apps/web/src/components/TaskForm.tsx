@@ -17,12 +17,13 @@ import {
   CCol,
   CAlert,
 } from '@coreui/react-pro';
-import type { Repo, Task, TaskTemplate, GitFlow, AgentVendor } from '@/lib/types';
+import type { Repo, Task, TaskTemplate, GitFlow, AgentVendor, TaskType } from '@/lib/types';
 import {
   AGENT_VENDORS,
   defaultModelForVendor,
   modelsForVendor,
 } from '@/lib/agent-vendors';
+import { TASK_TYPES, DEFAULT_TASK_TYPE, taskTypeEntry } from '@/lib/task-types';
 import { MaxTurnsInput } from '@/components/MaxTurnsInput';
 import { VendorModelPicker } from '@/components/VendorModelPicker';
 
@@ -32,11 +33,17 @@ interface TaskFormProps {
   templates?: TaskTemplate[];
 }
 
-// Local repos never push: only 'patch' and 'untracked' are valid there;
-// 'untracked' is meaningless anywhere else.
-function normalizeGitFlow(flow: GitFlow, local: boolean): GitFlow {
+// Local repos never push: only 'patch' and 'untracked' are valid there.
+// 'untracked' is otherwise reserved for the non-coding task types (test,
+// script, skill, research) — they just run and report, with no changes worth
+// pushing — and is coerced away for coding tasks on remote repos.
+function normalizeGitFlow(
+  flow: GitFlow,
+  local: boolean,
+  allowUntracked: boolean,
+): GitFlow {
   if (local && flow !== 'patch' && flow !== 'untracked') return 'patch';
-  if (!local && flow === 'untracked') return 'branch';
+  if (!local && !allowUntracked && flow === 'untracked') return 'branch';
   return flow;
 }
 
@@ -51,19 +58,25 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     repo_id: task?.repo_id?.toString() || '',
     task_key: task?.task_key || '',
     title: task?.title || '',
+    // Task type is chosen at creation and cannot change afterwards.
+    task_type: (task?.task_type || DEFAULT_TASK_TYPE) as TaskType,
     description: task?.description || prefillDescription || '',
     acceptance: task?.acceptance || '',
     git_flow: normalizeGitFlow(
-      (task?.git_flow || 'branch') as GitFlow,
+      (task?.git_flow ||
+        taskTypeEntry(task?.task_type || DEFAULT_TASK_TYPE).defaultGitFlow) as GitFlow,
       repos.find((r) => r.id === task?.repo_id)?.provider === 'local',
+      taskTypeEntry(task?.task_type || DEFAULT_TASK_TYPE).defaultGitFlow === 'untracked',
     ),
     claude_mode: task?.claude_mode || 'max',
     agent_vendor: (task?.agent_vendor || 'anthropic') as AgentVendor,
-    claude_model: task?.claude_model || '',
+    claude_model:
+      task?.claude_model ||
+      defaultModelForVendor((task?.agent_vendor || 'anthropic') as AgentVendor),
     backup_vendor: (task?.backup_vendor || 'anthropic') as AgentVendor,
     backup_model: task?.backup_model || 'claude-sonnet-4-6',
     max_turns: (task?.max_turns ?? 50) as number | null,
-    skip_verify: task?.skip_verify ?? false,
+    skip_verify: task?.skip_verify ?? true,
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -78,11 +91,19 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     if (!t) return;
     setFormData((prev) => {
       const repo = repos.find((r) => r.id === parseInt(prev.repo_id));
+      const nextType = (t.task_type ?? prev.task_type) as TaskType;
+      const nextEntry = taskTypeEntry(nextType);
       return {
       ...prev,
+      // A template belongs to one task type — adopt it (create form only).
+      task_type: nextType,
       description: t.description ?? prev.description,
       acceptance: t.acceptance ?? prev.acceptance,
-      git_flow: normalizeGitFlow(t.git_flow ?? prev.git_flow, repo?.provider === 'local'),
+      git_flow: normalizeGitFlow(
+        (t.git_flow ?? nextEntry.defaultGitFlow) as GitFlow,
+        repo?.provider === 'local',
+        nextEntry.defaultGitFlow === 'untracked',
+      ),
       claude_mode: t.claude_mode ?? prev.claude_mode,
       agent_vendor: (t.agent_vendor ?? prev.agent_vendor) as AgentVendor,
       claude_model: t.claude_model ?? prev.claude_model,
@@ -96,6 +117,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
 
   const selectedRepo = repos.find((r) => r.id === parseInt(formData.repo_id));
   const isLocalRepo = selectedRepo?.provider === 'local';
+  const typeEntry = taskTypeEntry(formData.task_type);
 
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
@@ -103,9 +125,19 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     const { name, value } = e.target;
     setFormData((prev) => {
       const next = { ...prev, [name]: value };
-      if (name === 'repo_id') {
-        const repo = repos.find((r) => r.id === parseInt(value));
-        next.git_flow = normalizeGitFlow(next.git_flow, repo?.provider === 'local');
+      // Switching task type adopts that type's default git flow (non-coding
+      // types default to 'untracked' — run-and-report, no branch/commit/PR).
+      if (name === 'task_type') {
+        next.git_flow = taskTypeEntry(value).defaultGitFlow;
+      }
+      if (name === 'repo_id' || name === 'task_type') {
+        const repoId = name === 'repo_id' ? value : next.repo_id;
+        const repo = repos.find((r) => r.id === parseInt(repoId));
+        next.git_flow = normalizeGitFlow(
+          next.git_flow,
+          repo?.provider === 'local',
+          taskTypeEntry(next.task_type).defaultGitFlow === 'untracked',
+        );
       }
       return next;
     });
@@ -154,7 +186,11 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
         title: task.title ?? prev.title,
         description: task.description ?? prev.description,
         acceptance: task.acceptance ?? prev.acceptance,
-        git_flow: task.git_flow ?? prev.git_flow,
+        git_flow: normalizeGitFlow(
+          (task.git_flow ?? prev.git_flow) as GitFlow,
+          isLocalRepo,
+          taskTypeEntry(prev.task_type).defaultGitFlow === 'untracked',
+        ),
         claude_mode: task.claude_mode ?? prev.claude_mode,
         agent_vendor: task.agent_vendor ?? prev.agent_vendor,
         claude_model: task.claude_model ?? prev.claude_model,
@@ -197,7 +233,8 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     try {
       const body = {
         ...formData,
-        repo_id: parseInt(formData.repo_id),
+        // Repo-optional types (skill/research) may have no repository.
+        repo_id: formData.repo_id ? parseInt(formData.repo_id) : null,
         priority: 3,
         labels: [],
         mode: 'autonomous',
@@ -265,10 +302,32 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
             </div>
           )}
 
+          <div className="mb-3">
+            <CFormLabel>Task Type</CFormLabel>
+            <CFormSelect
+              name="task_type"
+              value={formData.task_type}
+              onChange={handleChange}
+              disabled={isEdit}
+            >
+              {TASK_TYPES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </CFormSelect>
+            <small className="text-body-secondary">
+              {typeEntry.description}
+              {isEdit && ' — task type cannot be changed after creation.'}
+            </small>
+          </div>
+
           <CRow className="mb-3">
             <CCol md={6}>
               <div className="d-flex align-items-center gap-2 mb-1">
-                <CFormLabel className="mb-0">Repository</CFormLabel>
+                <CFormLabel className="mb-0">
+                  Repository{!typeEntry.requiresRepo && ' (optional)'}
+                </CFormLabel>
                 <CButton
                   type="button"
                   color="info"
@@ -287,9 +346,11 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
                 name="repo_id"
                 value={formData.repo_id}
                 onChange={handleChange}
-                required
+                required={typeEntry.requiresRepo}
               >
-                <option value="">Select a repository...</option>
+                <option value="">
+                  {typeEntry.requiresRepo ? 'Select a repository...' : 'No repository'}
+                </option>
                 {repos.map((repo) => (
                   <option key={repo.id} value={repo.id}>
                     {repo.name}
@@ -346,31 +407,38 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
             />
           </div>
 
-          <div className="mb-3">
-            <CFormLabel>Acceptance Criteria</CFormLabel>
-            <CFormTextarea
-              name="acceptance"
-              value={formData.acceptance}
-              onChange={handleChange}
-              rows={3}
-              placeholder="What conditions must be met for this task to be considered done?"
-            />
-          </div>
+          {typeEntry.showAcceptance && (
+            <div className="mb-3">
+              <CFormLabel>{typeEntry.acceptanceLabel}</CFormLabel>
+              <CFormTextarea
+                name="acceptance"
+                value={formData.acceptance}
+                onChange={handleChange}
+                rows={3}
+                placeholder={typeEntry.acceptancePlaceholder}
+              />
+            </div>
+          )}
 
+          {typeEntry.showGitFlow && (
           <div className="mb-3">
             <CFormLabel>Git flow</CFormLabel>
             <div className="btn-group w-100" role="group">
               {(
-                (isLocalRepo
-                  ? [
-                      { value: 'untracked', label: 'Untracked changes', title: 'Edit files directly in the Local Root Folder — no branch, no commit, no push' },
-                      { value: 'patch',     label: 'Patch only',        title: 'Commit on a local agent/… branch and generate a combined.mbox patch file — no push' },
-                    ]
-                  : [
-                      { value: 'branch', label: 'Branch + PR',     title: 'Create agent/… branch and open a pull request (default)' },
-                      { value: 'commit', label: 'Direct commit',   title: 'Squash-merge directly onto the default branch — no PR' },
-                      { value: 'patch',  label: 'Patch only',      title: 'Generate a combined.mbox patch file — no push, no PR' },
-                    ]) as { value: GitFlow; label: string; title: string }[]
+                // Same ordered option set for every repo type:
+                // Untracked → Direct Commit → Patch → Branch + PR.
+                // Untracked is the default (and the only safe flow for local
+                // repos, which the worker coerces commit/branch away from).
+                [
+                  { value: 'untracked', label: 'Untracked',     title: isLocalRepo
+                    ? 'Edit files directly in the Local Root Folder — no branch, no commit, no push (default)'
+                    : 'Run in an isolated worktree and report — no branch, no commit, no push, no PR (default)' },
+                  { value: 'commit',    label: 'Direct Commit', title: 'Squash-merge directly onto the default branch — no PR' },
+                  { value: 'patch',     label: 'Patch',         title: isLocalRepo
+                    ? 'Commit on a local agent/… branch and generate a combined.mbox patch file — no push'
+                    : 'Generate a combined.mbox patch file — no push, no PR' },
+                  { value: 'branch',    label: 'Branch + PR',   title: 'Create agent/… branch and open a pull request' },
+                ] as { value: GitFlow; label: string; title: string }[]
               ).map(({ value, label, title }) => (
                 <React.Fragment key={value}>
                   <input
@@ -394,6 +462,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
               ))}
             </div>
           </div>
+          )}
 
           <CRow className="mb-3">
             <CCol md={3}>
@@ -484,15 +553,17 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
             <small className="text-body-secondary">Auto-failover: if the primary vendor/model fails after all retries, switches to this backup. Different vendor = cross-vendor failover.</small>
           </div>
 
-          <div className="mb-3">
-            <CFormCheck
-              name="skip_verify"
-              id="skip_verify"
-              label="Skip verification (no build/test/lint — go straight to PR)"
-              checked={formData.skip_verify}
-              onChange={handleCheck}
-            />
-          </div>
+          {typeEntry.showSkipVerify && (
+            <div className="mb-3">
+              <CFormCheck
+                name="skip_verify"
+                id="skip_verify"
+                label="Skip verification (no build/test/lint)"
+                checked={formData.skip_verify}
+                onChange={handleCheck}
+              />
+            </div>
+          )}
 
           <div className="d-flex gap-2">
             <CButton type="submit" color="primary" disabled={saving}>

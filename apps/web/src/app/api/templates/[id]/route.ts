@@ -26,7 +26,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
     const body = await request.json();
     const allowed = [
-      'name', 'description', 'acceptance', 'git_flow', 'claude_mode',
+      'name', 'description', 'acceptance', 'task_type', 'git_flow', 'claude_mode',
       'agent_vendor', 'claude_model', 'backup_vendor', 'backup_model',
       'max_turns', 'skip_verify',
     ];

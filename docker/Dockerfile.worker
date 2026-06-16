@@ -24,6 +24,13 @@ WORKDIR /app
 COPY apps/worker/pyproject.toml ./
 RUN pip install --no-cache-dir .
 
+# ── Pre-download the local embedding model ───────────────────────────────────
+# Bakes the fastembed model into the image so the first memory recall runs
+# offline-clean (no download at runtime). Must match EMBEDDING_MODEL in .env.
+ARG EMBEDDING_MODEL=BAAI/bge-base-en-v1.5
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding(model_name='${EMBEDDING_MODEL}')"
+
 COPY apps/worker/src/ ./src/
 COPY .claude/skills/ ./.claude/skills/
 

@@ -3,29 +3,29 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "NODE_OPTIONS=--disable-warning=DEP0205 tsx server.ts",
     "build": "next build --webpack && tsc -p tsconfig.server.json",
     "start": "NODE_ENV=production node server.js",
     "lint": "next lint"
   },
   "dependencies": {
-    "@coreui/coreui-pro": "^5.24.2",
+    "@coreui/coreui-pro": "^5.25.1",
     "@coreui/icons": "~3.1.0",
     "@coreui/icons-react": "~2.3.0",
-    "@coreui/react-pro": "^5.24.1",
+    "@coreui/react-pro": "^5.25.0",
     "chart.js": "^4.5.1",
-    "next": "^16.2.4",
-    "pg": "^8.20.0",
-    "react": "^19.2.5",
+    "next": "^16.2.9",
+    "pg": "^8.21.0",
+    "react": "^19.2.7",
     "react-chartjs-2": "^5.3.1",
-    "react-dom": "^19.2.5",
-    "tsx": "^4.21.0",
-    "ws": "^8.20.0"
+    "react-dom": "^19.2.7",
+    "tsx": "^4.22.4",
+    "ws": "^8.21.0"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.9.3",
     "@types/pg": "^8.20.0",
-    "@types/react": "^19.2.14",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
     "typescript": "^5.9.3"

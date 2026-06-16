@@ -15,7 +15,7 @@ import {
   CRow,
   CCol,
 } from '@coreui/react-pro';
-import type { AgentVendor } from '@/lib/types';
+import type { AgentVendor, ClaudeMode } from '@/lib/types';
 import {
   AGENT_VENDORS,
   defaultModelForVendor,
@@ -46,6 +46,9 @@ function buildDraft(raw: Record<string, unknown>) {
     notifications_enabled: raw.notifications_enabled !== false,
     system_llm_vendor: (unquote(raw.system_llm_vendor) || 'glm') as AgentVendor,
     system_llm_model: unquote(raw.system_llm_model) || 'glm-5.1',
+    // Billing mode for system LLM calls (Fill Task, DevPlan, decompose, …):
+    // 'max' = subscription via vendor CLI, 'api' = direct API key. Default max.
+    system_llm_mode: (unquote(raw.system_llm_mode) || 'max') as ClaudeMode,
     // Migration 010 — memory quality + abstain gate (Pro). 0 / false = off.
     reality_abstain_threshold: Number(raw.reality_abstain_threshold || 0),
     memory_decay_half_life_days: Number(raw.memory_decay_half_life_days || 0),
@@ -99,6 +102,7 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
         ['notifications_enabled', draft.notifications_enabled],
         ['system_llm_vendor', draft.system_llm_vendor],
         ['system_llm_model', draft.system_llm_model],
+        ['system_llm_mode', draft.system_llm_mode],
         ['reality_abstain_threshold', draft.reality_abstain_threshold],
         ['memory_decay_half_life_days', draft.memory_decay_half_life_days],
         ['memory_archive_days', draft.memory_archive_days],
@@ -193,7 +197,7 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
                   ))}
                 </CFormSelect>
               </CCol>
-              <CCol md={9}>
+              <CCol md={6}>
                 <CFormLabel className="mb-1">Model</CFormLabel>
                 <CFormInput
                   value={draft.system_llm_model}
@@ -209,6 +213,16 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
                     </option>
                   ))}
                 </datalist>
+              </CCol>
+              <CCol md={3}>
+                <CFormLabel className="mb-1">Billing</CFormLabel>
+                <CFormSelect
+                  value={draft.system_llm_mode}
+                  onChange={(e) => set('system_llm_mode', e.target.value as ClaudeMode)}
+                >
+                  <option value="max">Max (subscription)</option>
+                  <option value="api">API Platform</option>
+                </CFormSelect>
               </CCol>
             </CRow>
 

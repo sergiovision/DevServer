@@ -24,8 +24,8 @@ COPY apps/web/server.ts                 ./server.ts
 COPY apps/web/package.json              ./package.json
 COPY apps/web/tsconfig.json             ./tsconfig.json
 
-EXPOSE 3000
-ENV PORT=3000
+EXPOSE 3200
+ENV WEB_PORT=3200
 ENV HOSTNAME=0.0.0.0
 
 # tsx executes server.ts directly — handles both Next.js requests and WebSocket.

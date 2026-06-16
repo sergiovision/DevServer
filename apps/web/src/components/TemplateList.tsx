@@ -28,8 +28,9 @@ import {
   CRow,
   CCol,
 } from '@coreui/react-pro';
-import type { TaskTemplate, GitFlow, ClaudeMode, AgentVendor } from '@/lib/types';
+import type { TaskTemplate, GitFlow, ClaudeMode, AgentVendor, TaskType } from '@/lib/types';
 import { AGENT_VENDORS, defaultModelForVendor, modelsForVendor } from '@/lib/agent-vendors';
+import { TASK_TYPES, taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 import { VendorModelPicker } from './VendorModelPicker';
 import { MaxTurnsInput } from './MaxTurnsInput';
 
@@ -41,6 +42,7 @@ const EMPTY_FORM = {
   name: '',
   description: '',
   acceptance: '',
+  task_type: 'coding' as TaskType,
   git_flow: 'branch' as GitFlow,
   claude_mode: 'max' as ClaudeMode,
   agent_vendor: 'anthropic' as AgentVendor,
@@ -58,6 +60,7 @@ function templateToForm(t: TaskTemplate): FormData {
     name: t.name,
     description: t.description ?? '',
     acceptance: t.acceptance ?? '',
+    task_type: (t.task_type ?? 'coding') as TaskType,
     git_flow: t.git_flow,
     claude_mode: t.claude_mode,
     agent_vendor: t.agent_vendor,
@@ -109,6 +112,7 @@ export function TemplateList({ templates }: TemplateListProps) {
         name: form.name.trim(),
         description: form.description.trim() || null,
         acceptance: form.acceptance.trim() || null,
+        task_type: form.task_type,
         git_flow: form.git_flow,
         claude_mode: form.claude_mode,
         agent_vendor: form.agent_vendor,
@@ -145,6 +149,7 @@ export function TemplateList({ templates }: TemplateListProps) {
 
   const GIT_FLOW_LABELS: Record<string, string> = { branch: 'Branch + PR', commit: 'Direct commit', patch: 'Patch only', untracked: 'Untracked changes' };
   const BILLING_LABELS: Record<string, string> = { max: 'Max', api: 'API' };
+  const tplTypeEntry = taskTypeEntry(form.task_type);
 
   return (
     <>
@@ -166,6 +171,7 @@ export function TemplateList({ templates }: TemplateListProps) {
               <CTableHead>
                 <CTableRow>
                   <CTableHeaderCell>Name</CTableHeaderCell>
+                  <CTableHeaderCell>Type</CTableHeaderCell>
                   <CTableHeaderCell>Git Flow</CTableHeaderCell>
                   <CTableHeaderCell>Vendor / Model</CTableHeaderCell>
                   <CTableHeaderCell>Billing</CTableHeaderCell>
@@ -183,6 +189,11 @@ export function TemplateList({ templates }: TemplateListProps) {
                           {t.description}
                         </div>
                       )}
+                    </CTableDataCell>
+                    <CTableDataCell>
+                      <CBadge color={TASK_TYPE_BADGE[(t.task_type ?? 'coding') as TaskType] ?? 'secondary'}>
+                        {taskTypeLabel(t.task_type)}
+                      </CBadge>
                     </CTableDataCell>
                     <CTableDataCell>
                       <CBadge color="secondary">{GIT_FLOW_LABELS[t.git_flow] ?? t.git_flow}</CBadge>
@@ -231,6 +242,16 @@ export function TemplateList({ templates }: TemplateListProps) {
           </div>
 
           <div className="mb-3">
+            <CFormLabel>Task Type</CFormLabel>
+            <CFormSelect name="task_type" value={form.task_type} onChange={handleChange}>
+              {TASK_TYPES.map((t) => (
+                <option key={t.id} value={t.id}>{t.label}</option>
+              ))}
+            </CFormSelect>
+            <small className="text-body-secondary">{tplTypeEntry.description}</small>
+          </div>
+
+          <div className="mb-3">
             <CFormLabel>Description</CFormLabel>
             <CFormTextarea
               name="description"
@@ -241,18 +262,21 @@ export function TemplateList({ templates }: TemplateListProps) {
             />
           </div>
 
-          <div className="mb-3">
-            <CFormLabel>Acceptance Criteria</CFormLabel>
-            <CFormTextarea
-              name="acceptance"
-              value={form.acceptance}
-              onChange={handleChange}
-              rows={2}
-              placeholder="Pre-filled acceptance criteria..."
-            />
-          </div>
+          {tplTypeEntry.showAcceptance && (
+            <div className="mb-3">
+              <CFormLabel>{tplTypeEntry.acceptanceLabel}</CFormLabel>
+              <CFormTextarea
+                name="acceptance"
+                value={form.acceptance}
+                onChange={handleChange}
+                rows={2}
+                placeholder="Pre-filled acceptance criteria..."
+              />
+            </div>
+          )}
 
           <CRow className="mb-3">
+            {tplTypeEntry.showGitFlow && (
             <CCol md={4}>
               <CFormLabel>Git Flow</CFormLabel>
               <CFormSelect name="git_flow" value={form.git_flow} onChange={handleChange}>
@@ -261,6 +285,7 @@ export function TemplateList({ templates }: TemplateListProps) {
                 <option value="patch">Patch only</option>
               </CFormSelect>
             </CCol>
+            )}
             <CCol md={4}>
               <CFormLabel>Billing</CFormLabel>
               <CFormSelect name="claude_mode" value={form.claude_mode} onChange={handleChange}>
@@ -315,15 +340,17 @@ export function TemplateList({ templates }: TemplateListProps) {
             />
           </div>
 
-          <div className="mb-3">
-            <CFormCheck
-              id="template_skip_verify"
-              name="skip_verify"
-              label="Skip verification"
-              checked={form.skip_verify}
-              onChange={(e) => setForm((prev) => ({ ...prev, skip_verify: e.target.checked }))}
-            />
-          </div>
+          {tplTypeEntry.showSkipVerify && (
+            <div className="mb-3">
+              <CFormCheck
+                id="template_skip_verify"
+                name="skip_verify"
+                label="Skip verification"
+                checked={form.skip_verify}
+                onChange={(e) => setForm((prev) => ({ ...prev, skip_verify: e.target.checked }))}
+              />
+            </div>
+          )}
         </CModalBody>
         <CModalFooter>
           <CButton color="secondary" variant="outline" onClick={() => setModalVisible(false)}>

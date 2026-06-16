@@ -22,7 +22,7 @@ export function AgentDetailView({ task, events: initialEvents }: AgentDetailView
   const [events, setEvents] = useState<TaskEvent[]>(initialEvents);
 
   useEffect(() => {
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3000/api/ws';
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3200/api/ws';
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {

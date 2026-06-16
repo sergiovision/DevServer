@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   CSmartTable,
@@ -11,8 +11,9 @@ import {
   CCardBody,
   CCollapse,
 } from '@coreui/react-pro';
-import type { Task, TaskStatus } from '@/lib/types';
+import type { Task, TaskStatus, TaskType } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
+import { taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 
 interface TaskTableProps {
   tasks: Task[];
@@ -23,6 +24,7 @@ interface TaskTableProps {
 const columns = [
   { key: 'actions', label: '', _style: { width: '120px' }, sorter: false },
   { key: 'task_key', label: 'Key', _style: { width: '150px' } },
+  { key: 'task_type', label: 'Type', _style: { width: '100px' } },
   { key: 'title', label: 'Title' },
   { key: 'repo_name', label: 'Repo', _style: { width: '120px' } },
   { key: 'status', label: 'Status', _style: { width: '110px' } },
@@ -33,6 +35,7 @@ const columns = [
 const groupedColumns = [
   { key: 'actions', label: '', _style: { width: '120px' }, sorter: false },
   { key: 'task_key', label: 'Key', _style: { width: '150px' } },
+  { key: 'task_type', label: 'Type', _style: { width: '100px' } },
   { key: 'title', label: 'Title' },
   { key: 'status', label: 'Status', _style: { width: '110px' } },
   { key: 'max_turns', label: 'Turns', _style: { width: '90px' }, sorter: false },
@@ -49,6 +52,13 @@ function getScopedColumns(router: ReturnType<typeof useRouter>, handleEnqueue: (
       <td>
         <CBadge color={statusBadgeColor(item.status as TaskStatus)}>
           {item.status}
+        </CBadge>
+      </td>
+    ),
+    task_type: (item: Task) => (
+      <td>
+        <CBadge color={TASK_TYPE_BADGE[(item.task_type ?? 'coding') as TaskType] ?? 'secondary'}>
+          {taskTypeLabel(item.task_type)}
         </CBadge>
       </td>
     ),

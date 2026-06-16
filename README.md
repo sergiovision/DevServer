@@ -39,6 +39,8 @@ Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a C
 
 All of the above are real code paths, not marketing bullets. See [`apps/worker/src/services/`](apps/worker/src/services/) for the implementations.
 
+> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, night cycle, inter-task messaging bus + operator inbox, and webhook triggers are available in the [Pro edition](README.PRO.md).
+
 ## Features
 
 ### Dashboard — what's running, what's queued, what cost what
@@ -158,9 +160,11 @@ flowchart TB
   subgraph worker["FastAPI Worker · apps/worker/"]
     Cons["PgQueuer consumer"]
     Runner["agent_runner.run_task()"]
+    Emb["embeddings<br/>(local · fastembed 768d)"]
     subgraph ctx["Pre-execution context"]
       direction LR
       RM["repo_map"]
+      KB["memory recall + wake-up digest<br/>(Pro)"]
     end
     subgraph loop["Retry loop"]
       direction LR
@@ -171,12 +175,14 @@ flowchart TB
       VER -.fail.-> EC -.hint.-> CLI
     end
     Runner --> ctx --> loop
+    CLI -. "pull lanes (Pro)<br/>memory/transcripts·facts·decisions·repo-map" .-> KB
+    KB --- Emb
   end
 
   subgraph ext["External services"]
     direction TB
     Gitea[("Gitea<br/>(PRs)")]
-    PG2[("PostgreSQL 17")]
+    PG2[("PostgreSQL 17<br/>+ pgvector")]
     TG["Telegram"]
     Agents["Claude / Gemini<br/>Codex / GLM"]
   end
@@ -186,6 +192,7 @@ flowchart TB
   API --> Prod --> PG2
   PG2 --> Cons --> Runner
   PG2 -- NOTIFY --> WS
+  KB <--> PG2
   Runner --> Gitea
   Runner --> TG
   CLI --> Agents
@@ -258,6 +265,7 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 | **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
 | **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
 | **AI engines** | Claude, Gemini, Codex, GLM CLIs | DevServer *orchestrates* existing CLIs instead of reimplementing agent logic. |
+| **Embeddings** | `fastembed` (local, ONNX/CPU) | Local semantic embeddings for Pro memory recall — no cloud API, no key. Default `BAAI/bge-base-en-v1.5` (768-dim), override via `EMBEDDING_MODEL`. |
 | **Git platform** | Gitea / Forgejo / GitHub / Local Git | Gitea and GitHub get PRs via their REST APIs; Local Git repos work on a plain local clone — any provider, no API, no tokens. |
 | **Notifications** | Telegram Bot API | Basic task lifecycle alerts. |
 | **Charts** | Chart.js + react-chartjs-2 | Lightweight, no-frills analytics visualizations. |
@@ -286,7 +294,30 @@ cp config/.env.example .env
 ./scripts/start.sh --dev      # starts worker + web in dev mode
 ```
 
-The dashboard is now at **http://localhost:3000**.
+The dashboard is now at **http://localhost:3200** (configurable via `WEB_PORT` in `.env`).
+
+### Upgrading an existing install
+
+The whole schema lives in one idempotent migration, so upgrading an
+existing database is just:
+
+```bash
+./scripts/migrate.sh   # safe to re-run; only applies what's missing
+```
+
+This adds the latest memory tables/columns and reshapes the
+`agent_memory.embedding` column to the local-embedding dimension (768).
+**Pro users** then backfill embeddings with the local model (the reshape
+drops the old vectors):
+
+```bash
+cd apps/worker && uv run python scripts/reembed_memory.py
+```
+
+`fastembed` is a worker dependency now; the embedding model downloads on
+first use (the Docker image pre-bakes it). No embedding API key is required.
+See [README.PRO.md](README.PRO.md#migrating-an-existing-postgres-database-memory-kb)
+for the full memory-KB upgrade + usage guide.
 
 ### Docker (recommended for production)
 
@@ -367,7 +398,7 @@ Use **PowerShell** (not CMD):
    ```powershell
    docker compose up -d --build
    ```
-5. Open **http://localhost:3000**.
+5. Open **http://localhost:3200**.
 
 ## Backup & Restore
 
@@ -457,7 +488,14 @@ DevServer ships as two editions:
 | Outcome forecast (success probability + duration) | ✅ repo baseline | ✅ similar-task |
 | Reality gate (0–100 evidence scoring) | — | ✅ |
 | Strict abstain gate (block low-evidence tasks before they run) | — | ✅ |
-| pgvector memory (past task recall) | — | ✅ |
+| Per-repo memory knowledge base (past task recall) | — | ✅ |
+| Local embeddings — fastembed, no cloud key (powers Pro memory) | ✅ infra | ✅ |
+| Hybrid recall (vector + lexical RRF) + optional LLM rerank | — | ✅ |
+| Verbatim transcript drawers + pre-compaction save | — | ✅ |
+| Temporal facts + invalidation (knowledge-graph-lite) | — | ✅ |
+| Topic scoping + cross-repo memory tunnels | — | ✅ |
+| Wake-up digest + runtime agent memory diary | — | ✅ |
+| Pull-on-demand memory lanes (transcripts/facts/decisions) + repo-map drill-down | — | ✅ |
 | Memory recency decay + auto-archive | — | ✅ |
 | Decision / causal memory (problem → choice → reasoning) | — | ✅ |
 | Iterative multi-hop memory recall | — | ✅ |
@@ -474,6 +512,8 @@ DevServer ships as two editions:
 The free edition compiles and runs without errors — the agent runner
 gracefully degrades when pro modules are absent, falling back to no-op
 stubs in `_free_hooks.py`.
+
+See [README.PRO.md](README.PRO.md) for full Pro feature documentation.
 
 ## Roadmap
 

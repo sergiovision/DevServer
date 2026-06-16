@@ -13,7 +13,9 @@ class Task(Base):
     __tablename__ = "tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    repo_id: Mapped[int] = mapped_column(Integer, ForeignKey("repos.id"), nullable=False)
+    # Nullable: 'skill' and 'research' tasks (and legacy repo-less skill tasks)
+    # have no repository.
+    repo_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("repos.id"), nullable=True)
     task_key: Mapped[str] = mapped_column(String(64), nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
@@ -21,6 +23,9 @@ class Task(Base):
     priority: Mapped[int] = mapped_column(Integer, default=3)
     labels: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     mode: Mapped[str] = mapped_column(String(16), default="autonomous")
+    # 'coding' | 'test' | 'skill' | 'script' | 'research'. Chosen at creation,
+    # immutable afterwards. See database/migrations/001_initial.sql.
+    task_type: Mapped[str] = mapped_column(String(16), default="coding")
     status: Mapped[str] = mapped_column(String(24), default="pending")
     depends_on: Mapped[list[int]] = mapped_column(ARRAY(Integer), default=list)
     queue_job_id: Mapped[str | None] = mapped_column(String(128))

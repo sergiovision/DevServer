@@ -31,6 +31,75 @@ class _SyntheticPreflightResult:
     hint: str = ""
 
 
+class _NoopRepoMemory:
+    """No-op per-repo Knowledge Base (mirrors services.pro.repo_kb.RepoMemory).
+
+    Every method returns a neutral default so free-mode callers using
+    ``pro.repo_memory(db, repo.id).recall(...)`` work without a pro install.
+    """
+
+    async def recall(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    async def recall_iterative(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    async def recall_transcripts(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    async def recall_decisions(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    def render_recall(self, memories: list[dict]) -> str:
+        return ""
+
+    async def archive_transcript(self, *args: Any, **kwargs: Any) -> int:
+        return 0
+
+    # ── Temporal facts (Tier 1.2) ──────────────────────────────────────
+    async def record_fact(self, *args: Any, **kwargs: Any) -> int:
+        return 0
+
+    async def invalidate_fact(self, *args: Any, **kwargs: Any) -> bool:
+        return False
+
+    async def query_facts(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    async def timeline(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    async def search_facts(self, *args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    def render_facts(self, facts: list[dict]) -> str:
+        return ""
+
+    async def invalidate_memory(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def remember(self, *args: Any, **kwargs: Any) -> int:
+        return 0
+
+    async def record_decision(self, *args: Any, **kwargs: Any) -> int:
+        return 0
+
+    async def predict_outcome(self, *args: Any, **kwargs: Any) -> dict | None:
+        return None
+
+    async def get_wake_digest(self, *args: Any, **kwargs: Any) -> str:
+        return ""
+
+    async def set_wake_digest(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def wake_up_digest(self, *args: Any, **kwargs: Any) -> str:
+        return ""
+
+    async def build_wake_digest(self, *args: Any, **kwargs: Any) -> str:
+        return ""
+
+
 class FreeHooks:
     """No-op implementations of every pro hook.
 
@@ -45,6 +114,10 @@ class FreeHooks:
         return {}, ""
 
     # ── Memory ──────────────────────────────────────────────────────
+    def repo_memory(self, *args: Any, **kwargs: Any) -> "_NoopRepoMemory":
+        """Per-repo KB object — no-op in free mode."""
+        return _NoopRepoMemory()
+
     async def search_memory(self, **kwargs: Any) -> list[dict]:
         return []
 

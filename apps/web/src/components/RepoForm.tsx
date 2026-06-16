@@ -29,7 +29,7 @@ export function RepoForm({ repo }: RepoFormProps) {
 
   const [formData, setFormData] = useState({
     name: repo?.name || '',
-    provider: repo?.provider || 'gitea',
+    provider: repo?.provider || 'local',
     gitea_url: repo?.gitea_url || '',
     gitea_owner: repo?.gitea_owner || '',
     gitea_repo: repo?.gitea_repo || '',

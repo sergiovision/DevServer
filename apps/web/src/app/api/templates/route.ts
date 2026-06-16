@@ -20,6 +20,7 @@ export async function POST(request: NextRequest) {
       name,
       description = null,
       acceptance = null,
+      task_type = 'coding',
       git_flow = 'branch',
       claude_mode = 'max',
       agent_vendor = 'anthropic',
@@ -34,11 +35,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'name is required' }, { status: 400 });
     }
 
+    const ALLOWED_TASK_TYPES = ['coding', 'test', 'skill', 'script', 'research'];
+    if (!ALLOWED_TASK_TYPES.includes(task_type)) {
+      return NextResponse.json(
+        { error: `task_type must be one of: ${ALLOWED_TASK_TYPES.join(', ')}` },
+        { status: 400 },
+      );
+    }
+
     const result = await query(
-      `INSERT INTO task_templates (name, description, acceptance, git_flow, claude_mode, agent_vendor, claude_model, backup_vendor, backup_model, max_turns, skip_verify)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO task_templates (name, description, acceptance, task_type, git_flow, claude_mode, agent_vendor, claude_model, backup_vendor, backup_model, max_turns, skip_verify)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
-      [name.trim(), description || null, acceptance || null, git_flow, claude_mode, agent_vendor, claude_model || null, backup_vendor || null, backup_model || null, max_turns, skip_verify],
+      [name.trim(), description || null, acceptance || null, task_type, git_flow, claude_mode, agent_vendor, claude_model || null, backup_vendor || null, backup_model || null, max_turns, skip_verify],
     );
 
     return NextResponse.json(result.rows[0], { status: 201 });
