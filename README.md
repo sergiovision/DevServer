@@ -1,6 +1,8 @@
 
 <div align="center">
 
+<img src="assets/logo/DevServerLogo.jpg" alt="DevServer — a prancing horse harnessed with an AI saddle inside a crest" width="240" />
+
 # DevServer
 
 ### An autonomous coding pipeline for AI coding agents.
@@ -20,6 +22,26 @@
 [Why](#why-devserver) · [Features](#features) · [Architecture](#architecture) · [Design Decisions](#design-decisions) · [Quick Start](#quick-start) · [Project Layout](#project-layout) · [Pro Edition](#pro-edition) · [Roadmap](#roadmap)
 
 </div>
+
+---
+
+## 🐎 Three thoroughbreds. No saddle, no harness.
+
+<img src="assets/logo/BeforeDevServer.jpg" alt="Three unharnessed horses standing idle in a field, branded with the Gemini, Claude, and ChatGPT logos" width="100%" />
+
+**Claude. Gemini. ChatGPT.** Three of the most powerful minds ever built — and on their own, that's exactly what they are: magnificent animals standing in a field. You copy-paste between chat tabs, babysit half-finished diffs, lose all context the second you switch models, and nothing actually *ships* while you watch.
+
+Raw horsepower isn't speed. **Speed needs a harness.**
+
+## 🏇 Saddle up. This is DevServer.
+
+<img src="assets/logo/WithDevServer.jpg" alt="A powerful black horse rearing Ferrari-style, fitted with a DevServer saddle harness branded with all three AI provider logos" width="100%" />
+
+DevServer is the **full harness for your AI providers** — saddle, reins, and stirrups for Claude, Gemini, *and* ChatGPT, all at once. Hand it a task and it dispatches the right agent into an isolated git worktree, verifies build/test/lint, and opens the pull request for you. Rate-limited? It fails over to another vendor mid-stride. Drifting off course? Reality checks, plan gates, and per-repo memory keep it on the track.
+
+One platform. Every model. **Ride your AI at Ferrari style — and Ferrari speed.**
+
+➡️ Point it at any repo and let it run → **[Quick Start](#quick-start)**
 
 ---
 

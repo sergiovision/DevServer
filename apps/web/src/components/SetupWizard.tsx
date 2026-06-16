@@ -402,8 +402,15 @@ export function SetupWizard() {
       <div style={{ width: '100%', maxWidth: 720 }}>
         {/* Header */}
         <div className="text-center mb-4">
-          <h2 className="fw-bold mb-1">DevServer</h2>
-          <small className="text-body-secondary">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/devserver-logo.png"
+            alt="DevServer"
+            width={132}
+            className="brand-mark mb-3"
+            style={{ height: 'auto' }}
+          />
+          <small className="d-block text-body-secondary">
             Step {step + 1} of {TOTAL_STEPS}
           </small>
         </div>

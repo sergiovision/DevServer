@@ -41,6 +41,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <CIcon icon={cilMenu} size="lg" />
             </button>
             <CHeaderBrand className="me-auto d-flex align-items-center gap-2">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/icon.png" alt="" height={28} width={28} className="brand-mark" />
               <span className="fs-5 fw-semibold">DevServer</span>
               <span className="badge bg-primary bg-opacity-10 text-primary fw-normal" style={{ fontSize: '0.7rem' }}>
                 Dashboard

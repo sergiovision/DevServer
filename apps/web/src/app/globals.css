@@ -7,11 +7,37 @@
   letter-spacing: -0.02em;
 }
 
+/* Brand mark (Ferrari-style prancing-horse shield). The source art is pure
+   black line-art on transparency, so on dark themes we invert it to white
+   instead of shipping a second asset. */
+.brand-mark {
+  object-fit: contain;
+  display: inline-block;
+  transition: filter 0.2s ease;
+}
+
+[data-coreui-theme="dark"] .brand-mark {
+  filter: invert(1) brightness(1.85);
+}
+
+.app-sidebar-header {
+  color: var(--cui-body-color);
+}
+
+.sidebar-brand-logo {
+  max-width: 100%;
+  transition: filter 0.2s ease, transform 0.2s ease;
+}
+
+.app-sidebar-header:hover .sidebar-brand-logo {
+  transform: scale(1.02);
+}
+
 /* Custom responsive sidebar (replaces CoreUI CSidebar which was broken on mobile) */
 .app-sidebar {
   display: flex;
   flex-direction: column;
-  width: 256px;
+  width: 200px;
   flex-shrink: 0;
   background-color: var(--cui-body-bg);
   color: var(--cui-body-color);
@@ -24,7 +50,7 @@
 }
 
 .app-sidebar-header {
-  height: 4rem;
+  min-height: 4rem;
   flex-shrink: 0;
 }
 

@@ -9,7 +9,6 @@ import {
   cilTask,
   cilStorage,
   cilSettings,
-  cilCode,
   cilClock,
   cilListRich,
   cilDescription,
@@ -76,10 +75,21 @@ export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
         className={`app-sidebar border-end${visible ? ' show' : ''}`}
         aria-label="Main navigation"
       >
-        <div className="app-sidebar-header border-bottom d-flex align-items-center gap-2 px-3">
-          <CIcon icon={cilCode} height={28} className="text-primary" />
-          <span className="fs-5 fw-bold sidebar-brand-text">DevServer</span>
-        </div>
+        <Link
+          href="/"
+          className="app-sidebar-header border-bottom d-flex align-items-center justify-content-center px-3 py-4 text-decoration-none"
+          onClick={handleLinkClick}
+          aria-label="DevServer home"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="/devserver-logo.png"
+            alt="DevServer"
+            width={120}
+            className="brand-mark sidebar-brand-logo"
+            style={{ height: 'auto' }}
+          />
+        </Link>
         <nav className="app-sidebar-nav">
           <div className="app-sidebar-nav-title">Navigation</div>
           <ul className="app-sidebar-nav-list">
