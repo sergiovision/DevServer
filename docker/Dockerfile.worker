@@ -8,8 +8,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Claude Code CLI ──────────────────────────────────────────────────────────
-RUN npm install -g @anthropic-ai/claude-code
+# ── Coding-agent CLIs (one per supported vendor) ───────────────────────────────
+# Each task picks a vendor (anthropic/google/openai/glm); the worker shells out
+# to that vendor's CLI, so all of them must be on $PATH inside the image. A task
+# whose vendor CLI is missing now fails fast with an actionable
+# "<Vendor> CLI not found" message (see services/agent_backends.is_available).
+#   - anthropic → claude   (@anthropic-ai/claude-code)
+#   - google    → gemini   (@google/gemini-cli)
+#   - openai    → codex     (@openai/codex)
+#   - glm       → glm       (xqsit94/glm launcher — wraps Claude Code for Zhipu)
+RUN npm install -g @anthropic-ai/claude-code @google/gemini-cli @openai/codex
+# glm is a curl|bash launcher (not npm). It writes to ~/.local/bin and edits
+# shell rc files — neither of which is on PATH for the non-interactive CMD — so
+# we symlink it into /usr/local/bin. Best-effort: a failed install must not break
+# the image; glm tasks then fail fast at runtime with a "GLM CLI not found"
+# message instead.
+ENV PATH="/root/.local/bin:${PATH}"
+RUN (curl -fsSL https://raw.githubusercontent.com/xqsit94/glm/main/install.sh | bash) \
+ && { [ -x /root/.local/bin/glm ] && ln -sf /root/.local/bin/glm /usr/local/bin/glm || true; } \
+ || echo "WARNING: glm CLI install failed — glm-vendor tasks will report 'not installed' at runtime"
 
 # ── Git global identity ──────────────────────────────────────────────────────
 # Defaults that work out of the box. Override via GIT_USER_EMAIL / GIT_USER_NAME

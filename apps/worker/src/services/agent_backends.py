@@ -44,10 +44,28 @@ import json
 import logging
 import os
 import re
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+def _running_as_root() -> bool:
+    """True when the worker process runs as uid 0 (the Docker default).
+
+    Used to decide whether the Claude/GLM CLI needs ``IS_SANDBOX=1`` to be
+    allowed to run ``--dangerously-skip-permissions`` (which it otherwise
+    refuses under root for security reasons).
+    """
+    try:
+        return hasattr(os, "geteuid") and os.geteuid() == 0
+    except Exception:
+        return False
+
+
+class CLINotInstalledError(RuntimeError):
+    """Raised/surfaced when a vendor's CLI binary is not on $PATH."""
 
 
 # ── Registry: supported vendors and their recommended models ────────────────
@@ -86,9 +104,9 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
         {"id": "o4-mini",                      "label": "o4-mini (cheap reasoning)"},
     ],
     "glm": [
+        {"id": "glm-5.2",                      "label": "GLM-5.2 (thinking, latest flagship)"},
         {"id": "glm-5.1",                      "label": "GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)"},
         {"id": "glm-5",                        "label": "GLM-5"},
-        {"id": "glm-4.7-flash",                "label": "GLM-4.7 Flash (free, zero balance ok)"},
         {"id": "glm-4.5-air",                  "label": "GLM-4.5 Air (budget)"},
     ],
 }
@@ -152,6 +170,25 @@ class AgentBackend(ABC):
     #: Default CLI binary name on $PATH. Can be overridden per deployment
     #: via the matching setting in ``config.py`` (e.g. ``settings.claude_bin``).
     cli_bin: str = ""
+    #: One-line shell command that installs this CLI. Shown to the operator
+    #: when the binary is missing so the fix is copy-pasteable.
+    install_hint: str = ""
+
+    # ── Availability ────────────────────────────────────────────────────
+    def is_available(self) -> bool:
+        """True if this vendor's CLI binary is found on $PATH."""
+        return shutil.which(self.cli_bin) is not None
+
+    def not_installed_message(self) -> str:
+        """Human-readable error explaining the CLI is missing + how to fix it."""
+        msg = (
+            f"{self.label} CLI not found: the '{self.cli_bin}' command is not "
+            f"installed or not on PATH. Install it before running "
+            f"{self.label} tasks."
+        )
+        if self.install_hint:
+            msg += f" Install with: {self.install_hint}"
+        return msg
 
     # ── Command construction ────────────────────────────────────────────
     @abstractmethod
@@ -231,6 +268,31 @@ class ClaudeBackend(AgentBackend):
     label = "Anthropic"
     cli_bin = "claude"
     api_key_env = "ANTHROPIC_API_KEY"
+    install_hint = "npm install -g @anthropic-ai/claude-code"
+
+    def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
+        """Claude/GLM env, with the root-sandbox escape hatch.
+
+        Claude Code CLI refuses ``--dangerously-skip-permissions`` when it
+        detects it is running as root/sudo — which is exactly how the worker
+        runs inside the Docker image. Setting ``IS_SANDBOX=1`` tells the CLI
+        the environment is already isolated and lets the flag through. This
+        is safe here: DevServer always runs the agent inside a locked,
+        throwaway git worktree. Without it, every task (and every system-LLM
+        subscription call) fails in Docker with
+        "--dangerously-skip-permissions cannot be used with root/sudo
+        privileges for security reasons".
+
+        Only materialised when actually running as root, so non-root hosts
+        (the typical local dev box) keep inheriting the parent environment
+        unchanged.
+        """
+        env = super().build_env(billing_mode)
+        if _running_as_root():
+            if env is None:
+                env = dict(os.environ)
+            env["IS_SANDBOX"] = "1"
+        return env
 
     def build_command(
         self,
@@ -314,6 +376,7 @@ class GeminiBackend(AgentBackend):
     vendor = "google"
     label = "Google"
     cli_bin = "gemini"
+    install_hint = "npm install -g @google/gemini-cli"
     # Gemini CLI requires GEMINI_API_KEY in API mode. Stripped in 'max'
     # mode so the CLI falls back to the interactive Google-account OAuth
     # login it set up on first run.
@@ -478,6 +541,7 @@ class OpenAIBackend(AgentBackend):
     vendor = "openai"
     label = "OpenAI"
     cli_bin = "codex"
+    install_hint = "npm install -g @openai/codex"
     # Codex CLI reads OPENAI_API_KEY. In 'max' mode we strip it so the
     # CLI falls back to the ChatGPT-Plus OAuth session from ``codex login``.
     api_key_env = "OPENAI_API_KEY"
@@ -634,54 +698,91 @@ class OpenAIBackend(AgentBackend):
         return res
 
 
-# ── Zhipu AI — GLM-5 via the ``glm`` launcher ───────────────────────────────
+# ── Zhipu AI — GLM-5 via the Claude Code CLI + Zhipu endpoint ───────────────
 #
-# The ``glm`` binary (github.com/xqsit94/glm) is a thin wrapper around
-# Claude Code CLI that redirects the API to Zhipu's Anthropic-compatible
-# endpoint at ``open.bigmodel.cn/api/anthropic``. Because it IS Claude
-# Code CLI underneath, the command shape, JSON output, tool set, and
-# session resume all work identically.
+# DevServer runs GLM by invoking the *real* ``claude`` binary with its API
+# redirected to Zhipu's Anthropic-compatible endpoint at
+# ``open.bigmodel.cn/api/anthropic`` — exactly what the standalone ``glm``
+# launcher (github.com/xqsit94/glm) does internally (set ANTHROPIC_BASE_URL +
+# ANTHROPIC_AUTH_TOKEN, then exec ``claude``).
 #
-# This means GLMBackend inherits from ClaudeBackend and only overrides
-# the binary name and the API-key env var. No new parsing logic, no new
-# rate-limit regex — everything is Anthropic-shaped.
+# We deliberately do NOT shell out to the ``glm`` launcher: newer ``glm``
+# releases are an interactive Claude launcher whose own flags are only
+# ``-m/--model`` / ``--yolo`` / subcommands — it does not forward Claude
+# CLI args, so ``glm -p ... --output-format json`` fails with
+# ``unknown command "json" for "glm"``. Driving ``claude`` directly with the
+# GLM endpoint env vars is launcher-version-independent and the right shape
+# for programmatic (``-p``) runs.
 #
-# Install:
-#   curl -fsSL https://raw.githubusercontent.com/xqsit94/glm/main/install.sh | bash
+# Because the underlying CLI is Claude Code, the command shape, JSON output,
+# tool set, and session resume all work identically — GLMBackend inherits
+# everything from ClaudeBackend and only overrides the env wiring.
 #
-# API key: register at https://open.bigmodel.cn, go to Console → API Keys.
-#   See .env.example for full instructions.
-#
-# Auth: ``GLM_API_KEY`` env var. The ``glm`` launcher reads it and passes
-#   it to the Claude Code CLI as the redirected Anthropic key.
+# API key: register at https://open.bigmodel.cn, go to Console → API Keys,
+#   set ``GLM_API_KEY`` in ``.env``. See .env.example for full instructions.
 
 
 class GLMBackend(ClaudeBackend):
-    """Zhipu GLM-5 via the ``glm`` launcher (Claude Code CLI wrapper).
+    """Zhipu GLM-5 via the Claude Code CLI pointed at Zhipu's endpoint.
 
-    The ``glm`` binary is Claude Code CLI with the API redirected to
-    ``open.bigmodel.cn/api/anthropic``. Same flags, same JSON output,
-    same tools, same session resume. Only the binary name and the
-    API-key env var differ.
+    Runs the real ``claude`` binary (not the ``glm`` launcher) with
+    ``ANTHROPIC_BASE_URL`` → ``open.bigmodel.cn/api/anthropic`` and
+    ``ANTHROPIC_AUTH_TOKEN`` → ``GLM_API_KEY``. Same flags, same JSON
+    output, same tools, same session resume — only the env differs.
 
     GLM-5.1 scores 58.4% on SWE-bench Pro (beats Claude Opus 4.6 at
     57.3%) and costs ~$0.95/1M input vs ~$5/1M for Claude — making it
     the best cost/quality tradeoff for overnight batch workloads.
 
+    Billing mode
+    ------------
+    GLM has no OAuth/subscription path (the ``glm`` ecosystem *is* the
+    key-authenticated Zhipu endpoint), so both ``'api'`` and ``'max'``
+    behave the same: the request is always authenticated with
+    ``GLM_API_KEY`` via ``ANTHROPIC_AUTH_TOKEN``.
+
     GLM-5.1 thinking mode
     ---------------------
     Per https://docs.z.ai/guides/overview/migrate-to-glm-new, GLM-5.1
     supports deep thinking via ``thinking={"type": "enabled"}`` in the
-    API request body. The ``glm`` launcher passes this through to the
-    Zhipu endpoint when ``--model glm-5.1`` is used. For complex
-    reasoning and coding tasks, thinking should be enabled (it is
-    enabled by default on the Zhipu side for GLM-5.1).
+    API request body — enabled by default on the Zhipu side for GLM-5.1.
     """
 
     vendor = "glm"
     label = "GLM (Zhipu)"
-    cli_bin = "glm"
+    # The real Claude Code CLI; the ``glm`` launcher is not used (see above).
+    cli_bin = "claude"
     api_key_env = "GLM_API_KEY"
+    install_hint = (
+        "npm install -g @anthropic-ai/claude-code and set GLM_API_KEY in .env "
+        "(register at https://open.bigmodel.cn)"
+    )
+
+    #: Zhipu's Anthropic-compatible endpoint. Overridable via ``GLM_BASE_URL``.
+    default_base_url = "https://open.bigmodel.cn/api/anthropic"
+
+    def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
+        """Route the Claude CLI to Zhipu, authenticated with ``GLM_API_KEY``.
+
+        Always uses the key path (GLM has no subscription/OAuth fallback),
+        so ``billing_mode`` is ignored beyond inheriting ClaudeBackend's
+        root-sandbox (``IS_SANDBOX``) handling.
+        """
+        # Force 'api' into the parent so it never strips GLM_API_KEY; this
+        # also gives us the IS_SANDBOX escape hatch when running as root.
+        env = super().build_env("api")
+        if env is None:
+            env = dict(os.environ)
+        env["ANTHROPIC_BASE_URL"] = os.environ.get(
+            "GLM_BASE_URL", self.default_base_url
+        )
+        token = os.environ.get(self.api_key_env)
+        if token:
+            env["ANTHROPIC_AUTH_TOKEN"] = token
+        # A stray real-Anthropic key would otherwise shadow the GLM token
+        # against the redirected endpoint and 401.
+        env.pop("ANTHROPIC_API_KEY", None)
+        return env
 
 
 # ── Registry + lookup ───────────────────────────────────────────────────────

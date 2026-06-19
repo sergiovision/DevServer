@@ -39,12 +39,15 @@ build_worker() {
     fi
   fi
 
-  # Install/refresh the worker package. `uv venv` does not include pip, so prefer uv.
+  # Install/refresh the worker package. Never call `.venv/bin/pip` directly: its
+  # shebang hardcodes the venv's original absolute path, so a moved/copied
+  # checkout breaks it with "cannot execute: required file not found". Prefer uv
+  # (project standard); fall back to `python -m pip`; ensurepip as last resort.
   echo "  Installing worker package..."
-  if [[ -x "${WORKER_DIR}/.venv/bin/pip" ]]; then
-    "${WORKER_DIR}/.venv/bin/pip" install -q -e "${WORKER_DIR}"
-  elif command -v uv >/dev/null 2>&1; then
+  if command -v uv >/dev/null 2>&1; then
     (cd "${WORKER_DIR}" && VIRTUAL_ENV="${WORKER_DIR}/.venv" uv pip install -q -e .)
+  elif "${WORKER_DIR}/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+    "${WORKER_DIR}/.venv/bin/python" -m pip install -q -e "${WORKER_DIR}"
   else
     "${WORKER_DIR}/.venv/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || {
       red "Neither uv nor pip is available in the worker venv."
@@ -89,9 +92,15 @@ build_docker() {
     red "docker is not installed or not on PATH."
     exit 1
   fi
+  # Default docker topology runs the worker on the host, so prepare its venv
+  # too (the image only builds the web service in this mode).
+  if docker_is_host_worker; then
+    echo "Docker topology: worker on host — preparing host worker venv..."
+    build_worker
+  fi
   echo "Building docker images..."
   # shellcheck disable=SC2046
-  (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) build)
+  (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) $(docker_compose_profiles) build)
   green "  Docker images built"
 }
 

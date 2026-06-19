@@ -156,21 +156,67 @@ docker_use_host_db() {
   port_busy "$port"
 }
 
-# Echoes the `-f` arguments for `docker compose` with the host-db override
-# appended when appropriate. Call sites use:
+# True when the docker topology is "worker on host": Postgres + web run in
+# Docker and the worker runs as a host process. This is the DEFAULT. Set
+# DEVSERVER_COMPOSE=all-in-docker to run the full bundled stack (worker in a
+# container) instead.
+docker_is_host_worker() {
+  [[ "${DEVSERVER_COMPOSE:-host-worker}" != "all-in-docker" ]]
+}
+
+# Echoes the `-f` arguments for `docker compose`. Call sites use:
 #   docker compose $(docker_compose_files) up -d --build
+#
+#   • host-worker (default) → the self-contained docker-compose.host-worker.yml
+#     (Postgres + web only; no worker service). The host-db override is NOT
+#     layered here — that override references the `worker` service, which this
+#     file deliberately omits.
+#   • all-in-docker         → docker-compose.yml, plus the host-db override
+#     when appropriate.
 docker_compose_files() {
+  if docker_is_host_worker; then
+    printf -- '-f %s ' "${DOCKER_DIR}/docker-compose.host-worker.yml"
+    return
+  fi
   printf -- '-f %s ' "${DOCKER_DIR}/docker-compose.yml"
   if [[ -f "${DOCKER_DIR}/docker-compose.host-db.yml" ]] && docker_use_host_db; then
     printf -- '-f %s ' "${DOCKER_DIR}/docker-compose.host-db.yml"
   fi
 }
 
+# Decide whether the bundled Postgres container should run. It should UNLESS
+# the deployment points at a DB outside the container:
+#   • host-worker topology  → bundled unless DEVSERVER_HOST_DB opts out
+#   • all-in-docker topology → bundled unless docker_use_host_db() (env/autodetect)
+# The Settings/Setup-wizard Database card writes DEVSERVER_HOST_DB=1 for the
+# Host-OS / External modes, so selecting those there flows straight through.
+docker_use_bundled_db() {
+  if docker_is_host_worker; then
+    case "${DEVSERVER_HOST_DB:-}" in
+      1|true|yes) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  docker_use_host_db && return 1
+  return 0
+}
+
+# Echoes `--profile bundled-db` when the bundled Postgres should start. The
+# bundled postgres service is gated behind that compose profile.
+docker_compose_profiles() {
+  if docker_use_bundled_db; then
+    printf -- '--profile bundled-db '
+  fi
+}
+
 docker_down() {
   if docker_running; then
     echo "Stopping docker stack..."
+    # Always enable the bundled-db profile on teardown so the postgres
+    # container is removed even if it was started in a previous run whose
+    # DB mode differed. Harmless when the service isn't present.
     # shellcheck disable=SC2046
-    (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) down) || return 1
+    (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) --profile bundled-db down) || return 1
     green "  Docker stack stopped"
   fi
 }

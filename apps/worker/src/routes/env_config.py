@@ -4,6 +4,7 @@ Provides endpoints to read, update, and apply .env file settings
 through the web UI instead of manual file editing.
 """
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -33,6 +34,14 @@ ENV_SCHEMA: list[dict] = [
     {"key": "PGUSER", "group": "PostgreSQL", "label": "User", "type": "string", "secret": False, "restart": True},
     {"key": "PGPASSWORD", "group": "PostgreSQL", "label": "Password", "type": "string", "secret": True, "restart": True},
     {"key": "PGDATABASE", "group": "PostgreSQL", "label": "Database", "type": "string", "secret": False, "restart": True},
+    # Docker-only topology hint, consumed by the lifecycle scripts (_lib.sh).
+    # "1" = use a PostgreSQL outside the bundled container (host OS / external).
+    {"key": "DEVSERVER_HOST_DB", "group": "PostgreSQL", "label": "Use non-bundled DB (docker)", "type": "boolean", "secret": False, "restart": True},
+    # Container-perspective DB host/port (docker only). The web/worker CONTAINERS
+    # use these to reach Postgres; they differ from the host-side PG* above.
+    # Managed automatically by the Database card. Default: postgres:5432 (bundled).
+    {"key": "PGHOST_CONTAINER", "group": "PostgreSQL", "label": "Container DB host (docker)", "type": "string", "secret": False, "restart": True},
+    {"key": "PGPORT_CONTAINER", "group": "PostgreSQL", "label": "Container DB port (docker)", "type": "number", "secret": False, "restart": True},
     # Git
     {"key": "GIT_SSL_NO_VERIFY", "group": "Git", "label": "SSL No Verify", "type": "boolean", "secret": False},
     {"key": "GIT_USER_EMAIL", "group": "Git", "label": "User Email", "type": "string", "secret": False},
@@ -155,6 +164,57 @@ async def update_env(req: EnvUpdateRequest):
     """Update env variables in the .env file."""
     _write_env_file(req.variables)
     return {"success": True, "updated": list(req.variables.keys())}
+
+
+class DbTestRequest(BaseModel):
+    """Connection parameters to probe. Either ``database_url`` OR the discrete
+    host/port/user/password/database fields. Nothing is persisted — this only
+    opens a short-lived connection and reports success/failure."""
+    host: str | None = None
+    port: int | None = None
+    user: str | None = None
+    password: str | None = None
+    database: str | None = None
+    database_url: str | None = None
+
+
+@router.post("/env/test-db")
+async def test_db(req: DbTestRequest):
+    """Attempt a PostgreSQL connection with the given (unsaved) credentials.
+
+    Runs from the worker process, which is the vantage point that actually
+    matters — it's the host that runs tasks and reads/writes the queue. Returns
+    ``{ok: True, version}`` on success or ``{ok: False, error}`` on failure
+    (never raises, so the UI always gets a clean verdict).
+    """
+    import asyncpg
+
+    try:
+        if req.database_url:
+            # asyncpg only understands the plain scheme, not the SQLAlchemy
+            # ``postgresql+asyncpg://`` variant the worker uses internally.
+            dsn = req.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+            conn = await asyncio.wait_for(asyncpg.connect(dsn=dsn), timeout=8)
+        else:
+            conn = await asyncio.wait_for(
+                asyncpg.connect(
+                    host=req.host or "127.0.0.1",
+                    port=req.port or 5432,
+                    user=req.user or "devserver",
+                    password=req.password or "",
+                    database=req.database or "devserver",
+                ),
+                timeout=8,
+            )
+        try:
+            version = await conn.fetchval("SELECT version()")
+        finally:
+            await conn.close()
+        return {"ok": True, "version": version}
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "Connection timed out after 8s — check host/port and firewall."}
+    except Exception as e:  # noqa: BLE001 — surface any driver error verbatim
+        return {"ok": False, "error": str(e)}
 
 
 @router.post("/env/apply")

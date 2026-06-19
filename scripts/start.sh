@@ -50,11 +50,16 @@ start_worker() {
     fi
   fi
 
-  # Install/refresh the worker package. `uv venv` does not include pip, so prefer uv.
-  if [[ -x "${WORKER_DIR}/.venv/bin/pip" ]]; then
-    "${WORKER_DIR}/.venv/bin/pip" install -q -e "${WORKER_DIR}"
-  elif command -v uv >/dev/null 2>&1; then
+  # Install/refresh the worker package. Always invoke tools via the venv's
+  # python (`python -m …`) or uv — never the `.venv/bin/pip` wrapper directly:
+  # its shebang hardcodes the venv's original absolute path, so a moved/copied
+  # checkout breaks `bin/pip` with "cannot execute: required file not found"
+  # even though the file is present and executable. `uv` (project standard) is
+  # preferred; `python -m pip` is the robust fallback; ensurepip the last resort.
+  if command -v uv >/dev/null 2>&1; then
     (cd "${WORKER_DIR}" && VIRTUAL_ENV="${WORKER_DIR}/.venv" uv pip install -q -e .)
+  elif "${WORKER_DIR}/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+    "${WORKER_DIR}/.venv/bin/python" -m pip install -q -e "${WORKER_DIR}"
   else
     # Last resort: bootstrap pip into the venv, then install.
     "${WORKER_DIR}/.venv/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 || {
@@ -67,8 +72,10 @@ start_worker() {
   local reload_flag=""
   [[ "$MODE" == "dev" ]] && reload_flag="--reload"
 
+  # Invoke uvicorn via `python -m` (not the .venv/bin/uvicorn wrapper) so a
+  # stale console-script shebang in a moved venv can't break the launch.
   PYTHONPATH="${WORKER_DIR}/src" \
-    nohup "${WORKER_DIR}/.venv/bin/uvicorn" src.main:app \
+    nohup "${WORKER_DIR}/.venv/bin/python" -m uvicorn src.main:app \
       --host 0.0.0.0 --port "${WORKER_PORT}" \
       --app-dir "${WORKER_DIR}" \
       ${reload_flag} \
@@ -113,14 +120,26 @@ start_web() {
 # ── Docker ────────────────────────────────────────────────────────────────────
 start_docker() {
   echo "Starting docker stack..."
-  if docker_use_host_db; then
+  if docker_is_host_worker; then
+    echo "  Topology: worker on host (Postgres + web in Docker)"
+  elif docker_use_host_db; then
     yellow "  Using host PostgreSQL (override: docker-compose.host-db.yml)"
+  fi
+  if docker_use_bundled_db; then
+    echo "  Database: bundled PostgreSQL container"
   else
-    echo "  Using bundled PostgreSQL container"
+    yellow "  Database: external / host PostgreSQL (bundled container skipped)"
   fi
   # shellcheck disable=SC2046
-  (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) up -d --build)
+  (cd "$DOCKER_DIR" && docker compose $(docker_compose_files) $(docker_compose_profiles) up -d --build)
   green "  Docker stack up"
+
+  # In the host-worker topology the worker is NOT a container — start it on
+  # the host so it can drive the AI provider CLIs with the host's own logins.
+  if docker_is_host_worker; then
+    : > "${DS_LOG_DIR}/worker.log"
+    start_worker
+  fi
 }
 
 # ── Run ───────────────────────────────────────────────────────────────────────
@@ -142,7 +161,11 @@ echo ""
 bold "DevServer running (${MODE})"
 echo "  Dashboard:   http://localhost:${WEB_PORT}"
 echo "  Worker API:  http://localhost:${WORKER_PORT}"
-if [[ "$MODE" != "docker" ]]; then
+if [[ "$MODE" == "docker" ]]; then
+  if docker_is_host_worker; then
+    echo "  Worker log:  tail -f logs/worker.log  (worker runs on host)"
+  fi
+else
   echo "  Worker log:  tail -f logs/worker.log"
   echo "  Web log:     tail -f logs/web.log"
 fi

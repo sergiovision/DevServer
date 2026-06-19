@@ -404,6 +404,11 @@ def _build_prompt(
             "  pushed repo map is a small global snapshot)?",
             "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/repo-map\" \\",
             "      --data-urlencode 'subdir=apps/worker'",
+            "- Find code/docs by meaning (semantic search) without reading whole",
+            "  files — great when you don't know the exact symbol name",
+            "  (add kind=code or kind=doc to narrow):",
+            "    curl -s -G \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/corpus/search\" \\",
+            "      --data-urlencode 'q=where is rate-limit backoff handled' --data-urlencode 'kind=code'",
         ])
 
     # Domain Skill — reusable procedure injected when the task links a skill.
@@ -460,6 +465,22 @@ async def _run_agent(
     ``billing_mode`` argument to the backend's ``build_env`` and only the
     Claude backend does anything meaningful with it.
     """
+    # Fail fast with an actionable message if the vendor's CLI isn't installed,
+    # rather than letting subprocess raise a bare FileNotFoundError that the
+    # operator can't interpret. Applies to every deployment (local + Docker).
+    if not backend.is_available():
+        msg = backend.not_installed_message()
+        logger.error(msg)
+        await _emit_event(db, task_id, run_id, "log_line", {"line": msg, "stream": "stderr"})
+        return {
+            "result": "",
+            "cost_usd": 0,
+            "num_turns": 0,
+            "session_id": session_id,
+            "exit_code": -1,
+            "error": msg,
+        }
+
     cmd = backend.build_command(
         prompt=prompt,
         model=model,
@@ -577,6 +598,19 @@ async def _run_agent(
                 "session_id": session_id,
                 "exit_code": -1,
                 "error": f"{backend.label} CLI timed out after {timeout_minutes}m",
+            }
+        except FileNotFoundError:
+            # Safety net for the (rare) case where the binary disappeared
+            # between the is_available() check and the spawn.
+            msg = backend.not_installed_message()
+            logger.error(msg)
+            return {
+                "result": "",
+                "cost_usd": 0,
+                "num_turns": 0,
+                "session_id": session_id,
+                "exit_code": -1,
+                "error": msg,
             }
 
         if not backend.is_rate_limit_error(raw_output, stderr_text, exit_code):
@@ -1687,6 +1721,13 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                     except Exception:
                         logger.exception("transcript archive failed for %s", task_key)
 
+                    # Refresh the code/doc corpus so semantic search reflects the
+                    # latest repo state. Background, incremental, opt-in.
+                    try:
+                        await pro.corpus_index(db=db, repo=repo)
+                    except Exception:
+                        logger.debug("corpus auto-index failed for %s", task_key)
+
                     # Tier 3.6 — refresh the wake-up digest so facts/decisions
                     # recorded during this task surface for the next one.
                     try:
@@ -2128,6 +2169,11 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
                                 )
                         except Exception:
                             logger.exception("transcript archive failed for %s (backup)", task_key)
+
+                        try:
+                            await pro.corpus_index(db=db, repo=repo)
+                        except Exception:
+                            logger.debug("corpus auto-index failed for %s (backup)", task_key)
 
                         success = True
                         break

@@ -18,6 +18,18 @@ interface RepoListProps {
   repos: Repo[];
 }
 
+// Render a "chunks / files" corpus stat, or a muted dash when nothing is indexed.
+function corpusCell(chunks?: number, files?: number) {
+  if (!chunks) {
+    return <span className="text-body-secondary">—</span>;
+  }
+  return (
+    <span className="font-monospace small" title={`${chunks} chunks across ${files} files`}>
+      {chunks.toLocaleString()} / {(files ?? 0).toLocaleString()}
+    </span>
+  );
+}
+
 export function RepoList({ repos }: RepoListProps) {
   const router = useRouter();
 
@@ -29,6 +41,8 @@ export function RepoList({ repos }: RepoListProps) {
           <CTableHeaderCell>Owner/Repo</CTableHeaderCell>
           <CTableHeaderCell>Branch</CTableHeaderCell>
           <CTableHeaderCell>Model</CTableHeaderCell>
+          <CTableHeaderCell title="Corpus code chunks / files indexed">Code</CTableHeaderCell>
+          <CTableHeaderCell title="Corpus doc chunks / files indexed">Doc</CTableHeaderCell>
           <CTableHeaderCell>Status</CTableHeaderCell>
           <CTableHeaderCell>Actions</CTableHeaderCell>
         </CTableRow>
@@ -36,7 +50,7 @@ export function RepoList({ repos }: RepoListProps) {
       <CTableBody>
         {repos.length === 0 ? (
           <CTableRow>
-            <CTableDataCell colSpan={6} className="text-center text-body-secondary">
+            <CTableDataCell colSpan={8} className="text-center text-body-secondary">
               No repositories configured.
             </CTableDataCell>
           </CTableRow>
@@ -66,6 +80,8 @@ export function RepoList({ repos }: RepoListProps) {
               </CTableDataCell>
               <CTableDataCell>{repo.default_branch}</CTableDataCell>
               <CTableDataCell>{repo.claude_model || '-'}</CTableDataCell>
+              <CTableDataCell>{corpusCell(repo.corpus_code_chunks, repo.corpus_code_files)}</CTableDataCell>
+              <CTableDataCell>{corpusCell(repo.corpus_doc_chunks, repo.corpus_doc_files)}</CTableDataCell>
               <CTableDataCell>
                 <CBadge color={repo.active ? 'success' : 'secondary'}>
                   {repo.active ? 'Active' : 'Inactive'}

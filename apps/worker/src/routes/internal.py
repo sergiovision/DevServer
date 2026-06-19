@@ -540,6 +540,17 @@ async def generate_task(body: GenerateTaskRequest):
             502, f"Failed to parse devtask response as JSON ({sys_vendor}) — {exc}"
         )
 
+    # Enforce DevServer defaults regardless of what the system LLM emitted:
+    # Billing → Max (subscription), Skip Verification → true, model → latest
+    # Claude Opus. These only fill in missing/empty values so an explicit user
+    # request carried through the skill prompt still wins.
+    if not task.get("claude_mode"):
+        task["claude_mode"] = "max"
+    if task.get("skip_verify") is None:
+        task["skip_verify"] = True
+    if not task.get("claude_model"):
+        task["claude_model"] = "claude-opus-4-8"
+
     return task
 
 

@@ -127,6 +127,9 @@ class FreeHooks:
     async def store_memory(self, **kwargs: Any) -> None:
         pass
 
+    async def corpus_index(self, **kwargs: Any) -> None:
+        pass
+
     async def archive_stale_memories(self, **kwargs: Any) -> int:
         return 0
 

@@ -18,6 +18,7 @@ import {
   CProgress,
   CProgressBar,
 } from '@coreui/react-pro';
+import { DatabaseConfigFields } from './DatabaseConfigFields';
 
 // ─── Step definitions ──────────────────────────────────────────────────────
 
@@ -46,6 +47,22 @@ const STEPS: StepDef[] = [
       'This wizard will guide you through the initial configuration. ' +
       'All values are saved to the .env file and can be changed later from the Settings page.',
     fields: [],
+  },
+  {
+    id: 'database',
+    title: 'Database',
+    description:
+      'Choose how DevServer connects to PostgreSQL. This is saved to .env — ' +
+      'it cannot live in the database itself. A worker/web restart applies it.',
+    // These fields exist only so the Review step lists the values; the step
+    // itself is rendered by the custom DatabaseConfigFields selector below.
+    fields: [
+      { key: 'PGHOST', label: 'Host', type: 'text' },
+      { key: 'PGPORT', label: 'Port', type: 'number' },
+      { key: 'PGUSER', label: 'User', type: 'text' },
+      { key: 'PGPASSWORD', label: 'Password', type: 'password' },
+      { key: 'PGDATABASE', label: 'Database', type: 'text' },
+    ],
   },
   {
     id: 'paths',
@@ -199,7 +216,7 @@ const TOTAL_STEPS = STEPS.length;
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
-export function SetupWizard() {
+export function SetupWizard({ deployMode = 'development' }: { deployMode?: string }) {
   const [step, setStep] = useState(0);
   const [values, setValues] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -441,6 +458,12 @@ export function SetupWizard() {
 
             {current.id === 'review' ? (
               renderReview()
+            ) : current.id === 'database' ? (
+              <DatabaseConfigFields
+                deployMode={deployMode}
+                values={values}
+                onChange={handleChange}
+              />
             ) : current.fields.length > 0 ? (
               <CForm>
                 <CRow className="g-3">{current.fields.map(renderField)}</CRow>

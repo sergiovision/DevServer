@@ -21,7 +21,7 @@ interface SidebarProps {
   onVisibleChange: (visible: boolean) => void;
 }
 
-// Free nav entries. Pro-only entries (Inbox, Webhooks) are spliced in
+// Free nav entries. Pro-only entries (Webhooks) are spliced in
 // from ``PRO_NAV_ITEMS`` so ``strip-pro.sh`` removes them along with
 // the rest of the pro bundle.
 const baseNavItems = [
@@ -35,12 +35,10 @@ const baseNavItems = [
   { name: 'Logs', href: '/logs', icon: cilDescription },
 ];
 
-// Inbox/Webhooks sit next to Tasks/Templates in pro; in free they're absent.
+// Webhooks sits next to Templates in pro; in free it's absent.
 const navItems = [
-  ...baseNavItems.slice(0, 2),       // Dashboard, Tasks
-  ...PRO_NAV_ITEMS.slice(0, 1),      // Inbox (pro)
-  baseNavItems[2],                   // Templates
-  ...PRO_NAV_ITEMS.slice(1),         // Webhooks (pro)
+  ...baseNavItems.slice(0, 3),       // Dashboard, Tasks, Templates
+  ...PRO_NAV_ITEMS,                  // Webhooks (pro)
   ...baseNavItems.slice(3),          // Ideas, Jobs, Repos, Settings, Logs
 ];
 

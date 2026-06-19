@@ -21,6 +21,12 @@ export interface Repo {
   active: boolean;
   created_at: string;
   updated_at: string;
+  // Corpus (semantic-search index) stats, aggregated from corpus_chunks.
+  // Populated by the repos list query; absent elsewhere.
+  corpus_code_chunks?: number;
+  corpus_code_files?: number;
+  corpus_doc_chunks?: number;
+  corpus_doc_files?: number;
 }
 
 export type TaskPriority = 1 | 2 | 3 | 4;

@@ -54,6 +54,8 @@ function buildDraft(raw: Record<string, unknown>) {
     memory_decay_half_life_days: Number(raw.memory_decay_half_life_days || 0),
     memory_archive_days: Number(raw.memory_archive_days || 0),
     memory_iterative_recall: Boolean(raw.memory_iterative_recall),
+    // Auto-refresh the code/doc corpus on task success (Pro). Defaults on.
+    corpus_auto_index: raw.corpus_auto_index !== false,
   };
 }
 
@@ -107,6 +109,7 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
         ['memory_decay_half_life_days', draft.memory_decay_half_life_days],
         ['memory_archive_days', draft.memory_archive_days],
         ['memory_iterative_recall', draft.memory_iterative_recall],
+        ['corpus_auto_index', draft.corpus_auto_index],
       ];
       await Promise.all(
         pairs.map(([key, value]) =>
@@ -272,6 +275,14 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
                   checked={draft.memory_iterative_recall}
                   onChange={(e) => set('memory_iterative_recall', e.target.checked)}
                 />
+              </CCol>
+              <CCol md={3} className="d-flex flex-column justify-content-end">
+                <CFormSwitch
+                  label="Auto-index corpus on success"
+                  checked={draft.corpus_auto_index}
+                  onChange={(e) => set('corpus_auto_index', e.target.checked)}
+                />
+                <small className="text-body-secondary">Refresh code/doc search index after each task. On by default.</small>
               </CCol>
             </CRow>
 

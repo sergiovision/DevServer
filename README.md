@@ -126,7 +126,9 @@ A lightweight brainstorm space. Folders contain other folders or **idea leaves**
 
 A real-time log viewer with two tabs — `worker.log` and `web.log` — polled every 1.5 seconds. Lines are colour-coded by severity (ERROR red, WARNING yellow, INFO blue, DEBUG green). Auto-scrolls to the bottom; a jump-to-bottom button appears when you scroll up.
 
-📂 [`apps/web/src/app/logs/page.tsx`](apps/web/src/app/logs/page.tsx) · [`apps/web/src/components/LogsView.tsx`](apps/web/src/components/LogsView.tsx)
+**Secret redaction.** A logging filter installed on every worker handler (including uvicorn's) masks Telegram bot tokens before they reach a log file or stdout — the full `https://api.telegram.org/bot<token>/` URL is rewritten to `https://api.telegram.org/.../`, so the long token never leaks into the noisy httpx request lines emitted on every poll.
+
+📂 [`apps/web/src/app/logs/page.tsx`](apps/web/src/app/logs/page.tsx) · [`apps/web/src/components/LogsView.tsx`](apps/web/src/components/LogsView.tsx) · [`apps/worker/src/services/log_redaction.py`](apps/worker/src/services/log_redaction.py)
 
 ---
 
@@ -134,9 +136,9 @@ A real-time log viewer with two tabs — `worker.log` and `web.log` — polled e
 
 <a href="assets/settings.png"><img src="assets/settings.png" alt="DevServer settings page — max concurrency, queue paused toggle, auto-enqueue toggle, notifications toggle, system LLM vendor/model picker, and environment variables editor showing .env path, database connection, and API keys" width="100%" /></a>
 
-A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
+A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Database** card: a mode-aware connection editor (deployment-specific presets — *local / custom* for host installs, *bundled / host-OS / external* for Docker) that prefills and locks the right `PG*` vars, keeps `DATABASE_URL` and the container-perspective `PGHOST_CONTAINER` / `PGPORT_CONTAINER` in sync, and offers a **Test connection** button that opens a short-lived probe connection against the worker before you save. The same component drives the Setup wizard's database step. **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
 
-📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx)
+📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx) · [`apps/web/src/components/DatabaseConfigFields.tsx`](apps/web/src/components/DatabaseConfigFields.tsx)
 
 ---
 
@@ -154,6 +156,8 @@ Why Local Git matters: it makes DevServer **provider-agnostic**. Clone a repo fr
 - **Patch only** — the agent commits on a local `agent/…` branch (your original branch is restored afterwards) and the changes are exported as a `combined.mbox` you can `git am` anywhere.
 
 Safety guarantees for your folder: DevServer never hard-resets or cleans it, refuses to start a patch-flow task on a dirty working tree (so your own uncommitted work can never be swept into agent commits), and the agent is explicitly instructed to never touch remotes. Local repos show a turquoise **Local** badge on the Repos page.
+
+Each repo's edit form also carries a **Reindex** button that rebuilds the repository's memory in the background — it re-ingests both the `code` and `doc` corpora through the same worker endpoint the `devserver-memory` MCP `corpus_ingest` tool uses, so the Pro memory KB picks up files added or changed outside a task run.
 
 📂 [`apps/worker/src/services/git_ops.py`](apps/worker/src/services/git_ops.py) · [`apps/web/src/components/RepoForm.tsx`](apps/web/src/components/RepoForm.tsx)
 
@@ -343,16 +347,44 @@ for the full memory-KB upgrade + usage guide.
 
 ### Docker (recommended for production)
 
+Use the lifecycle scripts — they read the repo-root `.env`, select the right
+compose file/topology, and enable the bundled-database profile for you:
+
 ```bash
-cd docker
-cp ../config/.env.example .env
+cp config/.env.example .env
 # edit .env — minimum: PGPASSWORD, ANTHROPIC_API_KEY
 
-docker compose up -d --build
+./scripts/build.sh --docker
+./scripts/start.sh --docker
 ```
 
-The default compose file ships a bundled `pgvector/pgvector:pg17` service,
-so the stack runs out of the box on Linux, macOS, and Windows.
+The bundled `pgvector/pgvector:pg17` database runs under a compose **profile**
+(`bundled-db`) so it can be skipped for Host-OS / External database modes. If
+you invoke `docker compose` directly instead of the scripts, you must therefore
+(a) pass `--profile bundled-db` to start the bundled DB, and (b) make the
+repo-root `.env` visible to compose (the scripts `source` it; raw compose reads
+only a `.env` in the current dir), e.g.:
+
+```bash
+cd docker
+set -a && . ../.env && set +a            # export root .env for ${VAR} interpolation
+docker compose --profile bundled-db up -d --build
+```
+
+This runs out of the box on Linux, macOS, and Windows.
+
+**Two topologies — where do the agent CLIs run?** The worker shells out to a
+vendor CLI (`claude` / `glm` / `gemini` / `codex`) for every task, and *where
+the worker runs* decides where those CLIs run:
+
+| Topology | Compose file | Agent CLIs run… | Auth |
+|---|---|---|---|
+| **All-in-Docker** (default) | `docker-compose.yml` | inside the worker container (baked into the image) | API keys via `.env`; for `max` subscription mode, mount your host `~/.claude` (see below) |
+| **Worker on host** | `docker-compose.host-worker.yml` | as host processes | your existing host logins (`claude login`, `codex login`, Gemini/GLM auth) — nothing to install or mount |
+
+Pick **worker-on-host** if you want the agents to use the subscription logins
+already set up on your machine; pick **all-in-Docker** for a single portable
+stack. Both are documented below.
 
 #### Linux / macOS — host PostgreSQL (recommended)
 
@@ -399,6 +431,81 @@ it is mapped through the compose override via `host-gateway`.
 Make sure the `vector` extension is installed on the host Postgres — on
 macOS: `brew install pgvector` then `CREATE EXTENSION IF NOT EXISTS vector;`
 in the `devserver` database.
+
+#### Worker on host (run AI providers from your host OS)
+
+Use this when you want the agents to run on your machine with the
+subscription logins you already set up (`claude login`, `codex login`, the
+Gemini OAuth, GLM auth) instead of in a container. Postgres + the web
+dashboard stay in Docker; only the Python worker runs natively.
+
+```bash
+# 1. DB + web in Docker (no worker container)
+cd docker
+docker compose -f docker-compose.host-worker.yml up -d --build
+
+# 2. Worker on the host (new terminal, repo root)
+cd apps/worker
+cp ../../config/.env.example .env     # already host-shaped — then edit it
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8000
+```
+
+How the boundary is bridged (handled by the compose file):
+
+- **web → worker**: the containerised dashboard reaches the host worker at
+  `host.docker.internal:8000` (`WORKER_URL`). Built in on Docker Desktop;
+  mapped via `host-gateway` for Linux.
+- **worker → DB**: the DB port is published, so the host worker connects on
+  `localhost:5432`.
+- **logs**: web bind-mounts `<repo>/logs`, so the dashboard `/logs` viewer
+  reads the host worker's log files.
+
+Two `.env` values must match this layout:
+
+- `DATABASE_URL` must point at `127.0.0.1:5432` (the published DB port) — the
+  `postgres` service name only resolves *inside* Docker.
+- `DEVSERVER_ROOT` must be the repo root so `LOG_DIR=${DEVSERVER_ROOT}/logs/tasks`
+  lines up with the log dir web mounts.
+
+In this mode the worker is not root, so the Claude/GLM
+`--dangerously-skip-permissions` root restriction never triggers, and no agent
+CLIs are installed into any image.
+
+**Lifecycle scripts default to this topology.** `./scripts/build.sh --docker`,
+`start.sh --docker`, `restart.sh --docker`, and `stop.sh --docker` all use
+`docker-compose.host-worker.yml` and manage the host worker for you (build its
+venv, start/stop the process). To run the all-in-Docker stack via the scripts
+instead, set `DEVSERVER_COMPOSE=all-in-docker`:
+
+```bash
+DEVSERVER_COMPOSE=all-in-docker ./scripts/start.sh --docker
+```
+
+**Choosing the database (Settings → Database, or the Setup wizard).** In a
+Docker deployment the Database card offers three options — **Docker PostgreSQL
+(bundled)**, **Host OS PostgreSQL**, or **External host / credentials** (a
+host build offers just *local default* vs *custom host/creds*). The card writes
+the connection to `.env` and, for the non-bundled options, sets
+`DEVSERVER_HOST_DB=1` plus the container-perspective `PGHOST_CONTAINER` /
+`PGPORT_CONTAINER` so the web (and, in all-in-Docker, worker) **containers**
+reach the right database — not just the host worker. The bundled `postgres`
+container lives behind a `bundled-db` compose profile, so picking Host-OS /
+External skips it entirely. A worker/web restart applies the change.
+
+#### Max subscription (Claude OAuth) inside Docker
+
+For the **all-in-Docker** topology, `max` (subscription) mode needs the OAuth
+login from `claude login` — which lives in your host home dir. Run
+`claude login` on the host once, then mount the config dir read-only by
+uncommenting this line under the `worker` service in `docker-compose.yml`:
+
+```yaml
+    # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude:ro
+```
+
+Leave `ANTHROPIC_API_KEY` empty in `.env` so the CLI falls back to the mounted
+login. (The worker-on-host topology above needs none of this — it uses your
+host login directly.)
 
 #### Windows (Docker Desktop)
 
@@ -452,15 +559,19 @@ apps/
       IdeasView.tsx                   → Hierarchical idea tree
       LogsView.tsx                    → Live log viewer
       SettingsForm.tsx                → Global settings editor
+      DatabaseConfigFields.tsx        → DB connection card (mode presets + test connection)
     src/app/api/
       tasks/                          → Task CRUD + enqueue
       templates/                      → Template CRUD
       analytics/                      → Dashboard analytics data
       logs/                           → Log file streaming
       settings/                       → Worker settings read/write
+      env/test-db/                    → Proxy a DB-connection test to the worker
+      repos/[id]/reindex/             → Rebuild a repo's memory corpora
   worker/                             → Python FastAPI worker + PgQueuer consumer
     src/services/
       _free_hooks.py                  → No-op stubs for pro features (always present)
+      log_redaction.py                → Logging filter that masks Telegram tokens in logs
       agent_runner.py                 → Main task execution loop with retry logic
       agent_backends.py               → Vendor abstraction (Claude, Gemini, Codex, GLM)
       repo_map.py                     → Multi-language symbol map
@@ -478,8 +589,9 @@ config/
   .env.example                        → Sanitised environment template
 docker/
   docker-compose.yml                  → Full stack deployment (Postgres + web + worker)
+  docker-compose.host-worker.yml      → Postgres + web in Docker, worker on host
 scripts/
-  start.sh / stop.sh / restart.sh     → Dev + prod lifecycle helpers
+  build.sh / start.sh / stop.sh / restart.sh  → Dev + prod + docker lifecycle helpers
   migrate.sh                          → Run database migrations
   devserver-backup.sh                 → Full-system backup
   devserver-restore.sh                → Restore from backup archive

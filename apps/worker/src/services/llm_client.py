@@ -285,6 +285,8 @@ async def _complete_via_cli(
     from services import agent_backends
 
     backend = agent_backends.get_backend(vendor)
+    if not backend.is_available():
+        raise ValueError(backend.not_installed_message())
     cmd = backend.build_command(
         prompt=prompt,
         model=model,
@@ -303,14 +305,17 @@ async def _complete_via_cli(
     )
 
     with tempfile.TemporaryDirectory(prefix="devserver-syscli-") as workdir:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=workdir,
-            env=env,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=workdir,
+                env=env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            raise ValueError(backend.not_installed_message())
         try:
             stdout_data, stderr_data = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout_seconds

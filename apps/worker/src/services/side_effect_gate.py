@@ -6,8 +6,8 @@ machinery that already exists rather than inventing a parallel one:
     suspend       → the existing ``tasks.status = 'blocked'`` (per-task only;
                     siblings keep running through PgQueuer untouched).
     notify human  → a companion ``task_messages`` row addressed to 'operator'
-                    (so the open gate shows up in the existing /pro/inbox and
-                    fans out via the notify dispatcher), plus ``notify.text``.
+                    (which fans out to the Telegram chat via the notify
+                    dispatcher), plus ``notify.text``.
     resume        → the existing /continue path (mark in-flight runs failed
                     preserving session_id, drop the repo lock, set
                     is_continuation, re-enqueue via Next.js).
@@ -21,7 +21,7 @@ Flow:
        opened, the operator is messaged, and the agent is told to STOP.
     3. ``agent_runner.run_task`` notices the open gate after the agent exits
        (:func:`check_open_gate`) and suspends the task (:func:`suspend_for_gate`).
-    4. A human resolves it from the inbox → :func:`resolve_decision` →
+    4. A human resolves it (from the dashboard or Telegram) → :func:`resolve_decision` →
        approve/edit re-enqueues the task (resumes the session); reject re-enqueues
        with a "find another way" nudge.
 

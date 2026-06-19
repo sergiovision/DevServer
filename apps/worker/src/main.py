@@ -34,6 +34,13 @@ try:
 except ImportError:
     async def resume_if_active(): pass  # type: ignore[misc]
 
+# Pro licensing: evaluate the license at startup and gate Pro features on it.
+# Absent in the free edition (services/pro/ stripped) → no-op.
+try:
+    from services.pro.licensing import init_license
+except ImportError:
+    async def init_license(): pass  # type: ignore[misc]
+
 try:
     from routes.pro_internal import router as pro_router
     _has_pro_routes = True
@@ -44,6 +51,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
+# Mask Telegram bot tokens (and other secrets) from all log output.
+from services.log_redaction import install_redaction  # noqa: E402
+install_redaction()
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +64,12 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.worktree_dir, exist_ok=True)
     os.makedirs(settings.log_dir, exist_ok=True)
 
+    # Re-attach the redacting filter — uvicorn (re)configures logging handlers
+    # after this module is imported, so cover any handlers it added.
+    install_redaction()
+
     logger.info("DevServer worker starting...")
+    await init_license()
     await start_consumer()
     await resume_if_active()
     await start_scheduler()

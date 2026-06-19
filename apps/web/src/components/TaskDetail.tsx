@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   CCard,
@@ -30,6 +30,7 @@ import { PatchesPanel, MessagesPanel } from './pro-loader';
 import { PredictionCard } from './PredictionCard';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
+import { fillVendorLabel } from '@/lib/agent-vendors';
 import { taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 
 interface TaskDetailProps {
@@ -260,6 +261,29 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
 
   const [filling, setFilling] = useState(false);
   const [fillError, setFillError] = useState('');
+  // System LLM vendor that powers Fill Task — shown in the button caption
+  // ("Filling with Claude…"). Defaults to the settings default until fetched.
+  const [systemVendor, setSystemVendor] = useState<AgentVendor>('glm');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = data?.system_llm_vendor;
+        const vendor =
+          typeof raw === 'string' ? raw.replace(/^"|"$/g, '').trim() : '';
+        if (!cancelled && vendor) setSystemVendor(vendor as AgentVendor);
+      } catch {
+        /* keep default caption */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleFillTask = useCallback(async () => {
     if (!description.trim()) return;
@@ -449,7 +473,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                       disabled={filling || !description.trim()}
                       onClick={handleFillTask}
                     >
-                      {filling ? 'Filling...' : 'Fill Task'}
+                      {filling ? `Filling with ${fillVendorLabel(systemVendor)}...` : 'Fill Task'}
                     </CButton>
                   )}
                   {fillError && (

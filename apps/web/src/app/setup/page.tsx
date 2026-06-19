@@ -24,8 +24,13 @@ export default async function SetupPage({
 }) {
   const sp = (await searchParams) ?? {};
   const force = sp.force === '1' || sp.force === 'true';
+  // Read at request time so Docker's runtime DEPLOY_MODE=docker is honoured —
+  // this drives the 2-option (host) vs 3-option (docker) DB selector.
+  const deployMode =
+    process.env.DEPLOY_MODE ||
+    (process.env.NODE_ENV === 'production' ? 'production' : 'development');
   if (force) {
-    return <SetupWizard />;
+    return <SetupWizard deployMode={deployMode} />;
   }
   try {
     // 1. Explicit flag — set by the wizard or "skip" link.
@@ -55,5 +60,5 @@ export default async function SetupPage({
     // DB might not be reachable on very first boot — show the wizard anyway.
   }
 
-  return <SetupWizard />;
+  return <SetupWizard deployMode={deployMode} />;
 }

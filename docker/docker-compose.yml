@@ -1,5 +1,3 @@
-version: '3.9'
-
 # DevServer v2 — cross-platform stack (Linux, macOS, Windows).
 #
 # Usage:
@@ -24,6 +22,10 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     container_name: devserver-postgres
+    # Bundled DB only starts under the `bundled-db` profile. The Database card
+    # writes DEVSERVER_HOST_DB=1 for Host-OS / External modes and the lifecycle
+    # scripts then drop this profile, so the redundant container never starts.
+    profiles: ["bundled-db"]
     environment:
       # devserver is created as superuser by Docker (required for CREATE EXTENSION vector).
       # The init SQL files' CREATE USER/DATABASE lines are no-ops since they already exist.
@@ -49,16 +51,21 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.web
     container_name: devserver-web
+    # Resolve the host (for Host-OS / External DB modes) on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      # Database — connects via service name. Both DATABASE_URL and the
-      # PG* discrete vars are set because different code paths read
-      # different forms (server.ts uses DATABASE_URL, lib/db.ts uses PG*).
-      DATABASE_URL: postgresql://devserver:${PGPASSWORD:-changeme}@postgres:5432/devserver
-      PGHOST:     postgres
-      PGPORT:     "5432"
-      PGUSER:     devserver
+      # Database — both DATABASE_URL and the discrete PG* vars are set because
+      # different code paths read different forms (server.ts uses DATABASE_URL,
+      # lib/db.ts uses PG*). Container-perspective host/port come from
+      # PGHOST_CONTAINER/PGPORT_CONTAINER (default postgres:5432 = bundled);
+      # the Database card rewrites them for Host-OS / External modes.
+      DATABASE_URL: postgresql://${PGUSER:-devserver}:${PGPASSWORD:-changeme}@${PGHOST_CONTAINER:-postgres}:${PGPORT_CONTAINER:-5432}/${PGDATABASE:-devserver}
+      PGHOST:     ${PGHOST_CONTAINER:-postgres}
+      PGPORT:     "${PGPORT_CONTAINER:-5432}"
+      PGUSER:     ${PGUSER:-devserver}
       PGPASSWORD: ${PGPASSWORD:-changeme}
-      PGDATABASE: devserver
+      PGDATABASE: ${PGDATABASE:-devserver}
       # Worker — internal service URL (not localhost)
       WORKER_URL: http://worker:8000
       # Deploy mode for versioning
@@ -75,6 +82,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false   # absent under Host-OS / External modes (profile off)
       worker:
         condition: service_healthy
     volumes:
@@ -88,9 +96,14 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.worker
     container_name: devserver-worker
+    # Resolve the host (for Host-OS / External DB modes) on Linux too.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      # Database — asyncpg driver, connects via service name
-      DATABASE_URL: postgresql+asyncpg://devserver:${PGPASSWORD:-changeme}@postgres:5432/devserver
+      # Database — asyncpg driver. Container-perspective host/port default to
+      # the bundled postgres:5432; the Database card rewrites
+      # PGHOST_CONTAINER/PGPORT_CONTAINER for Host-OS / External modes.
+      DATABASE_URL: postgresql+asyncpg://${PGUSER:-devserver}:${PGPASSWORD:-changeme}@${PGHOST_CONTAINER:-postgres}:${PGPORT_CONTAINER:-5432}/${PGDATABASE:-devserver}
       # Telegram
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID}
@@ -107,6 +120,7 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+        required: false   # absent under Host-OS / External modes (profile off)
     volumes:
       # Persistent worktrees: bare repos + checked-out branches survive restarts
       - worktrees:/app/worktrees

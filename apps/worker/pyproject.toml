@@ -15,6 +15,9 @@ dependencies = [
     # hardcode the 0.x table layout/status enum, so a major bump breaks the queue.
     "pgqueuer[asyncpg]>=0.26.3,<1.0",
     "httpx>=0.28.1",
+    # Ed25519 verification of capitaltools-issued Pro license tokens
+    # (services/pro/licensing). Harmless in the free edition.
+    "cryptography>=43",
     "pgvector>=0.4.2",
     # Local, CPU/ONNX text embeddings for semantic memory recall — replaces
     # the old Voyage cloud API (services/embeddings.py). Pulls onnxruntime +

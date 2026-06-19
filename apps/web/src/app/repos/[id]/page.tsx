@@ -26,7 +26,26 @@ export default async function RepoDetailPage({ params }: PageProps) {
   if (isNaN(repoId)) notFound();
 
   const r = await tryDbPage(async () => {
-    const result = await query<Repo>('SELECT * FROM repos WHERE id = $1', [repoId]);
+    const result = await query<Repo>(
+      `SELECT r.*,
+              COALESCE(cc.code_chunks, 0)::int AS corpus_code_chunks,
+              COALESCE(cc.code_files, 0)::int  AS corpus_code_files,
+              COALESCE(cc.doc_chunks, 0)::int  AS corpus_doc_chunks,
+              COALESCE(cc.doc_files, 0)::int   AS corpus_doc_files
+         FROM repos r
+         LEFT JOIN (
+           SELECT repo_id,
+                  count(*) FILTER (WHERE kind = 'code')             AS code_chunks,
+                  count(DISTINCT path) FILTER (WHERE kind = 'code') AS code_files,
+                  count(*) FILTER (WHERE kind = 'doc')              AS doc_chunks,
+                  count(DISTINCT path) FILTER (WHERE kind = 'doc')  AS doc_files
+             FROM corpus_chunks
+            WHERE repo_id = $1
+            GROUP BY repo_id
+         ) cc ON cc.repo_id = r.id
+        WHERE r.id = $1`,
+      [repoId],
+    );
     return result.rows[0] ?? null;
   });
 

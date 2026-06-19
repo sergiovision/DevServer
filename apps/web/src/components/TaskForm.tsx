@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   CForm,
@@ -21,6 +21,7 @@ import type { Repo, Task, TaskTemplate, GitFlow, AgentVendor, TaskType } from '@
 import {
   AGENT_VENDORS,
   defaultModelForVendor,
+  fillVendorLabel,
   modelsForVendor,
 } from '@/lib/agent-vendors';
 import { TASK_TYPES, DEFAULT_TASK_TYPE, taskTypeEntry } from '@/lib/task-types';
@@ -32,6 +33,10 @@ interface TaskFormProps {
   task?: Task;
   templates?: TaskTemplate[];
 }
+
+// Remembers the repository used in the previously created task so the create
+// form can default to it (read/written only on the client).
+const LAST_REPO_KEY = 'devserver:lastRepoId';
 
 // Local repos never push: only 'patch' and 'untracked' are valid there.
 // 'untracked' is otherwise reserved for the non-coding task types (test,
@@ -82,8 +87,60 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
   const [saving, setSaving] = useState(false);
   const [filling, setFilling] = useState(false);
   const [fillError, setFillError] = useState('');
+  // System LLM vendor that powers Fill Task — shown in the button caption
+  // ("Filling with Claude…"). Defaults to the settings default until fetched.
+  const [systemVendor, setSystemVendor] = useState<AgentVendor>('glm');
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
+
+  // On the create form, default the repository to the one used in the
+  // previously created task (read from localStorage after mount to avoid a
+  // hydration mismatch). Only applied when nothing has been chosen yet.
+  useEffect(() => {
+    if (isEdit) return;
+    if (formData.repo_id) return;
+    const lastRepoId = window.localStorage.getItem(LAST_REPO_KEY);
+    if (!lastRepoId) return;
+    const repo = repos.find((r) => r.id === parseInt(lastRepoId));
+    if (!repo) return;
+    setFormData((prev) =>
+      prev.repo_id
+        ? prev
+        : {
+            ...prev,
+            repo_id: lastRepoId,
+            git_flow: normalizeGitFlow(
+              prev.git_flow,
+              repo.provider === 'local',
+              taskTypeEntry(prev.task_type).defaultGitFlow === 'untracked',
+            ),
+          },
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fetch the configured System LLM vendor so the Fill Task button can show
+  // "Filling with Claude…" / "Filling with Google…" etc. Settings values are
+  // JSON-encoded, so strip any wrapping quotes.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) return;
+        const data = await res.json();
+        const raw = data?.system_llm_vendor;
+        const vendor =
+          typeof raw === 'string' ? raw.replace(/^"|"$/g, '').trim() : '';
+        if (!cancelled && vendor) setSystemVendor(vendor as AgentVendor);
+      } catch {
+        /* keep default caption */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleApplyTemplate = (templateId: string) => {
     if (!templateId) return;
@@ -260,6 +317,15 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
 
       const data = await res.json();
 
+      // Remember the chosen repo so the next create form defaults to it.
+      if (!isEdit) {
+        if (formData.repo_id) {
+          window.localStorage.setItem(LAST_REPO_KEY, formData.repo_id);
+        } else {
+          window.localStorage.removeItem(LAST_REPO_KEY);
+        }
+      }
+
       if (!isEdit && ideaId) {
         await fetch(`/api/ideas/${ideaId}`, {
           method: 'PATCH',
@@ -301,26 +367,6 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
               <small className="text-body-secondary">Pre-fills description, acceptance, and agent settings from a saved template.</small>
             </div>
           )}
-
-          <div className="mb-3">
-            <CFormLabel>Task Type</CFormLabel>
-            <CFormSelect
-              name="task_type"
-              value={formData.task_type}
-              onChange={handleChange}
-              disabled={isEdit}
-            >
-              {TASK_TYPES.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.label}
-                </option>
-              ))}
-            </CFormSelect>
-            <small className="text-body-secondary">
-              {typeEntry.description}
-              {isEdit && ' — task type cannot be changed after creation.'}
-            </small>
-          </div>
 
           <CRow className="mb-3">
             <CCol md={6}>
@@ -371,6 +417,26 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
           </CRow>
 
           <div className="mb-3">
+            <CFormLabel>Task Type</CFormLabel>
+            <CFormSelect
+              name="task_type"
+              value={formData.task_type}
+              onChange={handleChange}
+              disabled={isEdit}
+            >
+              {TASK_TYPES.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </CFormSelect>
+            <small className="text-body-secondary">
+              {typeEntry.description}
+              {isEdit && ' — task type cannot be changed after creation.'}
+            </small>
+          </div>
+
+          <div className="mb-3">
             <CFormLabel>Title</CFormLabel>
             <CFormInput
               name="title"
@@ -392,7 +458,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
                 disabled={filling || !formData.description.trim()}
                 onClick={handleFillTask}
               >
-                {filling ? 'Filling...' : 'Fill Task'}
+                {filling ? `Filling with ${fillVendorLabel(systemVendor)}...` : 'Fill Task'}
               </CButton>
               {fillError && (
                 <span className="text-danger small">{fillError}</span>

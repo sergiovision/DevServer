@@ -109,7 +109,7 @@ export async function checkTaskQueue(): Promise<HealthCheck> {
         COUNT(*) as total_jobs,
         COUNT(*) FILTER (WHERE status = 'queued') as queued_jobs,
         COUNT(*) FILTER (WHERE status = 'picked') as running_jobs,
-        COUNT(*) FILTER (WHERE status = 'failed') as failed_jobs
+        COUNT(*) FILTER (WHERE status = 'exception') as failed_jobs
       FROM pgqueuer
       WHERE entrypoint = 'devserver-tasks'
     `);

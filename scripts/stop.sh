@@ -22,6 +22,12 @@ MODE="$(parse_mode "$@")"
 case "$MODE" in
   docker)
     docker_down || { red "docker compose down failed"; exit 1; }
+    # In the host-worker topology the worker runs on the host, so the docker
+    # teardown above won't stop it — clean up the host process too. Run after
+    # docker_down so the web container has already released WEB_PORT.
+    if docker_is_host_worker; then
+      stop_host || exit 1
+    fi
     ;;
   dev|prod)
     stop_host || exit 1

@@ -78,7 +78,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             DevServer &copy; {new Date().getFullYear()}
           </div>
           <div className="ms-auto text-body-secondary small">
-            v{process.env.NEXT_PUBLIC_VERSION}
+            v{process.env.NEXT_PUBLIC_VERSION}{' '}
+            <span className="text-body-tertiary text-uppercase">
+              {process.env.NEXT_PUBLIC_EDITION || 'pro'}
+            </span>
           </div>
         </CFooter>
       </div>

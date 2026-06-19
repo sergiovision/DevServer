@@ -48,6 +48,25 @@ export function RepoForm({ repo }: RepoFormProps) {
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [reindexing, setReindexing] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  const handleReindex = async () => {
+    if (!repo) return;
+    setReindexing(true);
+    setError('');
+    setNotice('');
+    try {
+      const res = await fetch(`/api/repos/${repo.id}/reindex`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Reindex failed');
+      setNotice('Reindexing started — the repository memory is rebuilding in the background.');
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to reindex');
+    } finally {
+      setReindexing(false);
+    }
+  };
 
   const isLocal = formData.provider === 'local';
 
@@ -126,6 +145,7 @@ export function RepoForm({ repo }: RepoFormProps) {
       </CCardHeader>
       <CCardBody>
         {error && <CAlert color="danger">{error}</CAlert>}
+        {notice && <CAlert color="success">{notice}</CAlert>}
         <CForm onSubmit={handleSubmit}>
           <CRow className="mb-3">
             <CCol md={4}>
@@ -279,6 +299,42 @@ export function RepoForm({ repo }: RepoFormProps) {
             />
           </div>
 
+          {isEdit && (
+            <CRow className="mb-3">
+              <CCol>
+                <CFormLabel className="fw-semibold">Index Info</CFormLabel>
+                <div className="d-flex gap-4">
+                  <div>
+                    <span className="text-body-secondary small me-1">Code</span>
+                    {repo!.corpus_code_chunks ? (
+                      <span
+                        className="font-monospace small"
+                        title={`${repo!.corpus_code_chunks} chunks across ${repo!.corpus_code_files} files`}
+                      >
+                        {repo!.corpus_code_chunks.toLocaleString()} / {(repo!.corpus_code_files ?? 0).toLocaleString()}
+                      </span>
+                    ) : (
+                      <span className="text-body-secondary">—</span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-body-secondary small me-1">Doc</span>
+                    {repo!.corpus_doc_chunks ? (
+                      <span
+                        className="font-monospace small"
+                        title={`${repo!.corpus_doc_chunks} chunks across ${repo!.corpus_doc_files} files`}
+                      >
+                        {repo!.corpus_doc_chunks.toLocaleString()} / {(repo!.corpus_doc_files ?? 0).toLocaleString()}
+                      </span>
+                    ) : (
+                      <span className="text-body-secondary">—</span>
+                    )}
+                  </div>
+                </div>
+              </CCol>
+            </CRow>
+          )}
+
           <div className="d-flex gap-2">
             <CButton type="submit" color="primary" disabled={saving}>
               {saving ? 'Saving...' : isEdit ? 'Update' : 'Create'}
@@ -286,6 +342,17 @@ export function RepoForm({ repo }: RepoFormProps) {
             <CButton type="button" color="secondary" variant="outline" onClick={() => router.back()}>
               Cancel
             </CButton>
+            {isEdit && (
+              <CButton
+                type="button"
+                color="info"
+                variant="outline"
+                disabled={reindexing}
+                onClick={handleReindex}
+              >
+                {reindexing ? 'Reindexing...' : 'Reindex'}
+              </CButton>
+            )}
             {isEdit && (
               <CButton
                 type="button"

@@ -273,6 +273,35 @@ CREATE TABLE IF NOT EXISTS repo_memory (
     updated_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ─── Per-repo code/doc corpus (semantic search over source & docs) ───────────
+-- One row per overlapping text window of an indexed file. Powers the
+-- code_search / doc_search / corpus_stats / corpus_ingest MCP lanes through
+-- routes/pro_internal.py → services/pro/corpus.py. Chunks are content-addressed
+-- (file_sha) so an incremental re-ingest only re-embeds files that changed.
+-- Always present; written only by the Pro corpus module (empty in the free build).
+CREATE TABLE IF NOT EXISTS corpus_chunks (
+    id          BIGSERIAL PRIMARY KEY,
+    repo_id     INT         NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+    kind        VARCHAR(8)  NOT NULL,            -- 'code' | 'doc'
+    path        TEXT        NOT NULL,            -- repo-relative file path
+    language    VARCHAR(24),                     -- 'python', 'typescript', 'markdown', …
+    chunk_idx   INT         NOT NULL DEFAULT 0,
+    content     TEXT        NOT NULL,
+    file_sha    CHAR(64),                        -- sha256 of the whole file (incremental skip)
+    embedding   vector(768),                     -- local fastembed (services/embeddings.py)
+    content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
+    updated_at  TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (repo_id, kind, path, chunk_idx)
+);
+CREATE INDEX IF NOT EXISTS idx_corpus_repo_kind ON corpus_chunks(repo_id, kind);
+CREATE INDEX IF NOT EXISTS idx_corpus_tsv       ON corpus_chunks USING GIN (content_tsv);
+-- No ivfflat index on `embedding` by design. Recall is always scoped to one
+-- repo+kind (a few thousand rows at most), where an exact cosine scan is
+-- sub-millisecond and always correct. An ivfflat index built before ingest has
+-- degenerate centroids and, with the default probes=1, can return *zero* rows
+-- for a query vector that lands in an empty list — silent missed recall.
+DROP INDEX IF EXISTS idx_corpus_embedding;
+
 -- ─── PgQueuer ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pgqueuer (
     id               SERIAL PRIMARY KEY,
