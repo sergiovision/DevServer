@@ -27,6 +27,7 @@ from services import compaction
 from services import decomposer
 from services import git_ops
 from services import llm_client
+from services import repo_map
 from services import scheduler
 from services import side_effect_gate
 from services import skills as skills_svc
@@ -318,6 +319,37 @@ async def refresh_git(repo_id: int):
     if not result["ok"]:
         raise HTTPException(status_code=500, detail=result["message"])
     return result
+
+
+@router.get("/repos/{repo_id}/diagram")
+async def repo_diagram(repo_id: int):
+    """Mermaid architecture diagram (module tree) for a repo.
+
+    Deterministic, no LLM — built on the free ``repo_map`` module. Resolves the
+    repo's on-disk root (the Local Root Folder for local repos, else the task
+    worktree) and walks the top directory levels.
+    """
+    async with async_session() as db:
+        repo = await db.get(Repo, repo_id)
+        if not repo:
+            raise HTTPException(status_code=404, detail=f"Repo {repo_id} not found")
+
+    if git_ops.is_local_provider(getattr(repo, "provider", None)):
+        try:
+            root = git_ops.resolve_local_root(repo.gitea_url)
+        except RuntimeError:
+            root = None
+    else:
+        root = git_ops.get_worktree_path(repo.name)
+
+    if not root or not os.path.isdir(root):
+        raise HTTPException(
+            status_code=409,
+            detail="repo worktree not available — run Refresh Git first",
+        )
+
+    mermaid, stats = repo_map.build_mermaid(root)
+    return {"repo_id": repo_id, "mermaid": mermaid, "stats": stats}
 
 
 # ─── Task continuation ──────────────────────────────────────────────────────

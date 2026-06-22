@@ -1,7 +1,7 @@
 import { query } from '@/lib/db';
 import { tryDbPage } from '@/lib/db-page';
 import { Dashboard } from '@/components/Dashboard';
-import type { Task, DailyStats } from '@/lib/types';
+import type { Task } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,25 +22,19 @@ export default async function DashboardPage() {
        LIMIT 20`
     );
 
-    const statsResult = await query<DailyStats>(
-      `SELECT completed, failed, cost_usd FROM daily_stats WHERE date = CURRENT_DATE`
-    );
-
     return {
       runningTasks: runningResult.rows,
       queuedTasks: queuedResult.rows,
-      todayStats: statsResult.rows[0] ?? { completed: 0, failed: 0, cost_usd: 0 },
     };
   });
 
   if (!r.ok) return r.panel;
-  const { runningTasks, queuedTasks, todayStats } = r.data;
+  const { runningTasks, queuedTasks } = r.data;
 
   return (
     <Dashboard
       runningTasks={runningTasks}
       queuedTasks={queuedTasks}
-      todayStats={todayStats}
     />
   );
 }

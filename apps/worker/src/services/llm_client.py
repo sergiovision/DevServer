@@ -283,6 +283,7 @@ async def _complete_via_cli(
     CLI falls back to its OAuth / subscription session.
     """
     from services import agent_backends
+    from services import proc as proc_util
 
     backend = agent_backends.get_backend(vendor)
     if not backend.is_available():
@@ -294,6 +295,9 @@ async def _complete_via_cli(
         session_id=None,
         max_turns=None,
     )
+    # Claude/GLM deliver the prompt on stdin (avoids cmd.exe's command-line
+    # length limit on Windows); other vendors pass it via argv.
+    stdin_payload = backend.stdin_payload(prompt)
     # billing_mode='max' strips the vendor's API key (and, for Gemini, the
     # Vertex/ADC env) so the CLI uses the subscription OAuth login.
     env = backend.build_env(billing_mode="max")
@@ -306,29 +310,22 @@ async def _complete_via_cli(
 
     with tempfile.TemporaryDirectory(prefix="devserver-syscli-") as workdir:
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
+            exit_code, stdout_data, stderr_data = await proc_util.run(
+                cmd,
                 cwd=workdir,
                 env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                timeout=timeout_seconds,
+                stdin_devnull=stdin_payload is None,
+                stdin_input=stdin_payload,
             )
         except FileNotFoundError:
             raise ValueError(backend.not_installed_message())
-        try:
-            stdout_data, stderr_data = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_seconds
-            )
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
             raise ValueError(
                 f"{backend.label} CLI (subscription mode) timed out "
                 f"after {timeout_seconds}s"
             )
 
-    exit_code = proc.returncode or 0
     stdout_text = stdout_data.decode(errors="replace")
     stderr_text = stderr_data.decode(errors="replace")
 

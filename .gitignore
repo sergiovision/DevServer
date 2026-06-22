@@ -14,9 +14,6 @@ config/devserver.env
 
 # ── Node.js ──────────────────────────────────────────────
 node_modules/
-# npm auth / private-registry tokens (e.g. CoreUI Pro license) live here.
-.npmrc
-**/.npmrc
 apps/web/.next/
 apps/web/out/
 apps/web/server.js

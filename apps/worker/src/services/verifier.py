@@ -4,6 +4,8 @@ import asyncio
 import logging
 from typing import IO
 
+from services import proc as proc_util
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 600  # 10 minutes per step
@@ -26,49 +28,32 @@ async def _run_step(
         log_file.flush()
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-
         output_chunks: list[str] = []
 
-        async def _stream() -> None:
-            assert proc.stdout
-            while True:
-                line = await proc.stdout.readline()
-                if not line:
-                    break
-                text = line.decode(errors="replace")
-                output_chunks.append(text)
-                if log_file:
-                    log_file.write(text)
-                    log_file.flush()
+        def _on_line(text: str) -> None:
+            output_chunks.append(text)
+            if log_file:
+                log_file.write(text)
+                log_file.flush()
 
         try:
-            await asyncio.wait_for(_stream(), timeout=timeout)
+            returncode = await proc_util.run_shell_streamed(
+                cmd, cwd=cwd, timeout=timeout, on_line=_on_line
+            )
         except asyncio.TimeoutError:
             logger.error("Verify [%s] TIMEOUT after %ds", name, timeout)
             if log_file:
                 log_file.write(f"\n[TIMEOUT after {timeout}s]\n")
                 log_file.flush()
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
             output = "".join(output_chunks)
             return False, f"{name} timed out after {timeout}s\n{output[-2000:]}"
 
-        await proc.wait()
         output = "".join(output_chunks)
 
-        if proc.returncode != 0:
-            logger.error("Verify [%s] FAILED (exit %d)", name, proc.returncode)
+        if returncode != 0:
+            logger.error("Verify [%s] FAILED (exit %d)", name, returncode)
             if log_file:
-                log_file.write(f"\n[FAILED exit={proc.returncode}]\n")
+                log_file.write(f"\n[FAILED exit={returncode}]\n")
                 log_file.flush()
             return False, output
         logger.info("Verify [%s] PASSED", name)

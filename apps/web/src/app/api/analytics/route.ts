@@ -87,12 +87,46 @@ export async function GET(request: NextRequest) {
     // Authoritative spend from task_runs (see query #3 comment).
     totals.total_cost = totalCostResult.rows[0]?.total_cost ?? 0;
 
+    // 5. Governance KPIs neither Devin nor CrewAI surface.
+    //    cost-per-PR  = total spend / PRs opened (the number a buyer can't get
+    //                   elsewhere); abstain savings = tasks the reality gate
+    //                   refused to start (abstain_reason set) × avg PR cost,
+    //                   i.e. spend avoided on runs that would have failed.
+    const prCountResult = await query(
+      `SELECT COUNT(*) AS pr_count
+       FROM task_runs
+       WHERE pr_url IS NOT NULL
+         AND started_at >= CURRENT_DATE - $1 * INTERVAL '1 day'`,
+      [days],
+    );
+    const abstainResult = await query(
+      `SELECT COUNT(*) AS abstain_count
+       FROM tasks
+       WHERE abstain_reason IS NOT NULL
+         AND updated_at >= CURRENT_DATE - $1 * INTERVAL '1 day'`,
+      [days],
+    );
+
+    const totalCost = Number(totals.total_cost) || 0;
+    const prCount = Number(prCountResult.rows[0]?.pr_count) || 0;
+    const abstainCount = Number(abstainResult.rows[0]?.abstain_count) || 0;
+    const costPerPr = prCount > 0 ? totalCost / prCount : 0;
+    const governance = {
+      pr_count: prCount,
+      cost_per_pr: costPerPr,
+      abstain_count: abstainCount,
+      // Estimated spend avoided: abstained tasks × the average cost of a
+      // task that did produce a PR.
+      abstain_savings_usd: abstainCount * costPerPr,
+    };
+
     return NextResponse.json({
       days,
       daily: dailyResult.rows,
       vendor_daily: vendorCostResult.rows,
       totals,
       vendor_totals: vendorTotalsResult.rows,
+      governance,
     });
   } catch (err) {
     return apiErrorResponse(err, 'GET /api/analytics');

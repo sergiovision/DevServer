@@ -128,7 +128,10 @@ services:
       # ── Max subscription (Claude OAuth) ──────────────────────────────────
       # Uncomment to use Claude Max instead of API key.
       # Requires `claude login` to have been run on the HOST machine first.
-      # Windows (Docker Desktop) path looks like: C:\Users\<you>\.claude
+      # macOS/Linux: the ${HOME}/.claude default works out of the box.
+      # Windows: ${HOME} is NOT set for `docker compose`, so set CLAUDE_CONFIG_DIR
+      # in .env to your host config dir using forward slashes, e.g.
+      #   CLAUDE_CONFIG_DIR=C:/Users/<you>/.claude
       # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]

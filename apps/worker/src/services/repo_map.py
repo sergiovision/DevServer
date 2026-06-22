@@ -154,7 +154,7 @@ class FileEntry:
     @property
     def score(self) -> int:
         """Rough importance score: root files and symbol-dense files rank higher."""
-        depth = self.rel_path.count(os.sep)
+        depth = self.rel_path.count("/")
         symbol_score = min(len(self.symbols), 20)
         # Shallower files are more likely to be entry points.
         return symbol_score * 10 - depth * 3
@@ -197,7 +197,9 @@ def _scan_worktree(worktree_path: str, max_files: int, subdir: str | None = None
                 return entries
 
             full_path = os.path.join(dirpath, filename)
-            rel_path = os.path.relpath(full_path, worktree_path)
+            # Normalise to forward slashes so rendered paths are consistent
+            # across OSes (git, the corpus, and allow-list checks all use "/").
+            rel_path = os.path.relpath(full_path, worktree_path).replace(os.sep, "/")
 
             ext = os.path.splitext(filename)[1].lower()
             lang = EXT_LANG.get(ext, "")
@@ -269,14 +271,98 @@ def _safe_subdir(worktree_path: str, subdir: str | None) -> str | None:
     """
     if not subdir:
         return None
-    sub = subdir.strip().strip("/")
-    if not sub or os.path.isabs(subdir):
+    raw = subdir.strip()
+    # Reject absolute and drive-relative paths on every OS / Python version.
+    # (Py 3.13's ntpath.isabs no longer treats a leading-slash path as absolute,
+    # so a bare isabs() check would let "/etc" through on Windows.)
+    if os.path.isabs(raw) or raw.startswith(("/", "\\")):
+        return None
+    # Accept either separator on input; normalise to "/" for the returned value.
+    sub = raw.replace("\\", "/").strip("/")
+    if not sub:
         return None
     base = os.path.realpath(worktree_path)
     target = os.path.realpath(os.path.join(base, sub))
     if target != base and not target.startswith(base + os.sep):
         return None  # traversal attempt (.. escaping the worktree)
     return sub
+
+
+def build_mermaid(
+    root_path: str,
+    max_depth: int = 2,
+    max_nodes: int = 80,
+) -> tuple[str, dict]:
+    """Build a Mermaid ``flowchart TD`` of the repo's module tree.
+
+    Deterministic, no LLM — pure directory walk reusing the same skip rules as
+    the repo map. v1 emits the directory tree only (top ``max_depth`` levels,
+    each node annotated with its direct code-file count); import-graph edges are
+    intentionally deferred (too noisy from a regex index). Never raises — on any
+    error it returns a one-node stub so callers can always render something.
+
+    Returns (mermaid_text, stats_dict).
+    """
+    if not root_path or not os.path.isdir(root_path):
+        return ('flowchart TD\n  n0["(repo not available)"]',
+                {"nodes": 0, "error": True})
+    try:
+        base = os.path.realpath(root_path)
+        # rel dir ("" = root) → count of direct code/important files
+        dirs: dict[str, int] = {}
+        for dirpath, dirnames, filenames in os.walk(base):
+            # Prune skip dirs in place (same rule as the repo map scan).
+            dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
+            rel = os.path.relpath(dirpath, base).replace(os.sep, "/")
+            if rel == ".":
+                rel = ""
+            depth = 0 if rel == "" else rel.count("/") + 1
+            if depth > max_depth:
+                dirnames[:] = []  # stop descending past the depth budget
+                continue
+            dirs[rel] = sum(
+                1 for f in filenames
+                if os.path.splitext(f)[1].lower() in EXT_LANG
+                or f in IMPORTANT_FILENAMES
+            )
+
+        # Cap node count. Sorting by path keeps every parent ahead of its
+        # children (a dir always sorts before its "dir/..." descendants), so a
+        # truncation never orphans an included child from an included parent.
+        rel_dirs = sorted(dirs.keys())
+        truncated = len(rel_dirs) > max_nodes
+        rel_dirs = rel_dirs[:max_nodes]
+        included = set(rel_dirs)
+        ids = {rel: f"n{i}" for i, rel in enumerate(rel_dirs)}
+
+        repo_label = os.path.basename(base) or "repo"
+        lines = ["flowchart TD"]
+        for rel in rel_dirs:
+            name = repo_label if rel == "" else rel.split("/")[-1]
+            count = dirs[rel]
+            label = name + (f"<br/>{count} files" if count else "")
+            # Mermaid node labels can't contain raw double-quotes.
+            label = label.replace('"', "'")
+            lines.append(f'  {ids[rel]}["{label}"]')
+
+        edges = 0
+        for rel in rel_dirs:
+            if rel == "":
+                continue
+            parent = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            if parent in included:
+                lines.append(f"  {ids[parent]} --> {ids[rel]}")
+                edges += 1
+
+        return "\n".join(lines), {
+            "nodes": len(rel_dirs),
+            "edges": edges,
+            "truncated": truncated,
+        }
+    except Exception:
+        logger.exception("build_mermaid failed for %s", root_path)
+        return ('flowchart TD\n  n0["(diagram unavailable)"]',
+                {"nodes": 0, "error": True})
 
 
 def build_repo_map(

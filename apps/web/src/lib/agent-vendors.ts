@@ -41,15 +41,12 @@ export const AGENT_VENDORS: VendorEntry[] = [
   },
   {
     id: 'google',
-    label: 'Google',
+    label: 'Google (Antigravity)',
+    // Google retired the Gemini CLI (2026-06-18); the worker now drives the
+    // Antigravity CLI (`agy`). Slugs verified against agy 1.0.10.
     models: [
-      { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview (latest, AI Pro plan)' },
-      { id: 'gemini-3-pro-preview',   label: 'Gemini 3 Pro Preview (strong coding)' },
-      { id: 'gemini-3.5-flash',       label: 'Gemini 3.5 Flash (GA, frontier-fast agentic)' },
-      { id: 'gemini-3.1-flash-lite',  label: 'Gemini 3.1 Flash-Lite (most cost-effective)' },
-      { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview (cheap, fast)' },
-      { id: 'gemini-2.5-pro',         label: 'Gemini 2.5 Pro (stable, free tier)' },
-      { id: 'gemini-pro-latest',      label: 'Gemini Pro (latest alias)' },
+      { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro (strong coding, default)' },
+      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (fast, cheap)' },
     ],
   },
   {

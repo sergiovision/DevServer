@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   CTable,
@@ -13,6 +13,7 @@ import {
   CButton,
 } from '@coreui/react-pro';
 import type { Repo } from '@/lib/types';
+import { RepoDiagramModal } from './RepoDiagramModal';
 
 interface RepoListProps {
   repos: Repo[];
@@ -32,8 +33,9 @@ function corpusCell(chunks?: number, files?: number) {
 
 export function RepoList({ repos }: RepoListProps) {
   const router = useRouter();
+  const [diagramRepo, setDiagramRepo] = useState<Repo | null>(null);
 
-  return (
+  const table = (
     <CTable hover responsive striped>
       <CTableHead>
         <CTableRow>
@@ -90,6 +92,15 @@ export function RepoList({ repos }: RepoListProps) {
               <CTableDataCell>
                 <CButton
                   size="sm"
+                  color="outline-secondary"
+                  className="me-1"
+                  onClick={() => setDiagramRepo(repo)}
+                  title="Architecture diagram (module tree)"
+                >
+                  Diagram
+                </CButton>
+                <CButton
+                  size="sm"
                   color="outline-primary"
                   onClick={() => router.push(`/repos/${repo.id}`)}
                 >
@@ -101,5 +112,19 @@ export function RepoList({ repos }: RepoListProps) {
         )}
       </CTableBody>
     </CTable>
+  );
+
+  return (
+    <>
+      {table}
+      {diagramRepo && (
+        <RepoDiagramModal
+          repoId={diagramRepo.id}
+          repoName={diagramRepo.name}
+          visible={!!diagramRepo}
+          onClose={() => setDiagramRepo(null)}
+        />
+      )}
+    </>
   );
 }

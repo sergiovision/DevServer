@@ -67,12 +67,20 @@ interface Totals {
   total_turns: string | number;
 }
 
+interface Governance {
+  pr_count: string | number;
+  cost_per_pr: string | number;
+  abstain_count: string | number;
+  abstain_savings_usd: string | number;
+}
+
 interface AnalyticsData {
   days: number;
   daily: DailyRow[];
   vendor_daily: VendorDailyRow[];
   totals: Totals;
   vendor_totals: VendorTotal[];
+  governance?: Governance;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -143,7 +151,7 @@ function chartOpts(legendDisplay = false) {
 export function DashboardCharts() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [days, setDays] = useState(30);
+  const [days, setDays] = useState(7);
 
   useEffect(() => {
     setLoading(true);
@@ -246,6 +254,11 @@ export function DashboardCharts() {
   const totDurH = Math.round(n(data.totals.total_duration_ms) / 3600000 * 10) / 10;
   const totTurns = n(data.totals.total_turns);
   const successRate = totComp + totFail > 0 ? Math.round(totComp / (totComp + totFail) * 100) : 0;
+  // Governance KPIs (cost-per-PR, reality-abstain savings) — the numbers a
+  // CrewAI/Devin buyer can't get. Absent in free builds → render as $0.00 / 0.
+  const costPerPr = n(data.governance?.cost_per_pr ?? 0);
+  const abstainCount = n(data.governance?.abstain_count ?? 0);
+  const abstainSavings = n(data.governance?.abstain_savings_usd ?? 0);
 
   return (
     <>
@@ -258,6 +271,7 @@ export function DashboardCharts() {
             value={days}
             onChange={(e) => setDays(parseInt(e.target.value))}
           >
+            <option value={1}>Last 1 day</option>
             <option value={7}>Last 7 days</option>
             <option value={14}>Last 14 days</option>
             <option value={30}>Last 30 days</option>
@@ -290,6 +304,16 @@ export function DashboardCharts() {
             <CCol>
               <div className="fs-4 fw-bold">{totTurns}</div>
               <div className="text-body-secondary small">Total Turns</div>
+            </CCol>
+            <CCol>
+              <div className="fs-4 fw-bold text-info">${costPerPr.toFixed(2)}</div>
+              <div className="text-body-secondary small" title="Average LLM cost per pull request opened">Cost / PR</div>
+            </CCol>
+            <CCol>
+              <div className="fs-4 fw-bold text-success">${abstainSavings.toFixed(2)}</div>
+              <div className="text-body-secondary small" title={`${abstainCount} task(s) not started because the reality gate judged they'd fail`}>
+                Abstain Savings
+              </div>
             </CCol>
           </CRow>
         </CCardBody>

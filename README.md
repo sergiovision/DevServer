@@ -49,14 +49,17 @@ One platform. Every model. **Ride your AI at Ferrari style — and Ferrari speed
 
 Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted orchestration platform** for people who already run their own infrastructure and want agents to work on their terms.
 
-- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini (Google), Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Opus 4.8** and **Gemini 3.1 Pro**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
-- **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (flat-rate subscription). Subscription mode works across vendors — Claude **Max**, ChatGPT **Plus** (Codex), and Google **AI Pro / Ultra** for Gemini — by falling back to the CLI's own OAuth login instead of an API key.
+- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Opus 4.8** and **Gemini 3.1 Pro**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
+- **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (flat-rate subscription). Subscription mode works across vendors — Claude **Max**, ChatGPT **Plus** (Codex), and Google **AI Pro / Ultra** (via the Antigravity CLI) — by falling back to the CLI's own OAuth login instead of an API key.
 - **Outcome forecast.** Before a task runs, see a success-probability and expected duration/turns estimate from your repo's history. Free uses a repo-level baseline; Pro upgrades it to similar-task matching via pgvector.
 - **Error-class-aware retries.** Failures are classified by 20+ regex rules (import errors, TS compile errors, test failures, merge conflicts, ...) and the next attempt receives a surgical remediation hint. Recurring hard errors *escalate* instead of burning retries.
 - **Multi-language repo map.** Before any code is written, the worker builds a regex-based symbol index (classes, functions, types) for 11 languages, so the agent starts with an accurate picture of the codebase.
-- **Dashboard with analytics.** Live counts, today's stats, per-vendor cost breakdown, average duration and turns-per-task charts, and a period selector for 7–90 days of history.
+- **Dashboard with analytics.** Live counts, today's stats, per-vendor cost breakdown, average duration and turns-per-task charts, governance KPIs (**cost per PR**, **abstain savings**), and a period selector for 7–90 days of history.
+- **Pipeline board.** A kanban projection of the task list — lifecycle-native lanes (Queued / Active / Needs You / Shipped / Stalled) with live websocket transitions, evidence chips, and inline actions. Toggle Grid ⇄ Board on the Tasks page; no separate route.
+- **Architecture diagram.** One click renders a Mermaid module-tree diagram of any repo, generated deterministically from the repo map — no LLM call, no cost.
 - **Task templates.** Saved presets for repetitive work ("fix lint errors", "add unit tests", "update deps") with pre-filled descriptions, acceptance criteria, and agent settings.
 - **Full live observability.** PG `NOTIFY` → WebSocket → dashboard. Every agent step is a typed event on a live timeline — no page refresh, no polling.
+- **Governance-grade OpenTelemetry.** Opt-in OTLP export of the whole task pipeline as spans carrying DevServer-only attributes (reality score, budget burn, secret-scan hits, error class, vendor failover) to any collector — Langfuse, Grafana Tempo, Datadog, Jaeger. Zero overhead when unset.
 - **Telegram notifications.** Basic task start/success/fail alerts so you know what happened while you were away.
 
 All of the above are real code paths, not marketing bullets. See [`apps/worker/src/services/`](apps/worker/src/services/) for the implementations.
@@ -69,7 +72,7 @@ All of the above are real code paths, not marketing bullets. See [`apps/worker/s
 
 <a href="assets/dashboard.png"><img src="assets/dashboard.png" alt="DevServer dashboard — worker status bar, running agents, queue controls, analytics summary row with cost and success rate, duration and turns-per-task charts" width="100%" /></a>
 
-The landing page. Top: worker status bar with online/offline indicator, queue depth, and active/pending/running task counts. Middle: running agents list and queue control toolbar (Add Task, Pause Queue, Resume Queue). Below: colour-coded stat cards (running, queued, completed today, failed today). **Analytics** section with a summary row (completed, failed, success rate %, total cost, agent time, total turns), plus Avg Duration per Task (bar) and Avg Turns per Task (line) charts — configurable from 7 to 90 days. Everything updates in real time over the WebSocket.
+The landing page. Top: worker status bar with online/offline indicator, queue depth, and active/pending/running task counts. Middle: running agents list and queue control toolbar (Add Task, Pause Queue, Resume Queue). Below: colour-coded stat cards (running, queued, completed today, failed today). **Analytics** section with a summary row (completed, failed, success rate %, total cost, agent time, total turns) plus two governance KPIs neither competitor surfaces — **Cost / PR** (average LLM spend per pull request) and **Abstain Savings** (spend avoided on tasks the reality gate refused to start) — and Avg Duration per Task (bar) and Avg Turns per Task (line) charts, configurable from 7 to 90 days. Everything updates in real time over the WebSocket.
 
 📂 [`apps/web/src/components/Dashboard.tsx`](apps/web/src/components/Dashboard.tsx) · [`apps/web/src/components/DashboardCharts.tsx`](apps/web/src/components/DashboardCharts.tsx)
 
@@ -79,9 +82,11 @@ The landing page. Top: worker status bar with online/offline indicator, queue de
 
 <a href="assets/tasks.png"><img src="assets/tasks.png" alt="DevServer tasks list — priority colour badges, task key, title, repo, status badge, turns count, created date, items per page selector" width="100%" /></a>
 
-The full task backlog. Columns: colour-coded priority badge, task key, title, repo, status badge, turns used, and created date. Filter by status (`pending` / `queued` / `running` / `verifying` / `done` / `failed` / `blocked` / `cancelled`), toggle retired tasks, and paginate with items-per-page selector. Each row links to the task detail view. The **+ New Task** button opens the creation form with an optional template picker.
+The full task backlog. Columns: colour-coded priority badge, task key, title, repo, status badge, turns used, and created date. Filter by status (`pending` / `queued` / `running` / `verifying` / `test` / `failed` / `blocked` / `cancelled`), toggle retired tasks, and paginate with items-per-page selector. Each row links to the task detail view. The **+ New Task** button opens the creation form with an optional template picker.
 
-📂 [`apps/web/src/app/tasks/page.tsx`](apps/web/src/app/tasks/page.tsx) · [`apps/web/src/components/TaskTable.tsx`](apps/web/src/components/TaskTable.tsx)
+A **Grid ⇄ Board** toggle switches the same data between the table and a **Pipeline Board** — a kanban projection with lifecycle-native lanes (**Queued / Active / Needs You / Shipped / Stalled**). Cards carry a vendor badge, priority flag, reality-score chip, and inline actions (Enqueue / Cancel / Continue); lanes transition live over the websocket with no polling, and filters cover repo / vendor / "needs you only". A **"Needs You"** count pill on the sidebar surfaces tasks awaiting a human decision.
+
+📂 [`apps/web/src/app/tasks/page.tsx`](apps/web/src/app/tasks/page.tsx) · [`apps/web/src/components/TaskTable.tsx`](apps/web/src/components/TaskTable.tsx) · [`apps/web/src/components/PipelineBoard.tsx`](apps/web/src/components/PipelineBoard.tsx)
 
 ---
 
@@ -126,9 +131,7 @@ A lightweight brainstorm space. Folders contain other folders or **idea leaves**
 
 A real-time log viewer with two tabs — `worker.log` and `web.log` — polled every 1.5 seconds. Lines are colour-coded by severity (ERROR red, WARNING yellow, INFO blue, DEBUG green). Auto-scrolls to the bottom; a jump-to-bottom button appears when you scroll up.
 
-**Secret redaction.** A logging filter installed on every worker handler (including uvicorn's) masks Telegram bot tokens before they reach a log file or stdout — the full `https://api.telegram.org/bot<token>/` URL is rewritten to `https://api.telegram.org/.../`, so the long token never leaks into the noisy httpx request lines emitted on every poll.
-
-📂 [`apps/web/src/app/logs/page.tsx`](apps/web/src/app/logs/page.tsx) · [`apps/web/src/components/LogsView.tsx`](apps/web/src/components/LogsView.tsx) · [`apps/worker/src/services/log_redaction.py`](apps/worker/src/services/log_redaction.py)
+📂 [`apps/web/src/app/logs/page.tsx`](apps/web/src/app/logs/page.tsx) · [`apps/web/src/components/LogsView.tsx`](apps/web/src/components/LogsView.tsx)
 
 ---
 
@@ -136,9 +139,9 @@ A real-time log viewer with two tabs — `worker.log` and `web.log` — polled e
 
 <a href="assets/settings.png"><img src="assets/settings.png" alt="DevServer settings page — max concurrency, queue paused toggle, auto-enqueue toggle, notifications toggle, system LLM vendor/model picker, and environment variables editor showing .env path, database connection, and API keys" width="100%" /></a>
 
-A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Database** card: a mode-aware connection editor (deployment-specific presets — *local / custom* for host installs, *bundled / host-OS / external* for Docker) that prefills and locks the right `PG*` vars, keeps `DATABASE_URL` and the container-perspective `PGHOST_CONTAINER` / `PGPORT_CONTAINER` in sync, and offers a **Test connection** button that opens a short-lived probe connection against the worker before you save. The same component drives the Setup wizard's database step. **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
+A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
 
-📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx) · [`apps/web/src/components/DatabaseConfigFields.tsx`](apps/web/src/components/DatabaseConfigFields.tsx)
+📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx)
 
 ---
 
@@ -157,9 +160,15 @@ Why Local Git matters: it makes DevServer **provider-agnostic**. Clone a repo fr
 
 Safety guarantees for your folder: DevServer never hard-resets or cleans it, refuses to start a patch-flow task on a dirty working tree (so your own uncommitted work can never be swept into agent commits), and the agent is explicitly instructed to never touch remotes. Local repos show a turquoise **Local** badge on the Repos page.
 
-Each repo's edit form also carries a **Reindex** button that rebuilds the repository's memory in the background — it re-ingests both the `code` and `doc` corpora through the same worker endpoint the `devserver-memory` MCP `corpus_ingest` tool uses, so the Pro memory KB picks up files added or changed outside a task run.
-
 📂 [`apps/worker/src/services/git_ops.py`](apps/worker/src/services/git_ops.py) · [`apps/web/src/components/RepoForm.tsx`](apps/web/src/components/RepoForm.tsx)
+
+---
+
+### Architecture diagram — instant module map, no LLM
+
+Each repo on the Repos page has a **Diagram** button that opens a full-screen, scrollable **Mermaid** flowchart of the repo's module tree. It's generated deterministically from the same directory walk as the repo map (`build_mermaid`) — no LLM call, no token cost, regenerates instantly — so you get a current architecture picture for free, on demand.
+
+📂 [`apps/worker/src/services/repo_map.py`](apps/worker/src/services/repo_map.py) (`build_mermaid`) · [`apps/web/src/components/RepoDiagramModal.tsx`](apps/web/src/components/RepoDiagramModal.tsx)
 
 ---
 
@@ -235,13 +244,15 @@ DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers
 | Vendor | CLI Binary | Latest models | Status |
 |---|---|---|---|
 | `anthropic` | `claude` | **Claude Opus 4.8**, Sonnet 4.6, Haiku 4.5 | Production-tested |
-| `google` | `gemini` | **Gemini 3.1 Pro**, Gemini 3 Pro/Flash | Structurally complete |
+| `google` | `agy` | **Gemini 3.1 Pro**, Gemini 3.5 Flash (via the Antigravity CLI) | Verified (agy 1.0.10) |
 | `openai` | `codex` | GPT-5.x, Codex | Structurally complete |
-| `glm` | `glm` | GLM-5.1 — wraps Claude CLI via Zhipu's Anthropic-compatible API | Structurally complete |
+| `glm` | `claude` | GLM-5.2 / 5.1 — runs the Claude CLI against Zhipu's Anthropic-compatible API | Production-tested |
 
 Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.
 
-**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** for Gemini without per-token metering. For Gemini, sign in once with `gemini` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.1-pro-preview`.
+> **Note — Google migrated to the Antigravity CLI.** Google retired the Gemini CLI on 2026-06-18 (`gemini` commands now return *410 Gone*). The Google backend now drives Google's replacement, the **Antigravity CLI** (`agy`), reusing the same Gemini API key and Google AI Pro/Ultra subscription. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`.
+
+**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** without per-token metering. For Google, sign in once with `agy` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.1-pro`. In `api` mode the worker reuses your existing `GEMINI_API_KEY` (bridged to `ANTIGRAVITY_API_KEY`).
 
 📂 [`apps/worker/src/services/agent_backends.py`](apps/worker/src/services/agent_backends.py)
 
@@ -280,6 +291,14 @@ Concurrent tasks hitting vendor rate limits are handled at two levels:
 2. **Minimal retry prompts** — resumed sessions receive only the error/remediation block, not the full context again, cutting per-retry token usage by ~50%.
 
 📂 [`apps/worker/src/services/agent_runner.py`](apps/worker/src/services/agent_runner.py)
+
+### 6. Governance-grade OpenTelemetry (opt-in)
+
+DevServer can export its entire task pipeline as OpenTelemetry spans to any OTLP collector (Langfuse, Grafana Tempo, Datadog, Jaeger). It's wired at the **single `_emit_event` chokepoint** every task event already flows through, so one wrapper covers all ~16 event types: a per-task root span is opened at task start, each event becomes a span event, and the run closes at the terminal status. Beyond the standard GenAI attributes (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`), spans carry **DevServer-only governance attributes** — `devserver.reality_score`, `devserver.budget.cost_usd` / `.wall_seconds`, `devserver.preflight.secret_hits`, `devserver.error_class`, `devserver.vendor_failover`, `devserver.final_status` — the richest agent telemetry, in your own stack.
+
+It is **fully opt-in and zero-overhead**: a no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set *and* the optional `otel` extra is installed (`uv sync --extra otel`), so deployments that don't use it pay nothing.
+
+📂 [`apps/worker/src/services/telemetry.py`](apps/worker/src/services/telemetry.py)
 
 ## Tech Stack
 
@@ -321,6 +340,9 @@ cp config/.env.example .env
 ```
 
 The dashboard is now at **http://localhost:3200** (configurable via `WEB_PORT` in `.env`).
+
+> **On Windows?** Use the PowerShell scripts (`scripts\setup-local.ps1`,
+> `scripts\start.ps1`) instead of the `.sh` ones — see [Windows](#windows).
 
 ### Upgrading an existing install
 
@@ -374,13 +396,13 @@ docker compose --profile bundled-db up -d --build
 This runs out of the box on Linux, macOS, and Windows.
 
 **Two topologies — where do the agent CLIs run?** The worker shells out to a
-vendor CLI (`claude` / `glm` / `gemini` / `codex`) for every task, and *where
-the worker runs* decides where those CLIs run:
+vendor CLI (`claude` / `agy` / `codex` — GLM also uses `claude`) for every
+task, and *where the worker runs* decides where those CLIs run:
 
 | Topology | Compose file | Agent CLIs run… | Auth |
 |---|---|---|---|
 | **All-in-Docker** (default) | `docker-compose.yml` | inside the worker container (baked into the image) | API keys via `.env`; for `max` subscription mode, mount your host `~/.claude` (see below) |
-| **Worker on host** | `docker-compose.host-worker.yml` | as host processes | your existing host logins (`claude login`, `codex login`, Gemini/GLM auth) — nothing to install or mount |
+| **Worker on host** | `docker-compose.host-worker.yml` | as host processes | your existing host logins (`claude login`, `codex login`, `agy` Google OAuth, GLM key) — nothing to install or mount |
 
 Pick **worker-on-host** if you want the agents to use the subscription logins
 already set up on your machine; pick **all-in-Docker** for a single portable
@@ -436,7 +458,7 @@ in the `devserver` database.
 
 Use this when you want the agents to run on your machine with the
 subscription logins you already set up (`claude login`, `codex login`, the
-Gemini OAuth, GLM auth) instead of in a container. Postgres + the web
+`agy` Google OAuth, GLM key) instead of in a container. Postgres + the web
 dashboard stay in Docker; only the Python worker runs natively.
 
 ```bash
@@ -507,27 +529,79 @@ Leave `ANTHROPIC_API_KEY` empty in `.env` so the CLI falls back to the mounted
 login. (The worker-on-host topology above needs none of this — it uses your
 host login directly.)
 
-#### Windows (Docker Desktop)
+> **Windows:** `${HOME}` is not set for `docker compose` on native Windows, so
+> the default above resolves to an invalid path. Set `CLAUDE_CONFIG_DIR` in
+> `.env` to your host config dir using forward slashes —
+> `CLAUDE_CONFIG_DIR=C:/Users/<you>/.claude` — before uncommenting the mount.
 
-DevServer is developed on Linux and macOS. On Windows, the only supported
-way to run it is via Docker Desktop — do not attempt the host-process setup.
-Use **PowerShell** (not CMD):
+### Windows
+
+Windows is a first-class target. Every `scripts/*.sh` lifecycle script has a
+PowerShell twin (`scripts/*.ps1`), so you can run DevServer **natively** (host
+processes, no WSL or Docker required) or under **Docker Desktop** — your pick.
+Use **PowerShell** (not CMD) for everything below.
+
+> If a script is blocked by the execution policy, allow it for the current
+> session only: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
+
+#### Option A — Native (PowerShell, recommended for development)
+
+Prerequisites: **Node.js 22+**, **Python 3.12+**, **PostgreSQL 16+**, **uv**
+([install](https://docs.astral.sh/uv/)), and at least one agent CLI
+(e.g. `npm install -g @anthropic-ai/claude-code` then `claude login`).
+
+```powershell
+git clone https://github.com/<YOUR_GITHUB_HANDLE>/DevServer.git
+cd DevServer
+
+.\scripts\setup-local.ps1     # 1st run: copies config\.env.example -> .env, then stops
+notepad .env                  #          fill in PGPASSWORD and ANTHROPIC_API_KEY (minimum)
+.\scripts\setup-local.ps1     # 2nd run: bootstraps the DB role+db, runs migrations, installs deps
+
+.\scripts\start.ps1           # start worker + web (dev mode, hot reload)
+```
+
+Open **http://localhost:3200**. `setup-local.ps1` creates the `devserver`
+PostgreSQL role and database for you on a fresh host — if your superuser isn't
+passwordless, set `PGSUPERUSER` / `PGSUPERPASSWORD` in `.env` or enter the
+superuser password when prompted.
+
+Day-to-day commands (all accept `-Dev` (default), `-Prod`, or `-Docker`):
+
+```powershell
+.\scripts\start.ps1 -Prod     # production build (next build + node server.js)
+.\scripts\stop.ps1            # stop host processes and free the ports
+.\scripts\restart.ps1 -Prod   # tear everything down and restart cleanly in a mode
+.\scripts\build.ps1 -Prod     # build only (no start)
+```
+
+Logs stream to `logs\worker.log` and `logs\web.log`
+(`Get-Content logs\worker.log -Wait` to tail).
+
+#### Option B — Docker Desktop
 
 1. Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)
-   with the WSL 2 backend.
-2. Clone the repo into a WSL filesystem path or a short Windows path with
-   no spaces.
-3. Create and edit `.env`:
+   with the WSL 2 backend, and clone the repo to a path with no spaces.
+2. Create and edit `.env` at the repo root:
    ```powershell
-   cd docker
-   Copy-Item ..\config\.env.example .env
+   Copy-Item config\.env.example .env
    notepad .env     # set PGPASSWORD and ANTHROPIC_API_KEY at minimum
    ```
-4. Build and start:
+3. Build and start with the lifecycle scripts (they pick the compose
+   files/profiles and manage the host worker for you):
    ```powershell
-   docker compose up -d --build
+   .\scripts\start.ps1 -Docker
    ```
-5. Open **http://localhost:3200**.
+4. Open **http://localhost:3200**. Stop with `.\scripts\stop.ps1 -Docker`.
+
+**Claude Max (subscription) mode on Windows.** To use `max` billing instead of
+an API key, run `claude login` on the host once. In **native** mode it just
+works (the CLI uses your host login). In **Docker** mode set `CLAUDE_CONFIG_DIR`
+in `.env` to your host config dir with forward slashes
+(`CLAUDE_CONFIG_DIR=C:/Users/<you>/.claude`) and uncomment the `claude_auth`
+mount in `docker-compose.yml` — the `${HOME}/.claude` default that works on
+macOS/Linux does **not** resolve for `docker compose` on native Windows, so
+`CLAUDE_CONFIG_DIR` is required there.
 
 ## Backup & Restore
 
@@ -551,30 +625,29 @@ apps/
   web/                                → Next.js 15 frontend, API routes, PgQueuer producer, WebSocket server
     src/components/
       Dashboard.tsx                   → Dashboard with stats widgets and queue controls
-      DashboardCharts.tsx             → Analytics charts (duration, turns, vendor cost)
+      DashboardCharts.tsx             → Analytics charts + governance KPIs (cost/PR, abstain savings)
       TaskDetail.tsx                  → Task detail — events, logs, agent settings, run history
       TaskForm.tsx                    → Create/edit task form with template picker
       TaskTable.tsx                   → Task list with filters
+      PipelineBoard.tsx               → Kanban board view (Grid ⇄ Board on the Tasks page)
+      RepoDiagramModal.tsx            → Mermaid architecture diagram modal
       TemplateList.tsx                → Template CRUD management
       IdeasView.tsx                   → Hierarchical idea tree
       LogsView.tsx                    → Live log viewer
       SettingsForm.tsx                → Global settings editor
-      DatabaseConfigFields.tsx        → DB connection card (mode presets + test connection)
     src/app/api/
       tasks/                          → Task CRUD + enqueue
       templates/                      → Template CRUD
       analytics/                      → Dashboard analytics data
       logs/                           → Log file streaming
       settings/                       → Worker settings read/write
-      env/test-db/                    → Proxy a DB-connection test to the worker
-      repos/[id]/reindex/             → Rebuild a repo's memory corpora
   worker/                             → Python FastAPI worker + PgQueuer consumer
     src/services/
       _free_hooks.py                  → No-op stubs for pro features (always present)
-      log_redaction.py                → Logging filter that masks Telegram tokens in logs
       agent_runner.py                 → Main task execution loop with retry logic
       agent_backends.py               → Vendor abstraction (Claude, Gemini, Codex, GLM)
-      repo_map.py                     → Multi-language symbol map
+      repo_map.py                     → Multi-language symbol map + Mermaid diagram (build_mermaid)
+      telemetry.py                    → Governance OpenTelemetry export (opt-in, OTLP)
       error_classifier.py             → 20 regex rules → targeted retry hints
       outcome.py                      → Repo-level outcome forecast (free baseline)
       app_settings.py                 → Typed reader for the key/value settings table
@@ -609,6 +682,10 @@ DevServer ships as two editions:
 | Auto-failover between vendors | ✅ | ✅ |
 | Rate-limit backoff (per-subprocess 429 handling) | ✅ | ✅ |
 | Dashboard with analytics charts | ✅ | ✅ |
+| Pipeline board (Grid ⇄ Board task view, live lanes) | ✅ | ✅ |
+| Architecture diagram (Mermaid module tree, no LLM) | ✅ | ✅ |
+| Governance analytics (cost-per-PR, abstain savings) | ✅ | ✅ |
+| Governance OpenTelemetry export (OTLP, opt-in) | ✅ | ✅ |
 | Task templates | ✅ | ✅ |
 | Ideas brainstorm tree | ✅ | ✅ |
 | Live log viewer | ✅ | ✅ |

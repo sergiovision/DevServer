@@ -33,10 +33,12 @@ from services import (
     compaction,
     error_classifier,
     git_ops,
+    proc as proc_util,
     repo_map,
     side_effect_gate,
     skills,
     telegram,
+    telemetry,
     verifier,
 )
 from services.agent_backends import AgentBackend
@@ -63,7 +65,7 @@ def _derive_topic(paths: list[str] | None) -> str | None:
     for p in paths or []:
         if not isinstance(p, str):
             continue
-        seg = p.strip().lstrip("./").split("/")
+        seg = p.strip().replace("\\", "/").lstrip("./").split("/")
         if len(seg) > 1 and seg[0]:
             tops.append(seg[0])
     if not tops:
@@ -133,6 +135,10 @@ async def _emit_event(
     )
     session.add(event)
     await session.commit()
+    # Mirror every emission onto the OTel root span (no-op unless tracing is
+    # configured). This is the single chokepoint, so OTel coverage of all
+    # ~16 event types is one call here rather than N call-site edits.
+    telemetry.record_event(task_id, event_type, payload)
 
 
 async def _update_task_status(session: AsyncSession, task_id: int, status: str) -> None:
@@ -488,6 +494,10 @@ async def _run_agent(
         session_id=session_id,
         max_turns=max_turns,
     )
+    # Some backends (Claude/GLM) deliver the prompt on stdin rather than as an
+    # argv element — mandatory on Windows where a large prompt would exceed
+    # cmd.exe's command-line length limit via the npm .CMD shim.
+    stdin_payload = backend.stdin_payload(prompt)
     env = backend.build_env(billing_mode=claude_mode)
 
     # Inject inter-task messaging env vars (Pro only). Agents can curl
@@ -504,15 +514,9 @@ async def _run_agent(
         )
         env["DEVSERVER_TASK_KEY"] = task_key
 
-    if backend.vendor == "google":
-        gemini_dir = os.path.join(worktree_path, ".gemini")
-        os.makedirs(gemini_dir, exist_ok=True)
-        settings_path = os.path.join(gemini_dir, "settings.json")
-        try:
-            with open(settings_path, "w", encoding="utf-8") as f:
-                json.dump({"model": {"maxSessionTurns": max_turns if max_turns is not None else -1}}, f)
-        except Exception as e:
-            logger.warning("Failed to write .gemini/settings.json: %s", e)
+    # Google's Antigravity CLI (``agy``) has no per-turn config file and no
+    # --max-turns flag, so there is nothing vendor-specific to write here. (The
+    # retired Gemini CLI used .gemini/settings.json; ``agy`` ignores it.)
 
     # OpenAI / Azure OpenAI — propagate the custom endpoint overrides so
     # Codex CLI targets Azure AI Foundry (or any OpenAI-compatible proxy)
@@ -552,29 +556,24 @@ async def _run_agent(
         the outer function maps timeouts to a structured failure dict so the
         rate-limit retry loop never sees them.
         """
-        # stdin=DEVNULL is required for true headless operation. Without it
-        # asyncio inherits the worker's stdin — when the worker runs in a
-        # terminal (dev mode) the agent CLI inherits the TTY and may either
-        # block on a read or, in Gemini's case, merge stray TTY bytes into
-        # the prompt (per `gemini --help`: "Appended to input on stdin if any").
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
+        # When the backend supplies a stdin payload (Claude/GLM), feed the
+        # prompt that way. Otherwise stdin=DEVNULL is required for true
+        # headless operation: without it asyncio inherits the worker's stdin —
+        # when the worker runs in a terminal (dev mode) the agent CLI inherits
+        # the TTY and may either block on a read or, in Gemini's case, merge
+        # stray TTY bytes into the prompt (per `gemini --help`: "Appended to
+        # input on stdin if any"). Passing an explicit payload + EOF avoids the
+        # TTY-inheritance problem too.
+        exit_code, stdout_data, stderr_data = await proc_util.run(
+            cmd,
             cwd=worktree_path,
             env=env,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            timeout=timeout_seconds,
+            stdin_devnull=stdin_payload is None,
+            stdin_input=stdin_payload,
         )
-        try:
-            stdout_data, stderr_data = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_seconds
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise
         return (
-            proc.returncode or 0,
+            exit_code,
             stdout_data.decode(errors="replace"),
             stderr_data.decode(errors="replace"),
         )
@@ -789,6 +788,12 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
 
             # Update status
             await _update_task_status(db, task_id, "running")
+            # Open the OTel root span for this run (no-op unless tracing is on).
+            # Must precede the first _emit_event so its span events attach here.
+            telemetry.start_task_span(
+                task_id, task_key, vendor=agent_vendor,
+                model=effective_model, mode=task.mode, repo_name=repo_name,
+            )
             await _emit_event(db, task_id, None, "status_change", {"status": "running"})
             await notify.task_start(
                 task_key=task_key, title=title, repo_name=repo_name,
@@ -2243,6 +2248,8 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
             )
 
         finally:
+            # Close the OTel root span (no-op unless tracing is on).
+            telemetry.end_task_span(task_id, success=success)
             task_log.write(
                 f"\n{'='*60}\n"
                 f"Task {task_key} finished at {datetime.now(timezone.utc).isoformat()} "

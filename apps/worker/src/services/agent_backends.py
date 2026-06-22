@@ -24,7 +24,7 @@ knowledge in one file per vendor and lets the runner stay vendor-agnostic.
 
 Current backends:
     - :class:`ClaudeBackend` (Anthropic) — fully implemented, production tested
-    - :class:`GeminiBackend` (Google)    — command shape known, untested
+    - :class:`AntigravityBackend` (Google) — ``agy`` CLI, verified on 1.0.10
     - :class:`OpenAIBackend` (Codex CLI) — command shape known, untested
     - :class:`GLMBackend`    (Zhipu AI)   — wraps Claude Code CLI via ``glm`` launcher
 
@@ -47,6 +47,8 @@ import re
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -87,14 +89,10 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
         {"id": "claude-opus-4-5",              "label": "Claude Opus 4.5"},
         {"id": "claude-sonnet-4-5",            "label": "Claude Sonnet 4.5"},
     ],
+    # Antigravity CLI (``agy``) model slugs — verified working on agy 1.0.10.
     "google": [
-        {"id": "gemini-3.1-pro-preview",       "label": "Gemini 3.1 Pro Preview (latest, AI Pro plan)"},
-        {"id": "gemini-3-pro-preview",         "label": "Gemini 3 Pro Preview (strong coding)"},
-        {"id": "gemini-3.5-flash",             "label": "Gemini 3.5 Flash (GA, frontier-fast agentic)"},
-        {"id": "gemini-3.1-flash-lite",        "label": "Gemini 3.1 Flash-Lite (most cost-effective)"},
-        {"id": "gemini-3-flash-preview",       "label": "Gemini 3 Flash Preview (cheap, fast)"},
-        {"id": "gemini-2.5-pro",               "label": "Gemini 2.5 Pro (stable, free tier)"},
-        {"id": "gemini-pro-latest",            "label": "Gemini Pro (latest alias)"},
+        {"id": "gemini-3.1-pro",               "label": "Gemini 3.1 Pro (strong coding, default)"},
+        {"id": "gemini-3.5-flash",             "label": "Gemini 3.5 Flash (fast, cheap)"},
     ],
     "openai": [
         {"id": "gpt-5.5-codex",                "label": "GPT-5.5 Codex (latest frontier, 1M ctx)"},
@@ -113,7 +111,7 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
 
 VENDOR_LABELS: dict[str, str] = {
     "anthropic": "Anthropic",
-    "google":    "Google",
+    "google":    "Google (Antigravity)",
     "openai":    "OpenAI",
     "glm":       "GLM (Zhipu)",
 }
@@ -167,24 +165,69 @@ class AgentBackend(ABC):
     vendor: str = ""
     #: Human-readable label for logs and the dashboard.
     label: str = ""
-    #: Default CLI binary name on $PATH. Can be overridden per deployment
-    #: via the matching setting in ``config.py`` (e.g. ``settings.claude_bin``).
+    #: Default CLI binary name on $PATH.
     cli_bin: str = ""
+    #: Name of the ``config.settings`` attribute that overrides ``cli_bin``
+    #: per deployment (e.g. ``"claude_bin"`` ← ``CLAUDE_BIN`` env). May be an
+    #: absolute path to the binary — required on hosts where the CLI is not on
+    #: the worker process's PATH. Empty → no override, always use ``cli_bin``.
+    bin_setting: str = ""
     #: One-line shell command that installs this CLI. Shown to the operator
     #: when the binary is missing so the fix is copy-pasteable.
     install_hint: str = ""
+    #: When True, the prompt is delivered on the CLI's stdin rather than as an
+    #: argv element, and ``build_command`` must NOT embed the prompt. Required
+    #: on Windows for large prompts: the npm ``.CMD`` shim runs under cmd.exe,
+    #: whose ~8191-char command-line limit a repo-map+memory prompt blows
+    #: ("The command line is too long." → exit 1). Harmless cross-platform.
+    prompt_on_stdin: bool = False
+
+    def stdin_payload(self, prompt: str) -> bytes | None:
+        """Bytes to feed the CLI on stdin, or ``None`` to pass via argv."""
+        if self.prompt_on_stdin:
+            return prompt.encode("utf-8")
+        return None
 
     # ── Availability ────────────────────────────────────────────────────
+    def _configured_bin(self) -> str:
+        """The CLI name or path: the settings override if set, else ``cli_bin``."""
+        if self.bin_setting:
+            override = (getattr(settings, self.bin_setting, "") or "").strip()
+            if override:
+                return override
+        return self.cli_bin
+
+    def resolve_bin(self) -> str | None:
+        """Resolve the CLI to a runnable path, or ``None`` if not found.
+
+        On Windows an npm-installed CLI is a ``.CMD`` shim. ``CreateProcess``
+        (what subprocess uses with ``shell=False``) does not apply ``PATHEXT``,
+        so spawning the bare name ``claude`` raises ``FileNotFoundError`` even
+        when ``claude.CMD`` is on PATH. We therefore resolve the *full* path
+        (including the ``.CMD`` extension via ``shutil.which``) and spawn that.
+        An explicit override that is already a path is used verbatim.
+        """
+        name = self._configured_bin()
+        if os.path.isfile(name):
+            return name
+        return shutil.which(name)
+
+    def bin_argv0(self) -> str:
+        """argv[0] for spawning — the resolved path when found, else the
+        configured name (so a later spawn failure still names the binary)."""
+        return self.resolve_bin() or self._configured_bin()
+
     def is_available(self) -> bool:
-        """True if this vendor's CLI binary is found on $PATH."""
-        return shutil.which(self.cli_bin) is not None
+        """True if this vendor's CLI binary can be resolved to a runnable path."""
+        return self.resolve_bin() is not None
 
     def not_installed_message(self) -> str:
         """Human-readable error explaining the CLI is missing + how to fix it."""
+        name = self._configured_bin()
         msg = (
-            f"{self.label} CLI not found: the '{self.cli_bin}' command is not "
-            f"installed or not on PATH. Install it before running "
-            f"{self.label} tasks."
+            f"{self.label} CLI not found: '{name}' is not installed or not on "
+            f"the worker's PATH. Install it, or set {self.bin_setting or 'the CLI path'}"
+            f" to an absolute path in .env, before running {self.label} tasks."
         )
         if self.install_hint:
             msg += f" Install with: {self.install_hint}"
@@ -267,8 +310,12 @@ class ClaudeBackend(AgentBackend):
     vendor = "anthropic"
     label = "Anthropic"
     cli_bin = "claude"
+    bin_setting = "claude_bin"
     api_key_env = "ANTHROPIC_API_KEY"
     install_hint = "npm install -g @anthropic-ai/claude-code"
+    # Deliver the prompt on stdin — see AgentBackend.prompt_on_stdin. The CLI
+    # reads the prompt from stdin in ``-p`` print mode (default text input).
+    prompt_on_stdin = True
 
     def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
         """Claude/GLM env, with the root-sandbox escape hatch.
@@ -303,8 +350,11 @@ class ClaudeBackend(AgentBackend):
         session_id: str | None,
         max_turns: int | None,
     ) -> list[str]:
+        # The prompt is delivered on stdin (prompt_on_stdin), so ``-p`` is
+        # given with no positional prompt; ``prompt`` is intentionally unused
+        # here. This avoids cmd.exe's command-line length limit on Windows.
         cmd = [
-            self.cli_bin, "-p", prompt,
+            self.bin_argv0(), "-p",
             "--dangerously-skip-permissions",
             "--output-format", "json",
             "--model", model,
@@ -343,51 +393,98 @@ class ClaudeBackend(AgentBackend):
                 res.errors = [str(e) for e in errors]
         except (json.JSONDecodeError, TypeError, ValueError):
             res.result = raw_output
-            logger.warning("Claude output was not valid JSON, using raw text")
+            snippet = (raw_output or "").strip()[:500] or "<empty>"
+            logger.warning(
+                "Claude output was not valid JSON, using raw text. First 500 chars: %s",
+                snippet,
+            )
         return res
 
 
-# ── Google — Gemini CLI ─────────────────────────────────────────────────────
+# ── Google — Antigravity CLI (``agy``) ──────────────────────────────────────
 #
-# Command shape (as documented by github.com/google-gemini/gemini-cli as of
-# Q1 2026; flags subject to verification on first real run):
-#     gemini -p <prompt> --model <model> --output-format json
-#            [--max-turns N] [--tools <list>] [--session <id>]
+# Google retired the Gemini CLI on 2026-06-18 (auth endpoint returns HTTP
+# 410 Gone) and replaced it with the **Antigravity CLI**, a closed-source Go
+# binary invoked as ``agy``. It is NOT a drop-in rename — different binary,
+# different flags, plain-text (not JSON) print output. Verified against
+# ``agy`` 1.0.10 on a real machine; the command shape below is what the
+# installed ``--help`` actually exposes, not what third-party blogs claim.
 #
-# Auth: reads ``GEMINI_API_KEY`` from the env. On Google Cloud,
-# Application Default Credentials also work.
+# Command shape (headless / non-interactive):
+#     agy -p <prompt> --model <slug> --dangerously-skip-permissions
+#         --print-timeout <dur>
 #
-# Rate-limit detection: Google Cloud surfaces 429s as either literal "429"
-# in the error text or an ``Error: RESOURCE_EXHAUSTED`` line.
+#   -p / --print                    single-prompt headless mode (fully
+#                                   agentic — it edits files & runs tools,
+#                                   verified by creating files in a temp repo)
+#   --model <slug>                  e.g. ``gemini-3.1-pro`` / ``gemini-3.5-flash``
+#   --dangerously-skip-permissions  auto-approve every tool call (required
+#                                   for an unattended worker; the only
+#                                   auto-approve flag ``agy`` has)
+#   --print-timeout <go-duration>   internal wait cap; default 5m would cut
+#                                   off long agent runs, so we raise it well
+#                                   above the worker's own subprocess timeout
+#
+# NOT available in ``agy`` 1.0.10 (intentionally dropped vs. the old Gemini
+# backend): ``--output-format`` (print mode emits plain text), ``--max-turns``
+# (no turn cap flag), ``--skip-trust`` (no trust gate), ``-y/--yolo``. Session
+# resume exists only as ``--continue`` / ``--conversation <ID>``, but print
+# mode emits no conversation ID to capture, so each call runs fresh (like the
+# Codex backend). An unknown ``--model`` is *silently ignored* (falls back to
+# the default and exits 0) — there is no model-validation error to detect.
+#
+# Auth: per the user's requirement, this backend keeps the *same* auth as the
+# old Gemini backend — the Google AI Pro/Ultra **subscription** (browser
+# OAuth, used in ``max`` mode) and the **same key**, ``GEMINI_API_KEY`` (used
+# in ``api`` mode). ``agy``'s own documented key var is ``ANTIGRAVITY_API_KEY``,
+# so in ``api`` mode we mirror ``GEMINI_API_KEY`` into it when it isn't
+# already set, and in ``max`` mode strip both so the OAuth subscription wins.
+#
+# Rate-limit detection: Google surfaces 429s as a literal "429" or a
+# ``RESOURCE_EXHAUSTED`` / quota-exceeded line.
 
 _GEMINI_RATE_LIMIT_RE = re.compile(
-    r"RESOURCE_EXHAUSTED|429|quota.*exceeded",
+    r"RESOURCE_EXHAUSTED|429|quota.*exceeded|rate.?limit",
     re.IGNORECASE,
 )
 
 
-class GeminiBackend(AgentBackend):
-    """Google Gemini CLI backend.
+class AntigravityBackend(AgentBackend):
+    """Google Antigravity CLI (``agy``) backend — the Gemini CLI successor.
 
-    **Untested as of first commit.** Structurally complete so that wiring
-    up a real Gemini wingman is a small follow-up rather than a refactor.
+    Verified end-to-end against ``agy`` 1.0.10: headless ``-p`` runs are
+    fully agentic (edit files, run tools) and print plain text. Keeps the
+    Gemini backend's auth model: Google AI Pro/Ultra subscription via OAuth
+    (``max``) and ``GEMINI_API_KEY`` (``api``).
     """
 
     vendor = "google"
-    label = "Google"
-    cli_bin = "gemini"
-    install_hint = "npm install -g @google/gemini-cli"
-    # Gemini CLI requires GEMINI_API_KEY in API mode. Stripped in 'max'
-    # mode so the CLI falls back to the interactive Google-account OAuth
-    # login it set up on first run.
+    label = "Google (Antigravity)"
+    cli_bin = "agy"
+    bin_setting = "gemini_bin"
+    install_hint = "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+    # Per the operator's requirement we reuse the *old Gemini* key here so no
+    # new secret is needed. ``agy`` itself reads ``ANTIGRAVITY_API_KEY``; we
+    # bridge the two in :meth:`build_env`.
     api_key_env = "GEMINI_API_KEY"
 
+    #: ``agy``'s own documented API-key env var. In ``api`` mode we populate
+    #: it from ``GEMINI_API_KEY`` so the existing key keeps working.
+    _AGY_API_KEY_ENV = "ANTIGRAVITY_API_KEY"
+
+    #: Internal print-mode wait cap handed to ``--print-timeout``. ``agy``
+    #: defaults to 5m, which would abort long agent runs; set it well above
+    #: any worker subprocess timeout so the real bound stays in agent_runner.
+    _PRINT_TIMEOUT = "180m"
+
     #: Every env var that would override the OAuth "Login with Google"
-    #: subscription path. In 'max' (subscription) mode all of these must
-    #: be absent or the CLI silently prefers API-key / Vertex auth and the
-    #: user's Google AI Pro / Ultra subscription is never used.
+    #: subscription path. In ``max`` (subscription) mode all of these must be
+    #: absent or the CLI prefers key / Vertex auth and the user's Google AI
+    #: Pro / Ultra subscription is never used.
     _SUBSCRIPTION_BLOCKING_ENV = (
-        "GEMINI_API_KEY",       # AI Studio API key
+        "ANTIGRAVITY_API_KEY",        # agy's native API key
+        "GEMINI_API_KEY",             # AI Studio API key (bridged in api mode)
+        "GOOGLE_API_KEY",
         "GOOGLE_GENAI_USE_VERTEXAI",  # forces Vertex AI auth
         "GOOGLE_CLOUD_PROJECT",       # Vertex / ADC project selector
         "GOOGLE_CLOUD_LOCATION",
@@ -395,14 +492,14 @@ class GeminiBackend(AgentBackend):
     )
 
     def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
-        """Subscription-aware env for the Gemini CLI.
+        """Subscription-aware env for ``agy``.
 
-        ``'max'`` means "use my Google AI Pro / Ultra subscription" — i.e.
-        the OAuth login from ``gemini`` first-run / ``/auth``. That path is
-        only chosen when *none* of the API-key / Vertex env vars are set, so
-        we strip the whole :data:`_SUBSCRIPTION_BLOCKING_ENV` set (the base
-        class only strips a single ``api_key_env``). ``'api'`` inherits the
-        full environment unchanged.
+        ``'max'`` means "use my Google AI Pro / Ultra subscription" — the
+        browser-OAuth login ``agy`` stores on first run. That path is only
+        chosen when *none* of the key / Vertex env vars are set, so we strip
+        the whole :data:`_SUBSCRIPTION_BLOCKING_ENV` set. ``'api'`` keeps the
+        full environment and bridges ``GEMINI_API_KEY`` → ``ANTIGRAVITY_API_KEY``
+        (the var ``agy`` actually reads) when the latter isn't already set.
         """
         if billing_mode == "max":
             return {
@@ -410,6 +507,12 @@ class GeminiBackend(AgentBackend):
                 for k, v in os.environ.items()
                 if k not in self._SUBSCRIPTION_BLOCKING_ENV
             }
+        # api mode: reuse the old Gemini key with the new CLI.
+        key = os.environ.get(self.api_key_env)
+        if key and not os.environ.get(self._AGY_API_KEY_ENV):
+            env = dict(os.environ)
+            env[self._AGY_API_KEY_ENV] = key
+            return env
         return None
 
     def build_command(
@@ -417,50 +520,27 @@ class GeminiBackend(AgentBackend):
         *,
         prompt: str,
         model: str,
-        allowed_tools: str,
-        session_id: str | None,
-        max_turns: int | None,
+        allowed_tools: str,  # noqa: ARG002 — agy has no tool-allow-list flag
+        session_id: str | None,  # noqa: ARG002 — print mode has no resumable ID
+        max_turns: int | None,  # noqa: ARG002 — agy has no --max-turns flag
     ) -> list[str]:
-        # AUTONOMOUS / HEADLESS — these three flags are mandatory. Do not remove:
-        #   -p <prompt>           Forces non-interactive headless mode (without
-        #                         it Gemini drops into a TUI).
-        #   --approval-mode yolo  Auto-approves every tool call. The other
-        #                         choices (default/auto_edit/plan) all wait
-        #                         for human confirmation, which deadlocks an
-        #                         unattended worker. Combined with the
-        #                         stdin=DEVNULL spawn in agent_runner, the
-        #                         CLI cannot block on user input.
-        #   --skip-trust          Skips the "is this folder trusted?" gate.
-        #                         DevServer runs Gemini in throwaway temp dirs
-        #                         (system LLM) and fresh worktrees (agent tasks),
-        #                         neither of which is in Gemini's trusted-folders
-        #                         list. Without this flag the CLI silently
-        #                         downgrades --approval-mode yolo back to
-        #                         "default" ("Approval mode overridden to
-        #                         'default' because the current folder is not
-        #                         trusted") and then exits 55 demanding an
-        #                         interactive trust prompt no headless worker
-        #                         can answer.
+        # AUTONOMOUS / HEADLESS — these flags are mandatory. Do not remove:
+        #   -p <prompt>                     non-interactive print mode (else a TUI).
+        #   --dangerously-skip-permissions  auto-approve every tool call; without
+        #                                   it the agent deadlocks waiting for a
+        #                                   confirmation no headless worker can give.
+        #   --print-timeout                 raised above the default 5m so long
+        #                                   agent runs aren't cut off internally.
         #
-        # max_turns: Gemini CLI has no flag for this — agent_runner._run_agent
-        #   writes ``<worktree>/.gemini/settings.json`` with ``model.maxSessionTurns``
-        #   before spawning, which Gemini reads from cwd.
-        #
-        # allowed_tools: deliberately ignored. The repo's ``claude_allowed_tools``
-        #   column stores Claude tool names (Read, Edit, Bash, …) which don't
-        #   exist in Gemini's tool registry. Passing them via ``--allowed-tools``
-        #   restricts the agent to a fictional set, so it can't call Gemini's
-        #   real ``shell`` / ``write_file`` tools and burns through its turn
-        #   budget retrying with the wrong names.
+        # session_id: ``agy`` print mode emits no conversation ID to capture, so
+        #   each invocation runs fresh (resume is interactive-only). Same as Codex.
+        # max_turns / allowed_tools: ``agy`` has no equivalent flags — ignored.
         cmd = [
-            self.cli_bin, "-p", prompt,
+            self.bin_argv0(), "-p", prompt,
             "--model", model,
-            "--output-format", "json",
-            "--approval-mode", "yolo",
-            "--skip-trust",
+            "--dangerously-skip-permissions",
+            "--print-timeout", self._PRINT_TIMEOUT,
         ]
-        if session_id:
-            cmd.extend(["--resume", session_id])
         return cmd
 
     def is_rate_limit_error(self, stdout: str, stderr: str, exit_code: int) -> bool:
@@ -471,36 +551,17 @@ class GeminiBackend(AgentBackend):
         )
 
     def parse_output(self, raw_output: str, prior_session_id: str | None) -> AgentResult:
-        res = AgentResult(
+        """``agy`` print mode emits the assistant's reply as plain text.
+
+        There is no JSON envelope (no ``--output-format`` in 1.0.10), so the
+        whole stdout *is* the result. Cost is 0 (subscription/OAuth bills
+        flat) and turn count is unavailable.
+        """
+        return AgentResult(
             raw_output=raw_output,
+            result=(raw_output or "").strip(),
             session_id=prior_session_id,
         )
-        try:
-            # Gemini CLI might output text like "YOLO mode is enabled..." before the JSON.
-            json_start = raw_output.find("{")
-            if json_start == -1:
-                raise ValueError("No JSON object found in output")
-            
-            data = json.loads(raw_output[json_start:])
-            
-            response_val = data.get("response", "")
-            if isinstance(response_val, dict):
-                res.result = response_val.get("text", "") or ""
-            else:
-                res.result = response_val or data.get("result", "") or ""
-                
-            res.num_turns = int(data.get("turns", 0) or 0)
-            res.session_id = data.get("session_id", prior_session_id) or prior_session_id
-            res.subtype = data.get("subtype", "") or ""
-            
-            if "error" in data:
-                err = data["error"]
-                res.error = err.get("message") if isinstance(err, dict) else str(err)
-                
-        except (json.JSONDecodeError, TypeError, ValueError):
-            res.result = raw_output
-            logger.warning("Gemini output was not valid JSON, using raw text")
-        return res
 
 
 # ── OpenAI — Codex CLI ──────────────────────────────────────────────────────
@@ -541,6 +602,7 @@ class OpenAIBackend(AgentBackend):
     vendor = "openai"
     label = "OpenAI"
     cli_bin = "codex"
+    bin_setting = "codex_bin"
     install_hint = "npm install -g @openai/codex"
     # Codex CLI reads OPENAI_API_KEY. In 'max' mode we strip it so the
     # CLI falls back to the ChatGPT-Plus OAuth session from ``codex login``.
@@ -556,7 +618,7 @@ class OpenAIBackend(AgentBackend):
         max_turns: int | None,  # noqa: ARG002 — codex has no --max-turns
     ) -> list[str]:
         cmd: list[str] = [
-            self.cli_bin, "exec",
+            self.bin_argv0(), "exec",
             "--json",                      # JSONL event stream on stdout
             "--skip-git-repo-check",       # worktrees are valid repos but already on a branch
             "--full-auto",                 # workspace-write sandbox + no approval prompts
@@ -789,7 +851,7 @@ class GLMBackend(ClaudeBackend):
 
 _BACKENDS: dict[str, AgentBackend] = {
     "anthropic": ClaudeBackend(),
-    "google":    GeminiBackend(),
+    "google":    AntigravityBackend(),
     "openai":    OpenAIBackend(),
     "glm":       GLMBackend(),
 }

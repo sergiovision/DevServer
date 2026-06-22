@@ -5,7 +5,6 @@ One persistent worktree per repo. Tasks for the same repo run consecutively
 to the default branch and checks out a fresh task branch.
 """
 
-import asyncio
 import logging
 import os
 from urllib.parse import urlsplit
@@ -13,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from config import settings
+from services import proc as proc_util
 
 logger = logging.getLogger(__name__)
 
@@ -69,15 +69,8 @@ async def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
     env = {**os.environ}
     if settings.git_ssl_no_verify:
         env["GIT_SSL_NO_VERIFY"] = "true"
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-    )
-    stdout, stderr = await proc.communicate()
-    return proc.returncode, stdout.decode(), stderr.decode()
+    rc, stdout, stderr = await proc_util.run(cmd, cwd=cwd, env=env)
+    return rc, stdout.decode(), stderr.decode()
 
 
 def _auth_url(clone_url: str, token: str, provider: str = "gitea") -> str:

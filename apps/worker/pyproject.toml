@@ -15,8 +15,6 @@ dependencies = [
     # hardcode the 0.x table layout/status enum, so a major bump breaks the queue.
     "pgqueuer[asyncpg]>=0.26.3,<1.0",
     "httpx>=0.28.1",
-    # Ed25519 verification of capitaltools-issued Pro license tokens
-    # (services/pro/licensing). Harmless in the free edition.
     "cryptography>=43",
     "pgvector>=0.4.2",
     # Local, CPU/ONNX text embeddings for semantic memory recall — replaces
@@ -30,6 +28,15 @@ test = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.4",
     "httpx>=0.28.1",
+]
+# Governance-grade OpenTelemetry export (opt-in). Kept out of the default
+# install so deployments that don't use OTEL stay lean; services/telemetry.py
+# no-ops gracefully when these are absent. Enable with:
+#   uv sync --extra otel   (and set OTEL_EXPORTER_OTLP_ENDPOINT)
+otel = [
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
 [project.scripts]

@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
-import { existsSync } from 'fs';
+import os from 'os';
+import { existsSync, openSync } from 'fs';
 import { query } from '@/lib/db';
 
 const execAsync = promisify(exec);
 
 import { WORKER_URL } from '@/lib/worker-url';
+
+const IS_WIN = process.platform === 'win32';
 
 // Resolve the worker directory from env first, then fall back to a path
 // derived from DEVSERVER_ROOT, then to a path relative to the Next.js cwd
@@ -19,8 +22,12 @@ const WORKER_DIR =
   (process.env.DEVSERVER_ROOT
     ? path.join(process.env.DEVSERVER_ROOT, 'apps', 'worker')
     : path.resolve(process.cwd(), '..', 'worker'));
-const WORKER_LOG = process.env.WORKER_LOG || '/tmp/worker.log';
-const WORKER_UVICORN = path.join(WORKER_DIR, '.venv', 'bin', 'uvicorn');
+const WORKER_LOG =
+  process.env.WORKER_LOG || (IS_WIN ? path.join(os.tmpdir(), 'worker.log') : '/tmp/worker.log');
+// venv layout differs by OS: POSIX `.venv/bin/uvicorn`, Windows `.venv\Scripts\uvicorn.exe`.
+const WORKER_UVICORN = IS_WIN
+  ? path.join(WORKER_DIR, '.venv', 'Scripts', 'uvicorn.exe')
+  : path.join(WORKER_DIR, '.venv', 'bin', 'uvicorn');
 
 async function isWorkerRunning(): Promise<boolean> {
   try {
@@ -59,14 +66,64 @@ async function cleanupStaleQueue(): Promise<{ resetTasks: number; locksReleased:
   return { resetTasks, locksReleased };
 }
 
+// PowerShell snippet that finds the uvicorn worker by command line (Windows has
+// no pgrep, and tasklist can't filter on the command line).
+const WIN_FIND_WORKER =
+  `Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='uvicorn.exe'" ` +
+  `| Where-Object { $_.CommandLine -like '*uvicorn*src.main*' }`;
+
 async function getWorkerPid(): Promise<string | null> {
   try {
+    if (IS_WIN) {
+      const { stdout } = await execAsync(
+        `powershell -NoProfile -Command "${WIN_FIND_WORKER} | Select-Object -First 1 -ExpandProperty ProcessId"`,
+      );
+      const pid = stdout.trim();
+      return pid || null;
+    }
     const { stdout } = await execAsync(`pgrep -f "uvicorn src.main" | head -n 1`);
     const pid = stdout.trim();
     return pid || null;
   } catch {
     return null;
   }
+}
+
+// Kill the running worker (no-op if none). Never throws.
+async function killWorker(): Promise<void> {
+  if (IS_WIN) {
+    await execAsync(
+      `powershell -NoProfile -Command "${WIN_FIND_WORKER} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"`,
+    ).catch(() => {});
+    return;
+  }
+  await execAsync(`pkill -f "uvicorn src.main" 2>/dev/null; true`).catch(() => {});
+}
+
+// Start a detached worker that survives the Next.js parent process. Returns its PID.
+async function startWorker(): Promise<string> {
+  if (IS_WIN) {
+    // Detached spawn with stdout/stderr appended to the log file — the Windows
+    // equivalent of `nohup … >> log 2>&1 &`.
+    const out = openSync(WORKER_LOG, 'a');
+    const child = spawn(
+      WORKER_UVICORN,
+      ['src.main:app', '--host', '0.0.0.0', '--port', '8000'],
+      {
+        cwd: WORKER_DIR,
+        env: { ...process.env, PYTHONPATH: 'src' },
+        detached: true,
+        stdio: ['ignore', out, out],
+        windowsHide: true,
+      },
+    );
+    child.unref();
+    return String(child.pid ?? '');
+  }
+  // POSIX: nohup + stdin from /dev/null so it survives HMR reloads / dev-server restarts.
+  const cmd = `cd ${WORKER_DIR} && find src -name "*.pyc" -delete 2>/dev/null; nohup env PYTHONPATH=src ${WORKER_UVICORN} src.main:app --host 0.0.0.0 --port 8000 < /dev/null >> ${WORKER_LOG} 2>&1 & echo $!`;
+  const { stdout } = await execAsync(cmd);
+  return stdout.trim();
 }
 
 export async function GET() {
@@ -114,14 +171,12 @@ export async function POST(request: NextRequest) {
       const cleanup = await cleanupStaleQueue();
       console.log('Queue cleanup:', cleanup);
 
-      // 2. Kill existing worker
-      await execAsync(`pkill -f "uvicorn src.main" 2>/dev/null; sleep 1; true`).catch(() => {});
+      // 2. Kill existing worker, then give it a moment to release the port.
+      await killWorker();
+      await new Promise((r) => setTimeout(r, 1000));
 
-      // 3. Start new worker — nohup + stdin from /dev/null so it survives the
-      //    Next.js parent (HMR reload, dev-server restart, etc.).
-      const cmd = `cd ${WORKER_DIR} && find src -name "*.pyc" -delete 2>/dev/null; nohup env PYTHONPATH=src ${WORKER_UVICORN} src.main:app --host 0.0.0.0 --port 8000 < /dev/null >> ${WORKER_LOG} 2>&1 & echo $!`;
-      const { stdout } = await execAsync(cmd);
-      const pid = stdout.trim();
+      // 3. Start new worker, detached so it survives the Next.js parent.
+      const pid = await startWorker();
 
       // 4. Wait briefly then verify it came up
       await new Promise((r) => setTimeout(r, 2500));
@@ -137,7 +192,7 @@ export async function POST(request: NextRequest) {
   if (action === 'stop') {
     try {
       const cleanup = await cleanupStaleQueue();
-      await execAsync(`pkill -f "uvicorn src.main" 2>/dev/null; true`);
+      await killWorker();
       return NextResponse.json({ success: true, cleanup });
     } catch (err) {
       return NextResponse.json({ success: false, error: String(err) }, { status: 500 });

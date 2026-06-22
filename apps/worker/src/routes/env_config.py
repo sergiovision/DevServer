@@ -63,9 +63,9 @@ ENV_SCHEMA: list[dict] = [
     {"key": "CODEX_BIN", "group": "OpenAI", "label": "Codex Binary", "type": "string", "secret": False},
     {"key": "OPENAI_BASE_URL", "group": "OpenAI", "label": "Base URL (Azure Foundry / proxy)", "type": "url", "secret": False},
     {"key": "OPENAI_API_VERSION", "group": "OpenAI", "label": "API Version (Azure only)", "type": "string", "secret": False},
-    # Google
-    {"key": "GEMINI_API_KEY", "group": "Google", "label": "API Key", "type": "string", "secret": True},
-    {"key": "GEMINI_BIN", "group": "Google", "label": "Gemini Binary", "type": "string", "secret": False},
+    # Google (Antigravity CLI — Gemini CLI retired 2026-06-18)
+    {"key": "GEMINI_API_KEY", "group": "Google", "label": "Gemini API Key (also used by Antigravity in API mode)", "type": "string", "secret": True},
+    {"key": "ANTIGRAVITY_API_KEY", "group": "Google", "label": "Antigravity API Key (optional; defaults to Gemini key / OAuth)", "type": "string", "secret": True},
     # GLM / Zhipu
     {"key": "GLM_API_KEY", "group": "GLM / Zhipu", "label": "API Key", "type": "string", "secret": True},
     # Web UI

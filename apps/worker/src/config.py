@@ -37,6 +37,10 @@ class Settings(BaseSettings):
 
     # Claude / Anthropic (primary backend)
     anthropic_api_key: str = ""
+    # CLI binary name (resolved on PATH) or an absolute path to it. On Windows
+    # the npm shim is ``claude.CMD``; set this to its full path (e.g.
+    # ``C:\Users\you\AppData\Roaming\npm\claude.CMD``) when the worker process
+    # does not have the npm global bin dir on PATH.
     claude_bin: str = "claude"
     claude_max_timeout: int = 3600
 
@@ -54,8 +58,12 @@ class Settings(BaseSettings):
     # Only needed for Azure OpenAI / Azure AI Foundry — the API version
     # query param Azure requires (e.g. "2024-10-01-preview").
     openai_api_version: str = ""
-    gemini_api_key: str = ""
-    gemini_bin: str = "gemini"
+    gemini_api_key: str = ""  # Gemini *API* (system-LLM HTTP path) — still live
+    # The Gemini CLI was retired 2026-06-18; the Google agent backend now
+    # drives the Antigravity CLI, always invoked as ``agy`` (hardcoded in
+    # AntigravityBackend, like every other backend's binary). Kept only so the
+    # legacy GEMINI_BIN setting still parses.
+    gemini_bin: str = "agy"
     glm_api_key: str = ""  # Zhipu AI (open.bigmodel.cn)
     # glm_bin is not needed — the ``glm`` launcher is always called ``glm``
 
@@ -106,7 +114,7 @@ class Settings(BaseSettings):
 
     @property
     def bare_repo_dir(self) -> str:
-        return f"{self.worktree_dir}/.bare"
+        return os.path.join(self.worktree_dir, ".bare")
 
 
 settings = Settings()

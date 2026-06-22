@@ -23,6 +23,7 @@ from routes.enhanced_health import router as enhanced_health_router
 from routes.internal import router as internal_router
 from routes.env_config import router as env_config_router
 from services import embeddings
+from services import telemetry
 from services.queue_consumer import start_consumer, stop_consumer
 from services.scheduler import start_scheduler, stop_scheduler
 from services.telegram_polling import start_polling, stop_polling
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
     install_redaction()
 
     logger.info("DevServer worker starting...")
+    telemetry.init_telemetry()
     await init_license()
     await start_consumer()
     await resume_if_active()

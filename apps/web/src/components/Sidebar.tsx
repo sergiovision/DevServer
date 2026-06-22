@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import CIcon from '@coreui/icons-react';
@@ -44,6 +44,27 @@ const navItems = [
 
 export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
   const pathname = usePathname();
+  // "Needs you" pill: tasks awaiting a human decision (blocked = plan
+  // approval / budget / preflight). Polled so the sidebar is a pull surface.
+  const [needsYou, setNeedsYou] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const res = await fetch('/api/tasks?status=blocked&limit=200');
+        if (res.ok && active) {
+          const rows = await res.json();
+          setNeedsYou(Array.isArray(rows) ? rows.length : 0);
+        }
+      } catch {
+        // leave last-known count on transient failure
+      }
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => { active = false; clearInterval(id); };
+  }, []);
 
   // Close drawer on Escape when open on mobile
   useEffect(() => {
@@ -106,6 +127,14 @@ export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
                   >
                     <CIcon customClassName="app-sidebar-nav-icon" icon={item.icon} />
                     <span>{item.name}</span>
+                    {item.name === 'Tasks' && needsYou > 0 && (
+                      <span
+                        className="badge rounded-pill bg-warning text-dark ms-auto"
+                        title={`${needsYou} task(s) awaiting your action`}
+                      >
+                        {needsYou}
+                      </span>
+                    )}
                   </Link>
                 </li>
               );
