@@ -45,12 +45,22 @@ import logging
 import os
 import re
 import shutil
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+#: Windows needs two CLI-spawning workarounds that are unnecessary — and that
+#: we deliberately keep *off* — on macOS / Linux: delivering the prompt on
+#: stdin (cmd.exe's ~8191-char command-line limit) and resolving the npm
+#: ``.CMD`` shim to a full path (``CreateProcess`` ignores ``PATHEXT``). Both
+#: are gated on this flag so the POSIX spawn path stays exactly as it was
+#: before Windows support landed: prompt passed as an argv element, binary
+#: spawned by its bare name via the OS ``PATH`` lookup.
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _running_as_root() -> bool:
@@ -175,16 +185,26 @@ class AgentBackend(ABC):
     #: One-line shell command that installs this CLI. Shown to the operator
     #: when the binary is missing so the fix is copy-pasteable.
     install_hint: str = ""
-    #: When True, the prompt is delivered on the CLI's stdin rather than as an
-    #: argv element, and ``build_command`` must NOT embed the prompt. Required
-    #: on Windows for large prompts: the npm ``.CMD`` shim runs under cmd.exe,
-    #: whose ~8191-char command-line limit a repo-map+memory prompt blows
-    #: ("The command line is too long." → exit 1). Harmless cross-platform.
+    #: When True, this CLI *can* read its prompt from stdin in print mode, so
+    #: on Windows we deliver it that way to dodge cmd.exe's ~8191-char
+    #: command-line limit (a repo-map+memory prompt blows it via the npm
+    #: ``.CMD`` shim → "The command line is too long." → exit 1). On
+    #: macOS / Linux the prompt is always passed as an argv element instead —
+    #: see ``_deliver_prompt_on_stdin`` — preserving the original behaviour.
     prompt_on_stdin: bool = False
+
+    def _deliver_prompt_on_stdin(self) -> bool:
+        """True only when the prompt must go on stdin (Windows + capable CLI).
+
+        ``build_command`` consults this to decide whether to embed the prompt
+        as an argv element, and the spawn site calls :meth:`stdin_payload`
+        which agrees with it. POSIX → always False → argv delivery.
+        """
+        return self.prompt_on_stdin and _IS_WINDOWS
 
     def stdin_payload(self, prompt: str) -> bytes | None:
         """Bytes to feed the CLI on stdin, or ``None`` to pass via argv."""
-        if self.prompt_on_stdin:
+        if self._deliver_prompt_on_stdin():
             return prompt.encode("utf-8")
         return None
 
@@ -213,9 +233,18 @@ class AgentBackend(ABC):
         return shutil.which(name)
 
     def bin_argv0(self) -> str:
-        """argv[0] for spawning — the resolved path when found, else the
-        configured name (so a later spawn failure still names the binary)."""
-        return self.resolve_bin() or self._configured_bin()
+        """argv[0] for spawning the CLI.
+
+        On macOS / Linux this is the bare configured name (``"claude"``), spawned
+        through the OS ``PATH`` lookup exactly as before Windows support landed.
+        On Windows we must spawn the *full* resolved path: ``CreateProcess``
+        does not apply ``PATHEXT``, so the bare name ``claude`` raises
+        ``FileNotFoundError`` even when ``claude.CMD`` is on ``PATH``. Falls
+        back to the configured name so a later spawn failure still names it.
+        """
+        if _IS_WINDOWS:
+            return self.resolve_bin() or self._configured_bin()
+        return self._configured_bin()
 
     def is_available(self) -> bool:
         """True if this vendor's CLI binary can be resolved to a runnable path."""
@@ -313,8 +342,9 @@ class ClaudeBackend(AgentBackend):
     bin_setting = "claude_bin"
     api_key_env = "ANTHROPIC_API_KEY"
     install_hint = "npm install -g @anthropic-ai/claude-code"
-    # Deliver the prompt on stdin — see AgentBackend.prompt_on_stdin. The CLI
-    # reads the prompt from stdin in ``-p`` print mode (default text input).
+    # The CLI can read its prompt from stdin in ``-p`` print mode. We only use
+    # that on Windows (cmd.exe command-line limit); POSIX passes it via argv.
+    # See AgentBackend.prompt_on_stdin / _deliver_prompt_on_stdin.
     prompt_on_stdin = True
 
     def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
@@ -350,11 +380,14 @@ class ClaudeBackend(AgentBackend):
         session_id: str | None,
         max_turns: int | None,
     ) -> list[str]:
-        # The prompt is delivered on stdin (prompt_on_stdin), so ``-p`` is
-        # given with no positional prompt; ``prompt`` is intentionally unused
-        # here. This avoids cmd.exe's command-line length limit on Windows.
-        cmd = [
-            self.bin_argv0(), "-p",
+        # POSIX (macOS/Linux): prompt is the positional after ``-p`` — the
+        # original, proven delivery. Windows: prompt goes on stdin (see
+        # _deliver_prompt_on_stdin) to avoid cmd.exe's command-line limit, so
+        # ``-p`` is given with no positional and the spawn site supplies stdin.
+        cmd = [self.bin_argv0(), "-p"]
+        if not self._deliver_prompt_on_stdin():
+            cmd.append(prompt)
+        cmd += [
             "--dangerously-skip-permissions",
             "--output-format", "json",
             "--model", model,
