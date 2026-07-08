@@ -13,7 +13,6 @@ Supported commands:
   /pause
   /resume
   /mode autonomous|interactive
-  /digest  — trigger daily digest now (Pro)
   /budget TASK-KEY — show budget status for a task (Pro)
   /help
 
@@ -39,7 +38,7 @@ from services.telegram import tg_send
 
 # Pro Telegram: conditionally import for callback handling and rich commands
 try:
-    from services.pro.telegram_pro import handle_plan_callback, send_daily_digest
+    from services.pro.telegram_pro import handle_plan_callback
     _has_pro_telegram = True
 except ImportError:
     _has_pro_telegram = False
@@ -247,14 +246,6 @@ async def _cmd_mode(mode_arg: str) -> str:
     return f"Mode set to `{mode}`"
 
 
-async def _cmd_digest() -> str:
-    if not _has_pro_telegram:
-        return "Daily digest requires DevServer Pro."
-    async with async_session() as db:
-        result = await send_daily_digest(db)
-    return result
-
-
 async def _cmd_budget(task_key: str) -> str:
     async with async_session() as db:
         res = await db.execute(select(Task).where(Task.task_key == task_key))
@@ -307,7 +298,6 @@ _HELP = (
     "/pause — pause queue\n"
     "/resume — resume queue\n"
     "/mode autonomous|interactive — set mode\n"
-    "/digest — send daily digest now\n"
     "/budget TASK\\-KEY — show task budget status"
 )
 
@@ -337,8 +327,6 @@ async def _dispatch(cmd: str, args: list[str]) -> str | None:
         return await _cmd_resume()
     if cmd == "/mode":
         return await _cmd_mode(args[0]) if args else "Usage: /mode autonomous|interactive"
-    if cmd == "/digest":
-        return await _cmd_digest()
     if cmd == "/budget":
         return await _cmd_budget(args[0]) if args else "Usage: /budget TASK-KEY"
     if cmd == "/help":

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { CButton, CSpinner } from '@coreui/react-pro';
 import { IdeaTree, type IdeaNode } from './IdeaTree';
 import { IdeaEditor } from './IdeaEditor';
+import { ImportModal } from './ImportModal';
 
 export type NodeType = 'goal' | 'subtask' | 'leaf' | null;
 export type NodeStatus =
@@ -60,6 +61,7 @@ export function IdeasView() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [convertingPlan, setConvertingPlan] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +84,74 @@ export function IdeasView() {
   );
 
   const tree = useMemo(() => (ideas ? buildTree(ideas) : []), [ideas]);
+
+  // Set of descendant ids for a given idea (used to block cyclic drops).
+  const descendantsOf = useCallback(
+    (rootId: number): Set<number> => {
+      const out = new Set<number>();
+      if (!ideas) return out;
+      const childrenBy = new Map<number, number[]>();
+      ideas.forEach((i) => {
+        if (i.parent_id != null) {
+          const arr = childrenBy.get(i.parent_id) ?? [];
+          arr.push(i.id);
+          childrenBy.set(i.parent_id, arr);
+        }
+      });
+      const stack = [rootId];
+      while (stack.length) {
+        const id = stack.pop()!;
+        for (const child of childrenBy.get(id) ?? []) {
+          if (!out.has(child)) {
+            out.add(child);
+            stack.push(child);
+          }
+        }
+      }
+      return out;
+    },
+    [ideas],
+  );
+
+  // Is moving `draggedId` under `targetId` (null = root) a legal move?
+  const canReparent = useCallback(
+    (draggedId: number, targetId: number | null): boolean => {
+      if (draggedId === targetId) return false;
+      const dragged = ideas?.find((i) => i.id === draggedId);
+      if (!dragged) return false;
+      // No-op: already has this parent.
+      if ((dragged.parent_id ?? null) === (targetId ?? null)) return false;
+      // Cannot drop onto one of its own descendants (would create a cycle).
+      if (targetId != null && descendantsOf(draggedId).has(targetId)) return false;
+      return true;
+    },
+    [ideas, descendantsOf],
+  );
+
+  const reparent = useCallback(
+    async (draggedId: number, targetId: number | null) => {
+      if (!ideas || !canReparent(draggedId, targetId)) return;
+      const prev = ideas;
+      // Optimistic update so the tree reflects the move without a full reload.
+      setIdeas((cur) =>
+        cur
+          ? cur.map((i) => (i.id === draggedId ? { ...i, parent_id: targetId } : i))
+          : cur,
+      );
+      try {
+        const res = await fetch(`/api/ideas/${draggedId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ parent_id: targetId }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      } catch {
+        // Roll back on failure.
+        setIdeas(prev);
+      }
+    },
+    [ideas, canReparent],
+  );
 
   const createNode = useCallback(
     async (kind: 'folder' | 'idea') => {
@@ -237,9 +307,19 @@ export function IdeasView() {
           >
             Delete
           </CButton>
+          <CButton color="secondary" variant="outline" onClick={() => setImportOpen(true)}>
+            Import
+          </CButton>
         </div>
         <h2 className="mb-0">Ideas</h2>
       </div>
+
+      <ImportModal
+        visible={importOpen}
+        onClose={() => setImportOpen(false)}
+        defaultTarget="idea"
+        onImported={load}
+      />
 
       {error && (
         <div className="alert alert-danger" role="alert">
@@ -264,6 +344,8 @@ export function IdeasView() {
                   nodes={tree}
                   selectedId={selectedId}
                   onSelect={setSelectedId}
+                  onReparent={reparent}
+                  canReparent={canReparent}
                 />
               )}
             </div>

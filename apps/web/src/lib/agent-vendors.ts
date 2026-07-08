@@ -30,7 +30,9 @@ export const AGENT_VENDORS: VendorEntry[] = [
     id: 'anthropic',
     label: 'Anthropic',
     models: [
-      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8 (most capable)' },
+      { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5 (default, Max)' },
+      { id: 'claude-fable-5',               label: 'Claude Fable 5 (most capable, premium)' },
+      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8' },
       { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7' },
       { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6' },
       { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6' },
@@ -45,7 +47,8 @@ export const AGENT_VENDORS: VendorEntry[] = [
     // Google retired the Gemini CLI (2026-06-18); the worker now drives the
     // Antigravity CLI (`agy`). Slugs verified against agy 1.0.10.
     models: [
-      { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro (strong coding, default)' },
+      { id: 'gemini-3.5-pro',   label: 'Gemini 3.5 Pro (frontier intelligence + action, default)' },
+      { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro (strong coding)' },
       { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (fast, cheap)' },
     ],
   },
@@ -54,6 +57,7 @@ export const AGENT_VENDORS: VendorEntry[] = [
     label: 'OpenAI',
     models: [
       { id: 'gpt-5.5-codex', label: 'GPT-5.5 Codex (latest frontier, 1M ctx)' },
+      { id: 'gpt-5.4',       label: 'GPT-5.4 (reasoning + coding, integrates Codex)' },
       { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex (heavy reasoning, agentic)' },
       { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini (Azure Foundry test)' },
       { id: 'gpt-5.2',       label: 'GPT-5.2 (reasoning)' },

@@ -16,18 +16,16 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from typing import Awaitable, Callable, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import text
 
 from config import settings
 from models.base import async_session
-from models.daily_stat import DailyStat
 from models.task import Task
 from services.telegram import tg_send
 
-# Pro features: rich daily digest replaces the basic one when available.
+# Pro features: memory archive when available.
 try:
     from services.pro import hooks as pro
     _has_pro = True
@@ -148,56 +146,6 @@ async def _run_stale_task_recovery() -> str:
         return f"Recovered {len(recovered)} stale tasks"
     return "No stale tasks"
 
-
-async def _run_daily_report() -> str:
-    # Pro daily digest: richer formatting with 7-day trends and sparklines
-    if _has_pro:
-        async with async_session() as session:
-            result = await pro.tg_send_daily_digest(db=session)
-        if result:
-            deleted_files = await _cleanup_old_logs()
-            return f"{result} | cleaned {deleted_files} old logs"
-
-    # Free-tier daily report — basic stats
-    yesterday = (datetime.utcnow() - timedelta(days=1)).date()
-
-    async with async_session() as session:
-        result = await session.execute(
-            select(DailyStat).where(DailyStat.date == yesterday)
-        )
-        daily_stat = result.scalar_one_or_none()
-
-        pending_result = await session.execute(
-            select(func.count(Task.id)).where(Task.status == "pending")
-        )
-        pending_count = pending_result.scalar()
-
-    if daily_stat:
-        completed = daily_stat.completed
-        failed = daily_stat.failed
-        cost = daily_stat.cost_usd
-        turns = daily_stat.total_turns
-        duration_ms = daily_stat.total_duration_ms
-        avg_duration = duration_ms / max(completed + failed, 1) / 1000 / 60
-    else:
-        completed = failed = turns = 0
-        cost = Decimal("0.0000")
-        avg_duration = 0
-
-    deleted_files = await _cleanup_old_logs()
-
-    message = (
-        f"\U0001f4ca *Daily Report* - {yesterday.strftime('%Y-%m-%d')}\n\n"
-        f"\u2705 Completed: {completed}\n"
-        f"\u274c Failed: {failed}\n"
-        f"\U0001f4b0 Cost: ${cost:.4f}\n"
-        f"\U0001f504 Turns: {turns}\n"
-        f"\u23f1\ufe0f Avg Duration: {avg_duration:.1f}m\n\n"
-        f"\U0001f4cb Pending Backlog: {pending_count}\n"
-        f"\U0001f9f9 Cleaned {deleted_files} old log files"
-    )
-    await tg_send(message)
-    return f"Sent report ({completed} done, {failed} failed)"
 
 
 async def _run_memory_archive() -> str:
@@ -390,16 +338,6 @@ async def start_scheduler() -> list[asyncio.Task]:
             next_time=time.time() + 15 * 60,
         ),
         _run_stale_task_recovery,
-    )
-    _register(
-        Job(
-            name="daily_report",
-            group="devserver",
-            schedule="daily 06:00 UTC",
-            daily_hour_utc=6,
-            next_time=_compute_next_daily(6),
-        ),
-        _run_daily_report,
     )
     if _has_pro:
         _register(

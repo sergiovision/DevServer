@@ -34,6 +34,11 @@ class Repo(Base):
     # gitea_url — the "Local Root Folder"): no clone, no worktree copy, no
     # push, no PR; the agent runs git directly inside the folder.
     provider: Mapped[str] = mapped_column(String(16), default="gitea", nullable=False)
+    # Per-repo Confluence connection overrides (external import source).
+    # Blank = fall back to the global CONFLUENCE_* env configuration.
+    confluence_url: Mapped[str] = mapped_column(String(512), default="")
+    confluence_username: Mapped[str] = mapped_column(String(256), default="")
+    confluence_token: Mapped[str] = mapped_column(String(512), default="")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

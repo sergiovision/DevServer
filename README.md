@@ -49,7 +49,7 @@ One platform. Every model. **Ride your AI at Ferrari style — and Ferrari speed
 
 Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted orchestration platform** for people who already run their own infrastructure and want agents to work on their terms.
 
-- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Opus 4.8** and **Gemini 3.1 Pro**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
+- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Sonnet 5**, **Claude Fable 5**, and **Gemini 3.5 Pro**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
 - **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (flat-rate subscription). Subscription mode works across vendors — Claude **Max**, ChatGPT **Plus** (Codex), and Google **AI Pro / Ultra** (via the Antigravity CLI) — by falling back to the CLI's own OAuth login instead of an API key.
 - **Outcome forecast.** Before a task runs, see a success-probability and expected duration/turns estimate from your repo's history. Free uses a repo-level baseline; Pro upgrades it to similar-task matching via pgvector.
 - **Error-class-aware retries.** Failures are classified by 20+ regex rules (import errors, TS compile errors, test failures, merge conflicts, ...) and the next attempt receives a surgical remediation hint. Recurring hard errors *escalate* instead of burning retries.
@@ -82,7 +82,7 @@ The landing page. Top: worker status bar with online/offline indicator, queue de
 
 <a href="assets/tasks.png"><img src="assets/tasks.png" alt="DevServer tasks list — priority colour badges, task key, title, repo, status badge, turns count, created date, items per page selector" width="100%" /></a>
 
-The full task backlog. Columns: colour-coded priority badge, task key, title, repo, status badge, turns used, and created date. Filter by status (`pending` / `queued` / `running` / `verifying` / `test` / `failed` / `blocked` / `cancelled`), toggle retired tasks, and paginate with items-per-page selector. Each row links to the task detail view. The **+ New Task** button opens the creation form with an optional template picker.
+The full task backlog. Columns: colour-coded priority badge, task key, title, repo, status badge, turns used, and created date. Filter by status (`pending` / `queued` / `running` / `verifying` / `test` / `failed` / `blocked` / `cancelled`), toggle retired tasks, and paginate with items-per-page selector. Each row links to the task detail view. The **+ New Task** button opens the creation form with an optional template picker. An **Import** button pulls Confluence pages straight into the backlog (see *Import from Confluence* below), and grid rows carry checkboxes for **bulk retire** — select any number of tasks across repo groups and retire them in one click.
 
 A **Grid ⇄ Board** toggle switches the same data between the table and a **Pipeline Board** — a kanban projection with lifecycle-native lanes (**Queued / Active / Needs You / Shipped / Stalled**). Cards carry a vendor badge, priority flag, reality-score chip, and inline actions (Enqueue / Cancel / Continue); lanes transition live over the websocket with no polling, and filters cover repo / vendor / "needs you only". A **"Needs You"** count pill on the sidebar surfaces tasks awaiting a human decision.
 
@@ -119,9 +119,22 @@ Create reusable templates with pre-filled descriptions, acceptance criteria, age
 
 <a href="assets/ideas.png"><img src="assets/ideas.png" alt="DevServer ideas tree — folders and idea leaves, convertible to tasks" width="100%" /></a>
 
-A lightweight brainstorm space. Folders contain other folders or **idea leaves** (markdown content). When an idea is ready, click *Convert to Task* and it lands in the tasks backlog with the description pre-populated. Idea → task linkage is preserved in the database.
+A lightweight brainstorm space. Folders contain other folders or **idea leaves** (markdown content). Reorganise the tree by **drag-and-drop** — drop an idea onto a folder (or the empty root area) to reparent it, with cycle-safe validation and optimistic updates. When an idea is ready, click *Convert to Task* and it lands in the tasks backlog with the description pre-populated. Idea → task linkage is preserved in the database. An **Import** button brings Confluence pages in as ideas.
 
 📂 [`apps/web/src/app/ideas/page.tsx`](apps/web/src/app/ideas/page.tsx) · [`apps/web/src/components/IdeasView.tsx`](apps/web/src/components/IdeasView.tsx)
+
+---
+
+### Import from Confluence — pages become Tasks or Ideas
+
+A shared **Import** dialog on the Tasks and Ideas pages pulls documentation straight out of Confluence: pick the source, search by text or raw CQL (with an optional Space filter), tick the pages you want, preview the converted Markdown, then map them to **Tasks** (choose repo, priority, optional auto-enqueue) or **Ideas** (lands at the tree root).
+
+- **Cloud and Data Center/Server** are both supported — email + API token (Basic auth) for Cloud, Personal Access Token (Bearer) for DC; the `/wiki` suffix is added automatically for `*.atlassian.net`.
+- **Global or per-repo credentials** — configure once in Settings (stored in `.env`, never in the database), or give a repo its own Confluence connection override.
+- **Idempotent re-imports** — an `external_imports` ledger maps each page to its target; unchanged versions are skipped, changed ones update the existing task/idea in place. Never duplicated.
+- **Storage-format → Markdown** conversion (headings, lists, code macros, tables, links) with zero new dependencies, and the framework is pluggable — Confluence is the first source adapter.
+
+📂 [`apps/web/src/components/ImportModal.tsx`](apps/web/src/components/ImportModal.tsx) · [`apps/worker/src/services/import_sources/`](apps/worker/src/services/import_sources/)
 
 ---
 
@@ -139,7 +152,7 @@ A real-time log viewer with two tabs — `worker.log` and `web.log` — polled e
 
 <a href="assets/settings.png"><img src="assets/settings.png" alt="DevServer settings page — max concurrency, queue paused toggle, auto-enqueue toggle, notifications toggle, system LLM vendor/model picker, and environment variables editor showing .env path, database connection, and API keys" width="100%" /></a>
 
-A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard.
+A single-page control panel for the worker's global behaviour. **General** card: max concurrency (1–10), queue-paused and auto-enqueue toggles, Telegram notification toggle, the **System LLM** vendor + model picker (used by Fill Task and DevPlan), and a **Memory & Reality Gate** row (abstain threshold, memory decay half-life, archive window, iterative-recall toggle — all default to off so behaviour is unchanged until you opt in). **Environment Variables** card: live view of the `.env` file path, database connection details (host, port, user, database), and masked API keys with a Show/Hide toggle — plus a **Run Setup** button to re-run the interactive `.env` wizard. A **Confluence** card configures the global external-import connection (base URL, username/email, API token or PAT) with a one-click **Ping** connectivity test; values are written to `.env` and hot-reloaded into the running worker.
 
 📂 [`apps/web/src/app/settings/page.tsx`](apps/web/src/app/settings/page.tsx) · [`apps/web/src/components/SettingsForm.tsx`](apps/web/src/components/SettingsForm.tsx)
 
@@ -243,16 +256,16 @@ DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers
 
 | Vendor | CLI Binary | Latest models | Status |
 |---|---|---|---|
-| `anthropic` | `claude` | **Claude Opus 4.8**, Sonnet 4.6, Haiku 4.5 | Production-tested |
-| `google` | `agy` | **Gemini 3.1 Pro**, Gemini 3.5 Flash (via the Antigravity CLI) | Verified (agy 1.0.10) |
-| `openai` | `codex` | GPT-5.x, Codex | Structurally complete |
+| `anthropic` | `claude` | **Claude Sonnet 5** (default), Fable 5, Opus 4.8, Haiku 4.5 | Production-tested |
+| `google` | `agy` | **Gemini 3.5 Pro** (default), Gemini 3.1 Pro, Gemini 3.5 Flash (via the Antigravity CLI) | Verified (agy 1.0.10) |
+| `openai` | `codex` | GPT-5.5 Codex, GPT-5.4, GPT-5.x | Structurally complete |
 | `glm` | `claude` | GLM-5.2 / 5.1 — runs the Claude CLI against Zhipu's Anthropic-compatible API | Production-tested |
 
 Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.
 
 > **Note — Google migrated to the Antigravity CLI.** Google retired the Gemini CLI on 2026-06-18 (`gemini` commands now return *410 Gone*). The Google backend now drives Google's replacement, the **Antigravity CLI** (`agy`), reusing the same Gemini API key and Google AI Pro/Ultra subscription. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`.
 
-**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** without per-token metering. For Google, sign in once with `agy` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.1-pro`. In `api` mode the worker reuses your existing `GEMINI_API_KEY` (bridged to `ANTIGRAVITY_API_KEY`).
+**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** without per-token metering. For Google, sign in once with `agy` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.5-pro`. In `api` mode the worker reuses your existing `GEMINI_API_KEY` (bridged to `ANTIGRAVITY_API_KEY`).
 
 📂 [`apps/worker/src/services/agent_backends.py`](apps/worker/src/services/agent_backends.py)
 
@@ -632,9 +645,10 @@ apps/
       PipelineBoard.tsx               → Kanban board view (Grid ⇄ Board on the Tasks page)
       RepoDiagramModal.tsx            → Mermaid architecture diagram modal
       TemplateList.tsx                → Template CRUD management
-      IdeasView.tsx                   → Hierarchical idea tree
+      IdeasView.tsx                   → Hierarchical idea tree (drag-and-drop reparenting)
+      ImportModal.tsx                 → Import from Confluence dialog (Tasks + Ideas)
       LogsView.tsx                    → Live log viewer
-      SettingsForm.tsx                → Global settings editor
+      SettingsForm.tsx                → Global settings editor (incl. Confluence connection)
     src/app/api/
       tasks/                          → Task CRUD + enqueue
       templates/                      → Template CRUD
@@ -654,10 +668,12 @@ apps/
       llm_client.py                   → Vendor-agnostic system LLM client
       verifier.py                     → Pre/build/test/lint runner
       git_ops.py                      → Git worktree management, Gitea/GitHub PRs, local-folder repos
+      queue_bridge.py                 → Worker → Next.js enqueue handoff (single queue producer)
+      import_sources/                 → Pluggable external-import adapters (Confluence)
     src/routes/
-      internal.py                     → Status, pause, cancel, generate-task, prediction
+      internal.py                     → Status, pause, cancel, generate-task, prediction, MCP task control
 database/
-  migrations/                         → Versioned SQL migrations (001–010)
+  migrations/                         → Versioned SQL migrations (002 adds the external-import ledger)
 config/
   .env.example                        → Sanitised environment template
 docker/
@@ -715,7 +731,7 @@ DevServer ships as two editions:
 | PR preflight (secret scan, allow-list, author check) | — | ✅ |
 | Patch export (`git format-patch` + `combined.mbox`) | — | ✅ |
 | Night cycle (autonomous overnight batch) | — | ✅ |
-| Rich Telegram (inline keyboards, daily digest) | — | ✅ |
+| Rich Telegram (inline keyboards) | — | ✅ |
 | Inter-task messaging bus + operator inbox (secret-screened) | — | ✅ |
 | Webhook triggers (Gitea/GitHub/Sentry/Grafana → task) | — | ✅ |
 | Hardened Docker Compose (resource limits, log rotation, security) | — | ✅ |

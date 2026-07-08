@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     # Obsidian
     obsidian_folder: str = ""  # Absolute path to Obsidian vault folder for plan exports
 
+    # Confluence (external import source). Global defaults — a repo can carry
+    # its own confluence_url/confluence_username/confluence_token overrides.
+    # Cloud: base URL like https://yourorg.atlassian.net (the /wiki suffix is
+    # added automatically) + account email + API token (Basic auth).
+    # Data Center/Server: base URL + a Personal Access Token with the
+    # username left blank (Bearer auth).
+    confluence_url: str = ""
+    confluence_username: str = ""
+    confluence_api_token: str = ""
+
     # PR Preflight
     preflight_ignore_patterns: str = ""  # comma-separated globs, e.g. "*.sqlite,*.sqlite3,data/**"
 

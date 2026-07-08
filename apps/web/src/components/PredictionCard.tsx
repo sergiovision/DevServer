@@ -6,7 +6,6 @@ import {
   CCardBody,
   CCardHeader,
   CBadge,
-  CSpinner,
 } from '@coreui/react-pro';
 
 interface Similar {
@@ -30,43 +29,69 @@ interface Props {
   taskId: number;
 }
 
+// The Pro predictor embeds the task text on the worker's CPU, which can take
+// a second or more — cache the answer per task so revisiting a task page
+// within the TTL paints the card instantly with zero worker roundtrips.
+const PREDICTION_TTL_MS = 5 * 60 * 1000;
+
+function readPredictionCache(taskId: number): Prediction | null {
+  try {
+    const raw = sessionStorage.getItem(`devserver.prediction.${taskId}`);
+    if (!raw) return null;
+    const { at, data } = JSON.parse(raw);
+    if (typeof at !== 'number' || Date.now() - at > PREDICTION_TTL_MS) return null;
+    return data ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function writePredictionCache(taskId: number, data: Prediction | null): void {
+  try {
+    sessionStorage.setItem(
+      `devserver.prediction.${taskId}`,
+      JSON.stringify({ at: Date.now(), data }),
+    );
+  } catch {
+    /* storage unavailable — caching is best-effort */
+  }
+}
+
 /**
  * Outcome prediction card (migration 010). Forecasts a task's success
  * probability + expected duration/turns. Free tier shows a repo-level
  * baseline (basis='repo'); Pro shows a similar-task forecast with a sample
- * list (basis='similar'). Renders nothing when there's no history.
+ * list (basis='similar'). Renders nothing when there's no history, and
+ * nothing while loading — the forecast is auxiliary, so it pops in when
+ * ready instead of holding a spinner slot in the layout.
  */
 export function PredictionCard({ taskId }: Props) {
   const [pred, setPred] = useState<Prediction | null>(null);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
+    const cached = readPredictionCache(taskId);
+    if (cached) {
+      setPred(cached);
+      return;
+    }
     (async () => {
       try {
         const res = await fetch(`/api/tasks/${taskId}/prediction`);
         if (!res.ok) return;
         const data = await res.json();
-        if (!cancelled) setPred(data.prediction ?? null);
+        if (!cancelled) {
+          setPred(data.prediction ?? null);
+          writePredictionCache(taskId, data.prediction ?? null);
+        }
       } catch {
         /* best-effort — no card on error */
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [taskId]);
-
-  if (loading) {
-    return (
-      <CCard className="mb-3">
-        <CCardHeader><strong>Outcome Forecast</strong></CCardHeader>
-        <CCardBody><CSpinner size="sm" /> Analysing past tasks…</CCardBody>
-      </CCard>
-    );
-  }
 
   if (!pred || !pred.sample_size || pred.success_probability === null) {
     return null;

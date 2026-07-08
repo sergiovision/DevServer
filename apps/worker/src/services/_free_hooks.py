@@ -194,6 +194,3 @@ class FreeHooks:
 
     async def tg_send_preflight_blocked(self, **kwargs: Any) -> None:
         pass
-
-    async def tg_send_daily_digest(self, **kwargs: Any) -> str:
-        return ""

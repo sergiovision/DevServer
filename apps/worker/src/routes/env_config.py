@@ -68,6 +68,11 @@ ENV_SCHEMA: list[dict] = [
     {"key": "ANTIGRAVITY_API_KEY", "group": "Google", "label": "Antigravity API Key (optional; defaults to Gemini key / OAuth)", "type": "string", "secret": True},
     # GLM / Zhipu
     {"key": "GLM_API_KEY", "group": "GLM / Zhipu", "label": "API Key", "type": "string", "secret": True},
+    # Confluence (external import source). Cloud: URL + email + API token.
+    # Data Center: URL + Personal Access Token, username left blank.
+    {"key": "CONFLUENCE_URL", "group": "Confluence", "label": "Base URL", "type": "url", "secret": False},
+    {"key": "CONFLUENCE_USERNAME", "group": "Confluence", "label": "Username / Email (blank for PAT)", "type": "string", "secret": False},
+    {"key": "CONFLUENCE_API_TOKEN", "group": "Confluence", "label": "API Token / PAT", "type": "string", "secret": True},
     # Web UI
     {"key": "NEXT_PUBLIC_WS_URL", "group": "Web UI", "label": "WebSocket URL", "type": "url", "secret": False},
     {"key": "NEXT_PUBLIC_API_URL", "group": "Web UI", "label": "API URL", "type": "url", "secret": False},

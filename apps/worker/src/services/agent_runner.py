@@ -720,7 +720,7 @@ async def run_task(task_id: int, claude_mode: str = "max", max_turns: int | None
         max_cost_usd: Decimal | None = getattr(task, "max_cost_usd", None)
         max_wall_seconds: int | None = getattr(task, "max_wall_seconds", None)
         repo_name = repo.name
-        branch_name = f"agent/{task_key}"
+        branch_name = f"agent/{task_key}".lower()
         # Local-folder repos (provider='local'): no clone, no worktree copy,
         # no push — the agent runs git directly inside the operator's folder
         # (stored in repos.gitea_url, the "Local Root Folder"). Only the

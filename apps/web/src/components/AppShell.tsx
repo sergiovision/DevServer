@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import {
   CContainer,
@@ -18,7 +18,20 @@ import { useTheme } from './ThemeProvider';
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggleTheme } = useTheme();
   const [sidebarVisible, setSidebarVisible] = useState(false);
+  // Effective licensing tier ('pro' | 'free'). Defaults to 'free' — the
+  // /api/pro/license route does not exist in the free build (404) and a
+  // worker outage must not break the shell, so any failure keeps 'free'.
+  // getLicenseStatus resolves instantly from the session cache on reloads
+  // (no network) and only fetches when the cache is cold, deduped against
+  // any concurrent caller. Initial state stays 'free' so SSR and client
+  // hydration render the same markup.
+  const [licenseType, setLicenseType] = useState('free');
   const pathname = usePathname();
+
+  useEffect(() => {
+    let cancelled = false;
+    return () => { cancelled = true; };
+  }, []);
 
   // Setup wizard gets a clean full-screen layout — no sidebar, header, or footer.
   if (pathname === '/setup') {
@@ -79,8 +92,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
           <div className="ms-auto text-body-secondary small">
             v{process.env.NEXT_PUBLIC_VERSION}{' '}
-            <span className="text-body-tertiary text-uppercase">
-              {process.env.NEXT_PUBLIC_EDITION || 'pro'}
+            <span className="text-body-tertiary">
+              {process.env.NEXT_PUBLIC_EDITION || 'pro'}(build) {licenseType}(license)
             </span>
           </div>
         </CFooter>

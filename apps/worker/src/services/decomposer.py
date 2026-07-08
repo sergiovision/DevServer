@@ -544,16 +544,4 @@ async def redetalize_node(session: AsyncSession, node_id: int, *, reason: str = 
 
 # ─── enqueue (best-effort; mirrors night_cycle's Next.js handoff) ────────────
 
-_WEB_PORT = settings.web_port  # Next.js port (WEB_PORT in .env, default 3200)
-
-
-async def _enqueue_task(task_id: int) -> bool:
-    """POST to the Next.js enqueue endpoint (single source of truth for the queue)."""
-    try:
-        import httpx
-        async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.post(f"http://localhost:{_WEB_PORT}/api/tasks/{task_id}/enqueue")
-            return resp.status_code == 200
-    except Exception:
-        logger.exception("failed to enqueue goal-graph task %d", task_id)
-        return False
+from services.queue_bridge import enqueue_via_web as _enqueue_task  # noqa: E402,F401

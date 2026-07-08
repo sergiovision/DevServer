@@ -124,7 +124,7 @@ async def setup_worktree(
     bare_repo = os.path.join(settings.bare_repo_dir, repo_name)
     # Sanitize: spaces and other invalid chars → hyphens, lowercase
     safe_key = task_key.replace(" ", "-").replace("/", "-").strip("-")
-    branch_name = f"agent/{safe_key}"
+    branch_name = f"agent/{safe_key}".lower()
     worktree_path = get_worktree_path(repo_name)
 
     # --- Ensure bare repo exists ---
@@ -440,7 +440,7 @@ async def setup_local_repo(
         return root, current_branch or "HEAD"
 
     safe_key = task_key.replace(" ", "-").replace("/", "-").strip("-")
-    branch_name = f"agent/{safe_key}"
+    branch_name = f"agent/{safe_key}".lower()
 
     rc_branch, _, _ = await _run(
         ["git", "-C", root, "rev-parse", "--verify", branch_name],

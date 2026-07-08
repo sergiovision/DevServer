@@ -19,6 +19,10 @@ interface TaskTableProps {
   tasks: Task[];
   showRetired: boolean;
   groupByRepo: boolean;
+  /** Ids of the currently checked rows (owned by the parent view). */
+  selectedIds: Set<number>;
+  /** Reports the full selection for one table's rows so the parent can merge. */
+  onSelectionChange: (groupTasks: Task[], selected: Task[]) => void;
 }
 
 const columns = [
@@ -101,7 +105,7 @@ function getScopedColumns(router: ReturnType<typeof useRouter>, handleEnqueue: (
   };
 }
 
-export function TaskTable({ tasks, showRetired, groupByRepo }: TaskTableProps) {
+export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSelectionChange }: TaskTableProps) {
   const router = useRouter();
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
@@ -162,6 +166,9 @@ export function TaskTable({ tasks, showRetired, groupByRepo }: TaskTableProps) {
                     itemsPerPage={10}
                     itemsPerPageSelect
                     scopedColumns={getScopedColumns(router, handleEnqueue, false)}
+                    selectable
+                    selected={groupTasks.filter((t) => selectedIds.has(t.id))}
+                    onSelectedItemsChange={(items) => onSelectionChange(groupTasks, items as Task[])}
                   />
                 </CCardBody>
               </CCollapse>
@@ -182,6 +189,9 @@ export function TaskTable({ tasks, showRetired, groupByRepo }: TaskTableProps) {
       itemsPerPage={20}
       itemsPerPageSelect
       scopedColumns={getScopedColumns(router, handleEnqueue, true)}
+      selectable
+      selected={filteredTasks.filter((t) => selectedIds.has(t.id))}
+      onSelectedItemsChange={(items) => onSelectionChange(filteredTasks, items as Task[])}
     />
   );
 }

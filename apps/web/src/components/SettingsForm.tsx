@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   CCard,
   CCardBody,
@@ -296,6 +296,158 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
           </CForm>
         </CCardBody>
       </CCard>
+
+      <ConfluenceSettingsCard />
     </>
+  );
+}
+
+/**
+ * Confluence connection (external import source). Values live in .env via
+ * the worker's env API — never in the settings table — so the token stays
+ * out of the database. Global defaults; repos can carry their own overrides.
+ */
+function ConfluenceSettingsCard() {
+  const [url, setUrl] = useState('');
+  const [username, setUsername] = useState('');
+  const [token, setToken] = useState('');
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [pinging, setPinging] = useState(false);
+  const [ping, setPing] = useState<{ ok: boolean; error?: string } | null>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/env', { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (cancelled) return;
+        const vars: { key: string; value: string }[] = data.variables || [];
+        const val = (k: string) => vars.find((v) => v.key === k)?.value || '';
+        setUrl(val('CONFLUENCE_URL'));
+        setUsername(val('CONFLUENCE_USERNAME'));
+        setToken(val('CONFLUENCE_API_TOKEN'));
+      } catch {
+        if (!cancelled) setError('Failed to load Confluence configuration');
+      } finally {
+        if (!cancelled) setLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    setSaving(true);
+    setSaved(false);
+    setError('');
+    try {
+      const res = await fetch('/api/env', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          variables: {
+            CONFLUENCE_URL: url.trim(),
+            CONFLUENCE_USERNAME: username.trim(),
+            CONFLUENCE_API_TOKEN: token.trim(),
+          },
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // Writing .env is not enough — the running worker holds the settings
+      // singleton in memory. Reload it so the new credentials take effect
+      // immediately (otherwise ping/import keep seeing "not configured"
+      // until the next worker restart).
+      await fetch('/api/env/apply', { method: 'POST' }).catch(() => {});
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch {
+      setError('Failed to save Confluence configuration');
+    } finally {
+      setSaving(false);
+    }
+  }, [url, username, token]);
+
+  const handlePing = useCallback(async () => {
+    setPinging(true);
+    setPing(null);
+    try {
+      const res = await fetch('/api/pro/import/confluence/ping', { cache: 'no-store' });
+      setPing(await res.json());
+    } catch {
+      setPing({ ok: false, error: 'worker unreachable' });
+    } finally {
+      setPinging(false);
+    }
+  }, []);
+
+  return (
+    <CCard className="mb-4">
+      <CCardHeader>
+        <strong>Confluence</strong>{' '}
+        <small className="text-body-secondary">
+          — external import source. Cloud: email + API token. Data Center: PAT, username blank.
+        </small>
+      </CCardHeader>
+      <CCardBody>
+        {error && <CAlert color="danger" className="py-2">{error}</CAlert>}
+        {saved && <CAlert color="success" className="py-2">Confluence configuration saved.</CAlert>}
+        {ping && (
+          <CAlert color={ping.ok ? 'success' : 'danger'} className="py-2">
+            {ping.ok ? 'Connection OK.' : `Connection failed: ${ping.error || 'unknown error'}`}
+          </CAlert>
+        )}
+        <CForm onSubmit={(e) => { e.preventDefault(); handleSave(); }}>
+          <CRow className="mb-3">
+            <CCol md={5}>
+              <CFormLabel className="mb-1">Base URL</CFormLabel>
+              <CFormInput
+                type="url"
+                placeholder="https://yourorg.atlassian.net"
+                value={url}
+                disabled={!loaded}
+                onChange={(e) => setUrl(e.target.value)}
+              />
+            </CCol>
+            <CCol md={3}>
+              <CFormLabel className="mb-1">Username / Email</CFormLabel>
+              <CFormInput
+                placeholder="you@company.com"
+                value={username}
+                disabled={!loaded}
+                onChange={(e) => setUsername(e.target.value)}
+              />
+            </CCol>
+            <CCol md={4}>
+              <CFormLabel className="mb-1">API Token / PAT</CFormLabel>
+              <CFormInput
+                type="password"
+                autoComplete="off"
+                value={token}
+                disabled={!loaded}
+                onChange={(e) => setToken(e.target.value)}
+              />
+            </CCol>
+          </CRow>
+          <div className="d-flex gap-2">
+            <CButton type="submit" color="primary" disabled={saving || !loaded}>
+              {saving ? 'Saving…' : 'Save Confluence Settings'}
+            </CButton>
+            <CButton
+              type="button"
+              color="secondary"
+              variant="outline"
+              disabled={pinging}
+              onClick={handlePing}
+            >
+              {pinging ? 'Pinging…' : 'Ping'}
+            </CButton>
+          </div>
+        </CForm>
+      </CCardBody>
+    </CCard>
   );
 }
