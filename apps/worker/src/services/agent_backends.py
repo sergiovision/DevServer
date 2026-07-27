@@ -90,8 +90,13 @@ class CLINotInstalledError(RuntimeError):
 # that gets auto-selected when a user switches vendor in the UI.
 
 VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
+    # Verified against ``GET https://api.anthropic.com/v1/models`` (2026-07-25).
+    # ``claude-opus-5`` is the current flagship Opus (1M ctx, 128K output) at
+    # Opus 4.8 pricing; ``claude-mythos-5`` is deliberately absent — it is only
+    # served to Project Glasswing accounts.
     "anthropic": [
         {"id": "claude-sonnet-5",              "label": "Claude Sonnet 5 (default, Max)"},
+        {"id": "claude-opus-5",                "label": "Claude Opus 5 (flagship — agentic coding, long-horizon)"},
         {"id": "claude-fable-5",               "label": "Claude Fable 5 (most capable, premium)"},
         {"id": "claude-opus-4-8",              "label": "Claude Opus 4.8"},
         {"id": "claude-opus-4-7",              "label": "Claude Opus 4.7"},
@@ -101,24 +106,48 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
         {"id": "claude-opus-4-5",              "label": "Claude Opus 4.5"},
         {"id": "claude-sonnet-4-5",            "label": "Claude Sonnet 4.5"},
     ],
-    # Antigravity CLI (``agy``) model slugs — verified working on agy 1.0.10.
+    # Antigravity CLI (``agy``) model slugs. Since agy 1.1.2 the ``--model``
+    # flag is validated strictly and the reasoning-effort level is part of the
+    # slug (``<model>-<low|medium|high>``); the old bare slugs
+    # (``gemini-3.5-pro`` / ``gemini-3.1-pro`` / ``gemini-3.5-flash``) are
+    # rejected with "model … is not recognized". ``gemini-3.5-pro`` no longer
+    # exists; Gemini 3.1 Pro is still the strongest coding tier agy offers.
+    # All entries below are listed by ``agy models`` **and** smoke-tested with
+    # a real ``agy -p`` run on agy 1.1.7 with a Google AI subscription — that
+    # includes the ``gemini-3.5-flash-medium`` / ``-high`` pair, which agy
+    # 1.1.2 used to reject at run time and now accepts.
     "google": [
-        {"id": "gemini-3.5-pro",               "label": "Gemini 3.5 Pro (frontier intelligence + action, default)"},
-        {"id": "gemini-3.1-pro",               "label": "Gemini 3.1 Pro (strong coding)"},
-        {"id": "gemini-3.5-flash",             "label": "Gemini 3.5 Flash (fast, cheap)"},
+        {"id": "gemini-3.1-pro-high",          "label": "Gemini 3.1 Pro (High) — strong coding, default"},
+        {"id": "gemini-3.1-pro-low",           "label": "Gemini 3.1 Pro (Low) — faster"},
+        {"id": "gemini-3.6-flash-high",        "label": "Gemini 3.6 Flash (High) — newest flash, deeper reasoning"},
+        {"id": "gemini-3.6-flash-medium",      "label": "Gemini 3.6 Flash (Medium) — newest flash, balanced"},
+        {"id": "gemini-3.6-flash-low",         "label": "Gemini 3.6 Flash (Low) — newest flash, fastest"},
+        {"id": "gemini-3.5-flash-low",         "label": "Gemini 3.5 Flash (Low) — fast, cheap"},
     ],
+    # Slugs + descriptions taken from the model catalog bundled inside the
+    # Codex CLI binary (codex-cli 0.144.1). The GPT-5.6 trio (Sol / Terra /
+    # Luna) are the current agentic-coding line. ``gpt-5.5-codex`` used to sit
+    # at the top of this list but is *not* in the catalog and is not a real
+    # slug — replaced by ``gpt-5.5``.
     "openai": [
-        {"id": "gpt-5.5-codex",                "label": "GPT-5.5 Codex (latest frontier, 1M ctx)"},
-        {"id": "gpt-5.4",                      "label": "GPT-5.4 (reasoning + coding, integrates Codex)"},
+        {"id": "gpt-5.6-sol",                  "label": "GPT-5.6 Sol — latest frontier agentic coding"},
+        {"id": "gpt-5.6-terra",                "label": "GPT-5.6 Terra — balanced agentic coding"},
+        {"id": "gpt-5.6-luna",                 "label": "GPT-5.6 Luna — fast + affordable agentic coding"},
+        {"id": "gpt-5.5",                      "label": "GPT-5.5 (frontier: complex coding + research)"},
+        {"id": "gpt-5.4",                      "label": "GPT-5.4 (strong everyday coding)"},
         {"id": "gpt-5.3-codex",                "label": "GPT-5.3 Codex (heavy reasoning, agentic)"},
-        {"id": "gpt-5.4-mini",                 "label": "GPT-5.4 Mini (Azure Foundry test)"},
-        {"id": "gpt-5.2",                      "label": "GPT-5.2 (reasoning)"},
-        {"id": "o4-mini",                      "label": "o4-mini (cheap reasoning)"},
+        {"id": "gpt-5.4-mini",                 "label": "GPT-5.4 Mini (small, fast, cost-efficient)"},
+        {"id": "gpt-5.2",                      "label": "GPT-5.2 (long-running agents)"},
     ],
+    # Verified against ``GET https://open.bigmodel.cn/api/paas/v4/models``
+    # (2026-07-25) — Zhipu currently serves glm-4.5, glm-4.5-air, glm-4.6,
+    # glm-4.7, glm-5, glm-5-turbo, glm-5.1 and glm-5.2.
     "glm": [
         {"id": "glm-5.2",                      "label": "GLM-5.2 (thinking, latest flagship)"},
         {"id": "glm-5.1",                      "label": "GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)"},
+        {"id": "glm-5-turbo",                  "label": "GLM-5 Turbo (fast, cheap)"},
         {"id": "glm-5",                        "label": "GLM-5"},
+        {"id": "glm-4.7",                      "label": "GLM-4.7 (previous generation)"},
         {"id": "glm-4.5-air",                  "label": "GLM-4.5 Air (budget)"},
     ],
 }
@@ -454,7 +483,10 @@ class ClaudeBackend(AgentBackend):
 #   -p / --print                    single-prompt headless mode (fully
 #                                   agentic — it edits files & runs tools,
 #                                   verified by creating files in a temp repo)
-#   --model <slug>                  e.g. ``gemini-3.1-pro`` / ``gemini-3.5-flash``
+#   --model <slug>                  e.g. ``gemini-3.1-pro-high`` /
+#                                   ``gemini-3.5-flash-low`` (agy 1.1.2 bakes
+#                                   the reasoning effort into the slug and
+#                                   validates it strictly)
 #   --dangerously-skip-permissions  auto-approve every tool call (required
 #                                   for an unattended worker; the only
 #                                   auto-approve flag ``agy`` has)
@@ -508,6 +540,17 @@ class AntigravityBackend(AgentBackend):
     #: ``agy``'s own documented API-key env var. In ``api`` mode we populate
     #: it from ``GEMINI_API_KEY`` so the existing key keeps working.
     _AGY_API_KEY_ENV = "ANTIGRAVITY_API_KEY"
+
+    #: Remap legacy bare slugs (accepted by the retired Gemini CLI and by
+    #: agy < 1.1.0) onto the effort-suffixed slugs agy 1.1.2 requires, so
+    #: tasks created before this change keep running instead of failing with
+    #: "model … is not recognized". ``gemini-3.5-pro`` no longer exists at
+    #: Google, so it falls back to the strongest available Gemini model.
+    _LEGACY_MODEL_ALIASES = {
+        "gemini-3.5-pro":   "gemini-3.1-pro-high",
+        "gemini-3.1-pro":   "gemini-3.1-pro-high",
+        "gemini-3.5-flash": "gemini-3.5-flash-low",
+    }
 
     #: Internal print-mode wait cap handed to ``--print-timeout``. ``agy``
     #: defaults to 5m, which would abort long agent runs; set it well above
@@ -574,7 +617,7 @@ class AntigravityBackend(AgentBackend):
         # max_turns / allowed_tools: ``agy`` has no equivalent flags — ignored.
         cmd = [
             self.bin_argv0(), "-p", prompt,
-            "--model", model,
+            "--model", self._LEGACY_MODEL_ALIASES.get(model, model),
             "--dangerously-skip-permissions",
             "--print-timeout", self._PRINT_TIMEOUT,
         ]
@@ -645,6 +688,15 @@ class OpenAIBackend(AgentBackend):
     # CLI falls back to the ChatGPT-Plus OAuth session from ``codex login``.
     api_key_env = "OPENAI_API_KEY"
 
+    #: ``gpt-5.5-codex`` shipped as this backend's default for a while but is
+    #: not in Codex's model catalog and is rejected by the CLI. Tasks and
+    #: templates created back then still carry it, so remap onto the real
+    #: slug instead of failing the run. Skipped when OPENAI_BASE_URL points at
+    #: Azure, where the "model" is a user-chosen deployment name.
+    _LEGACY_MODEL_ALIASES = {
+        "gpt-5.5-codex": "gpt-5.5",
+    }
+
     def build_command(
         self,
         *,
@@ -654,15 +706,6 @@ class OpenAIBackend(AgentBackend):
         session_id: str | None,  # noqa: ARG002 — see module docstring
         max_turns: int | None,  # noqa: ARG002 — codex has no --max-turns
     ) -> list[str]:
-        cmd: list[str] = [
-            self.bin_argv0(), "exec",
-            "--json",                      # JSONL event stream on stdout
-            "--skip-git-repo-check",       # worktrees are valid repos but already on a branch
-            "--full-auto",                 # workspace-write sandbox + no approval prompts
-        ]
-        if model:
-            cmd.extend(["--model", model])
-
         # Azure AI Foundry routing. When OPENAI_BASE_URL is set we assume
         # the user wants an OpenAI-compatible alternative endpoint (Azure
         # is the only supported case today). Rather than ask the user to
@@ -677,6 +720,17 @@ class OpenAIBackend(AgentBackend):
 
         base_url = getattr(settings, "openai_base_url", "") if settings else ""
         api_version = getattr(settings, "openai_api_version", "") if settings else ""
+
+        cmd: list[str] = [
+            self.bin_argv0(), "exec",
+            "--json",                      # JSONL event stream on stdout
+            "--skip-git-repo-check",       # worktrees are valid repos but already on a branch
+            "--full-auto",                 # workspace-write sandbox + no approval prompts
+        ]
+        if model:
+            resolved = model if base_url else self._LEGACY_MODEL_ALIASES.get(model, model)
+            cmd.extend(["--model", resolved])
+
         if base_url:
             # Azure wants the ``/openai`` suffix appended when it's not
             # already present; accept either form from the user.

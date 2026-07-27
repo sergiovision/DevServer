@@ -9,7 +9,12 @@ import { query } from './db';
 
 export interface EnqueueTaskData {
   taskId: number;
-  repoId: number;
+  /**
+   * Null for repo-less task types (`skill`, `research`). The payload field is
+   * informational — the PgQueuer consumer dispatches on `taskId` alone and
+   * re-reads the task row — so a null here is carried through harmlessly.
+   */
+  repoId: number | null;
   taskKey: string;
   title: string;
   priority: number;

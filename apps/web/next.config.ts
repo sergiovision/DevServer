@@ -57,6 +57,20 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_HOSTNAME: hostname(),
     NEXT_PUBLIC_USER: userInfo().username,
   },
+  // A2A agent discovery (Pro). The protocol mandates the RFC 8615 well-known
+  // path, but the handler lives under app/api/pro/ so `strip-pro.sh` removes it
+  // with the rest of the Pro bundle — hence a rewrite rather than a real route.
+  // Gated on `edition` so a free build 404s here instead of advertising a
+  // gateway whose endpoint no longer exists.
+  async rewrites() {
+    if (edition !== 'pro') return [];
+    return [
+      {
+        source: '/.well-known/agent-card.json',
+        destination: '/api/pro/a2a/card',
+      },
+    ];
+  },
 };
 
 export default nextConfig;

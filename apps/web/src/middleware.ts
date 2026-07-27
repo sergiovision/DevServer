@@ -14,9 +14,15 @@ export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Never intercept the setup page itself, API routes, or static assets.
+  //
+  // `/.well-known/*` is called out explicitly rather than left to the
+  // `includes('.')` catch-all: it carries the A2A Agent Card, which external
+  // agents fetch unauthenticated and which must return JSON — never a redirect
+  // to the setup wizard — regardless of this instance's cookie state.
   if (
     pathname === '/setup' ||
     pathname.startsWith('/api/') ||
+    pathname.startsWith('/.well-known/') ||
     pathname.startsWith('/_next/') ||
     pathname.startsWith('/favicon') ||
     pathname.includes('.')

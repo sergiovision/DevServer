@@ -10,7 +10,7 @@ interface RouteContext {
  * POST /api/repos/<id>/reindex
  *
  * Reindex this repository's memory by reusing the same worker corpus-ingest
- * endpoint the devserver-memory MCP `corpus_ingest` tool calls. Both the
+ * endpoint the DevServer MCP `corpus_ingest` tool calls. Both the
  * `code` and `doc` corpora are kicked off so the whole repo memory is
  * rebuilt. The worker runs each ingest in the background and returns
  * immediately, so success here means "reindex started".

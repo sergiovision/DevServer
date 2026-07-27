@@ -12,5 +12,6 @@ export const PatchesPanel = (_props: any) => null;
 export const NightCyclePanel = (_props: any) => null;
 export const MessagesPanel = (_props: any) => null;
 export const LicensePanel = (_props: any) => null;
+export const A2APeersView = (_props: any) => null;
 
 export const PRO_NAV_ITEMS: { name: string; href: string; icon: string[] }[] = [];

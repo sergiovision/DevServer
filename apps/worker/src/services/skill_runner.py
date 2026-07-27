@@ -390,6 +390,9 @@ async def run_lightweight_task(
         )
         await _update_task_status(session, task_id, "failed")
         await notify.text(f"FAIL {task_key} ({task_type}) crashed: {str(exc)[:200]}")
+        # Machine-readable terminal signal (A2A push subscribers). No-op
+        # for human channels — they already got the text above.
+        await notify.task_state_changed(task_key=task_key, final=True)
         await _cleanup()
         return False
 
@@ -431,6 +434,7 @@ async def run_lightweight_task(
         )
         await _update_task_status(session, task_id, "failed")
         await notify.text(f"FAIL {task_key} ({task_type}) failed (exit {exit_code})")
+        await notify.task_state_changed(task_key=task_key, final=True)
         await _cleanup()
         return False
 
@@ -465,6 +469,7 @@ async def run_lightweight_task(
         f"OK {task_key} ({task_type}) done — artifacts saved"
     )
     await notify.text(_done_msg)
+    await notify.task_state_changed(task_key=task_key, final=True)
     logger.info("%s task %s done (%d turns, %dms)", task_type, task_key, turns, duration_ms)
     await _cleanup()
     return True

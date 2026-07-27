@@ -60,11 +60,33 @@ build_worker() {
   green "  Worker ready (venv + package installed)"
 }
 
-# ── Web dependencies (npm ci) ─────────────────────────────────────────────────
+# ── Web dependencies (npm ci / install) ───────────────────────────────────────
+# node_modules is considered STALE when package.json or package-lock.json is
+# newer than the marker npm writes on every successful install
+# (node_modules/.package-lock.json). Editing dep versions in package.json without
+# reinstalling leaves half-upgraded packages behind — dangling .bin symlinks
+# (e.g. cross-env) and truncated native binaries (e.g. @next/swc) — which make
+# the dev server fail to start. Detecting staleness here fixes that automatically.
+web_deps_stale() {
+  local marker="${WEB_DIR}/node_modules/.package-lock.json"
+  [[ -f "$marker" ]] || return 0   # never installed → stale
+  local f
+  for f in "${WEB_DIR}/package.json" "${WEB_DIR}/package-lock.json"; do
+    [[ -f "$f" && "$f" -nt "$marker" ]] && return 0
+  done
+  return 1
+}
+
 build_web_deps() {
   if [[ ! -d "${WEB_DIR}/node_modules" ]]; then
     echo "  Installing npm dependencies..."
     npm --prefix "${WEB_DIR}" ci --prefer-offline
+  elif web_deps_stale; then
+    # package.json / lockfile changed since the last install. Use `npm install`
+    # (not `ci`) so a hand-bumped package.json re-syncs node_modules AND the
+    # lockfile, and stale .bin symlinks / native binaries are regenerated.
+    echo "  package.json changed since last install — reinstalling npm dependencies..."
+    npm --prefix "${WEB_DIR}" install
   else
     echo "  npm dependencies already installed (skip)"
   fi

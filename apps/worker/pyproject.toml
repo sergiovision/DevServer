@@ -4,28 +4,30 @@ version = "0.1.0"
 description = "DevServer autonomous coding agent worker"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi>=0.136.3",
-    "uvicorn[standard]>=0.49",
+    "fastapi>=0.139.0",
+    "uvicorn[standard]>=0.51",
     "asyncpg>=0.31",
-    "sqlalchemy[asyncio]>=2.0.50",
-    "pydantic-settings>=2.14.1",
+    "sqlalchemy[asyncio]>=2.0.51",
+    "pydantic-settings>=2.14.2",
     # Pinned below 1.0: PgQueuer 1.0 is a breaking "hard reset" that changes the
     # queue table schema (new 'failed' status + 'attempts' column). The Next.js
     # producer (apps/web/src/lib/queue.ts) and database/migrations/001_initial.sql
     # hardcode the 0.x table layout/status enum, so a major bump breaks the queue.
     "pgqueuer[asyncpg]>=0.26.3,<1.0",
     "httpx>=0.28.1",
-    "cryptography>=43",
-    "pgvector>=0.4.2",
+    # Ed25519 verification of capitaltools-issued Pro license tokens
+    # (services/pro/licensing). Harmless in the free edition.
+    "cryptography>=49",
+    "pgvector>=0.5.0",
     # Local, CPU/ONNX text embeddings for semantic memory recall — replaces
     # the old Voyage cloud API (services/embeddings.py). Pulls onnxruntime +
     # huggingface-hub for the model download/cache.
-    "fastembed>=0.4",
+    "fastembed>=0.8",
 ]
 
 [project.optional-dependencies]
 test = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4",
     "httpx>=0.28.1",
 ]
@@ -34,9 +36,9 @@ test = [
 # no-ops gracefully when these are absent. Enable with:
 #   uv sync --extra otel   (and set OTEL_EXPORTER_OTLP_ENDPOINT)
 otel = [
-    "opentelemetry-api>=1.27",
-    "opentelemetry-sdk>=1.27",
-    "opentelemetry-exporter-otlp-proto-http>=1.27",
+    "opentelemetry-api>=1.43",
+    "opentelemetry-sdk>=1.43",
+    "opentelemetry-exporter-otlp-proto-http>=1.43",
 ]
 
 [project.scripts]
@@ -54,6 +56,6 @@ asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
 ]

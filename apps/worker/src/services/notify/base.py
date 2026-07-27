@@ -169,6 +169,29 @@ class NotifyBackend(ABC):
             lines.append(f"  ...+{len(violations) - 5} more")
         return await self.send_text("\n".join(lines))
 
+    async def send_task_state_changed(
+        self,
+        *,
+        task_key: str,
+        final: bool,
+    ) -> bool:
+        """A task reached a new lifecycle state.
+
+        Unlike every other event here, the default is a **no-op** rather than a
+        plain-text render: this is a low-level machine signal for backends that
+        mirror task state to a subscriber (the A2A push backend), not something
+        a human channel should announce. Telegram/Discord already get the
+        human-facing ``task_success`` / ``task_failed`` events, and firing both
+        would double-notify.
+
+        It exists because the lightweight runner (``skill_runner``, which runs
+        every ``skill``/``research`` task) reports completion via
+        ``notify.text`` — deliberately, to keep Telegram from choking on
+        filesystem paths — and so never emits a typed event a machine
+        subscriber can act on.
+        """
+        return False
+
     async def send_operator_message(
         self,
         *,

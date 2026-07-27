@@ -14,6 +14,7 @@ import CIcon from '@coreui/icons-react';
 import { cilSun, cilMoon, cilMenu } from '@coreui/icons';
 import { Sidebar } from './Sidebar';
 import { useTheme } from './ThemeProvider';
+import { getLicenseStatus } from '@/lib/license-client';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { theme, toggleTheme } = useTheme();
@@ -30,6 +31,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    getLicenseStatus().then((data) => {
+      if (!cancelled && typeof data?.plan === 'string' && data.plan) {
+        setLicenseType(data.plan);
+      }
+    });
     return () => { cancelled = true; };
   }, []);
 

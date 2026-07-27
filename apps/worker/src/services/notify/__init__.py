@@ -26,6 +26,7 @@ import logging
 from decimal import Decimal
 from typing import Any
 
+from .a2a_backend import A2APushBackend
 from .base import NotifyBackend
 from .discord_backend import DiscordBackend
 from .telegram_backend import TelegramBackend
@@ -46,6 +47,9 @@ class Dispatcher:
         self._backends: list[NotifyBackend] = [
             TelegramBackend(),
             DiscordBackend(),
+            # Per-task destinations rather than a global channel: inert until
+            # an A2A peer registers a push config for the task in question.
+            A2APushBackend(),
         ]
 
     def configured_channels(self) -> list[str]:
@@ -185,6 +189,17 @@ class Dispatcher:
         return await self._fanout(
             "send_preflight_blocked",
             task_key=task_key, violations=violations,
+        )
+
+    async def task_state_changed(
+        self,
+        *,
+        task_key: str,
+        final: bool,
+    ) -> dict[str, bool]:
+        """Machine-readable lifecycle signal. No-op for human channels."""
+        return await self._fanout(
+            "send_task_state_changed", task_key=task_key, final=final,
         )
 
     async def operator_message(

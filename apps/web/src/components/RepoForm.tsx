@@ -39,7 +39,7 @@ export function RepoForm({ repo }: RepoFormProps) {
     test_cmd: repo?.test_cmd || '',
     lint_cmd: repo?.lint_cmd || '',
     pre_cmd: repo?.pre_cmd || '',
-    claude_model: repo?.claude_model || 'claude-sonnet-4-20250514',
+    claude_model: repo?.claude_model || 'claude-sonnet-5',
     claude_allowed_tools: repo?.claude_allowed_tools || '',
     gitea_token: repo?.gitea_token || '',
     max_retries: repo?.max_retries?.toString() || '3',

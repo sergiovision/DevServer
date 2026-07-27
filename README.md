@@ -256,16 +256,16 @@ DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers
 
 | Vendor | CLI Binary | Latest models | Status |
 |---|---|---|---|
-| `anthropic` | `claude` | **Claude Sonnet 5** (default), Fable 5, Opus 4.8, Haiku 4.5 | Production-tested |
-| `google` | `agy` | **Gemini 3.5 Pro** (default), Gemini 3.1 Pro, Gemini 3.5 Flash (via the Antigravity CLI) | Verified (agy 1.0.10) |
-| `openai` | `codex` | GPT-5.5 Codex, GPT-5.4, GPT-5.x | Structurally complete |
-| `glm` | `claude` | GLM-5.2 / 5.1 — runs the Claude CLI against Zhipu's Anthropic-compatible API | Production-tested |
+| `anthropic` | `claude` | **Claude Sonnet 5** (default), Opus 5, Fable 5, Opus 4.8, Haiku 4.5 | Production-tested |
+| `google` | `agy` | **Gemini 3.1 Pro** (default, High/Low), Gemini 3.6 Flash, Gemini 3.5 Flash (via the Antigravity CLI) | Verified (agy 1.1.7) |
+| `openai` | `codex` | GPT-5.6 Sol / Terra / Luna, GPT-5.5, GPT-5.4, GPT-5.3 Codex | Structurally complete |
+| `glm` | `claude` | GLM-5.2 / 5.1 / 5 Turbo — runs the Claude CLI against Zhipu's Anthropic-compatible API | Production-tested |
 
 Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.
 
 > **Note — Google migrated to the Antigravity CLI.** Google retired the Gemini CLI on 2026-06-18 (`gemini` commands now return *410 Gone*). The Google backend now drives Google's replacement, the **Antigravity CLI** (`agy`), reusing the same Gemini API key and Google AI Pro/Ultra subscription. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`.
 
-**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** without per-token metering. For Google, sign in once with `agy` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.5-pro`. In `api` mode the worker reuses your existing `GEMINI_API_KEY` (bridged to `ANTIGRAVITY_API_KEY`).
+**Billing modes are vendor-agnostic.** `api` inherits the vendor's API-key env var; `max` strips it so the CLI uses its own subscription login. That means you can run a task on **Claude Max**, **ChatGPT Plus** (`codex login`), or **Google AI Pro / Ultra** without per-token metering. For Google, sign in once with `agy` (the Google account holding the subscription), set the task's billing to **Max**, and pick `gemini-3.1-pro-high`. In `api` mode the worker reuses your existing `GEMINI_API_KEY` (bridged to `ANTIGRAVITY_API_KEY`).
 
 📂 [`apps/worker/src/services/agent_backends.py`](apps/worker/src/services/agent_backends.py)
 

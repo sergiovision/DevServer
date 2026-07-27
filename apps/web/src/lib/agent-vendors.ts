@@ -28,9 +28,12 @@ export interface VendorEntry {
 export const AGENT_VENDORS: VendorEntry[] = [
   {
     id: 'anthropic',
+    // Verified against GET https://api.anthropic.com/v1/models (2026-07-25).
+    // `claude-mythos-5` is deliberately absent — Project Glasswing only.
     label: 'Anthropic',
     models: [
       { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5 (default, Max)' },
+      { id: 'claude-opus-5',                label: 'Claude Opus 5 (flagship — agentic coding, long-horizon)' },
       { id: 'claude-fable-5',               label: 'Claude Fable 5 (most capable, premium)' },
       { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8' },
       { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7' },
@@ -45,32 +48,47 @@ export const AGENT_VENDORS: VendorEntry[] = [
     id: 'google',
     label: 'Google (Antigravity)',
     // Google retired the Gemini CLI (2026-06-18); the worker now drives the
-    // Antigravity CLI (`agy`). Slugs verified against agy 1.0.10.
+    // Antigravity CLI (`agy`). As of agy 1.1.2 `--model` is validated strictly
+    // and the reasoning effort is baked into the slug (`<model>-<low|high>`);
+    // the old bare slugs are rejected. Every slug below is listed by
+    // `agy models` and smoke-tested on agy 1.1.7. Keep in sync with
+    // VENDOR_MODELS in apps/worker/src/services/agent_backends.py.
     models: [
-      { id: 'gemini-3.5-pro',   label: 'Gemini 3.5 Pro (frontier intelligence + action, default)' },
-      { id: 'gemini-3.1-pro',   label: 'Gemini 3.1 Pro (strong coding)' },
-      { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash (fast, cheap)' },
+      { id: 'gemini-3.1-pro-high',     label: 'Gemini 3.1 Pro (High) — strong coding, default' },
+      { id: 'gemini-3.1-pro-low',      label: 'Gemini 3.1 Pro (Low) — faster' },
+      { id: 'gemini-3.6-flash-high',   label: 'Gemini 3.6 Flash (High) — newest flash, deeper reasoning' },
+      { id: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium) — newest flash, balanced' },
+      { id: 'gemini-3.6-flash-low',    label: 'Gemini 3.6 Flash (Low) — newest flash, fastest' },
+      { id: 'gemini-3.5-flash-low',    label: 'Gemini 3.5 Flash (Low) — fast, cheap' },
     ],
   },
   {
     id: 'openai',
     label: 'OpenAI',
+    // Slugs from the model catalog bundled in codex-cli 0.144.1. The GPT-5.6
+    // trio (Sol / Terra / Luna) is the current agentic-coding line;
+    // `gpt-5.5-codex` was never a real slug and has been dropped.
     models: [
-      { id: 'gpt-5.5-codex', label: 'GPT-5.5 Codex (latest frontier, 1M ctx)' },
-      { id: 'gpt-5.4',       label: 'GPT-5.4 (reasoning + coding, integrates Codex)' },
+      { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol — latest frontier agentic coding' },
+      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra — balanced agentic coding' },
+      { id: 'gpt-5.6-luna',  label: 'GPT-5.6 Luna — fast + affordable agentic coding' },
+      { id: 'gpt-5.5',       label: 'GPT-5.5 (frontier: complex coding + research)' },
+      { id: 'gpt-5.4',       label: 'GPT-5.4 (strong everyday coding)' },
       { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex (heavy reasoning, agentic)' },
-      { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini (Azure Foundry test)' },
-      { id: 'gpt-5.2',       label: 'GPT-5.2 (reasoning)' },
-      { id: 'o4-mini',       label: 'o4-mini (cheap reasoning)' },
+      { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini (small, fast, cost-efficient)' },
+      { id: 'gpt-5.2',       label: 'GPT-5.2 (long-running agents)' },
     ],
   },
   {
     id: 'glm',
     label: 'GLM (Zhipu)',
+    // Verified against GET https://open.bigmodel.cn/api/paas/v4/models (2026-07-25).
     models: [
       { id: 'glm-5.2',       label: 'GLM-5.2 (thinking, latest flagship)' },
       { id: 'glm-5.1',       label: 'GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)' },
+      { id: 'glm-5-turbo',   label: 'GLM-5 Turbo (fast, cheap)' },
       { id: 'glm-5',         label: 'GLM-5' },
+      { id: 'glm-4.7',       label: 'GLM-4.7 (previous generation)' },
       { id: 'glm-4.5-air',   label: 'GLM-4.5 Air (budget)' },
     ],
   },

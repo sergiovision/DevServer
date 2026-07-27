@@ -3,18 +3,20 @@
 import React from 'react';
 import { CFormInput } from '@coreui/react-pro';
 
+// Anthropic-only suggestion list for the per-repo default model (RepoForm).
+// Mirrors the `anthropic` entry of AGENT_VENDORS in `@/lib/agent-vendors`;
+// retired IDs (Claude 3.x — all 404 since Feb 2026) have been removed.
 export const CLAUDE_MODELS = [
-  { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8 (most capable)' },
+  { id: 'claude-opus-5',                label: 'Claude Opus 5 (flagship — agentic coding)' },
+  { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5 (fast, near-Opus quality)' },
+  { id: 'claude-fable-5',               label: 'Claude Fable 5 (most capable, premium)' },
+  { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8' },
   { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7' },
   { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6' },
   { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6' },
   { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5' },
   { id: 'claude-opus-4-5',              label: 'Claude Opus 4.5' },
   { id: 'claude-sonnet-4-5',            label: 'Claude Sonnet 4.5' },
-  { id: 'claude-3-7-sonnet-20250219',   label: 'Claude 3.7 Sonnet' },
-  { id: 'claude-3-5-sonnet-20241022',   label: 'Claude 3.5 Sonnet' },
-  { id: 'claude-3-5-haiku-20241022',    label: 'Claude 3.5 Haiku' },
-  { id: 'claude-3-opus-20240229',       label: 'Claude 3 Opus' },
 ];
 
 interface ModelComboboxProps {
