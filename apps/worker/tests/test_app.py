@@ -42,6 +42,35 @@ class TestHealthEndpoint:
         assert data["service"] == "devserver-worker"
 
 
+class TestProRouteStartup:
+    """Regression coverage for optional Pro-module import handling."""
+
+    def test_license_status_route_is_mounted_in_pro_checkout(self):
+        from main import _has_pro_routes, pro_router
+
+        assert _has_pro_routes
+        assert "/internal/license/status" in {
+            route.path for route in pro_router.routes if hasattr(route, "path")
+        }
+
+    def test_nested_dependency_error_is_not_treated_as_free_edition(self):
+        from main import _optional_module_is_absent
+
+        exc = ModuleNotFoundError(
+            "No module named 'cryptography.exceptions'",
+            name="cryptography.exceptions",
+        )
+
+        assert not _optional_module_is_absent(exc, "services.pro.licensing")
+
+    def test_missing_optional_parent_is_treated_as_free_edition(self):
+        from main import _optional_module_is_absent
+
+        exc = ModuleNotFoundError("No module named 'services.pro'", name="services.pro")
+
+        assert _optional_module_is_absent(exc, "services.pro.licensing")
+
+
 class TestLifespan:
     """Tests for the FastAPI app lifespan (startup/shutdown)."""
 

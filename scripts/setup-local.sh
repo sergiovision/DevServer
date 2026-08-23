@@ -1,6 +1,6 @@
 #!/bin/bash
 # DevServer v2 — Local setup script
-# Prerequisites: PostgreSQL 16+, Node.js 22+, Python 3.12+
+# Prerequisites: PostgreSQL 16+, Node.js 22+, Python 3.14+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,8 +22,34 @@ check_cmd() {
     echo "  ✓ $1 found: $(command -v "$1")"
 }
 
+# The worker's requires-python floor is 3.14 (apps/worker/pyproject.toml), but a
+# distro's default `python3` is often older -- Ubuntu 24.04 ships 3.12 and keeps
+# it as `python3` on purpose, since apt itself runs on it. Probe for a versioned
+# interpreter first so an unmet floor fails here with an actionable message
+# instead of surfacing as an opaque resolver error inside `uv pip install`.
+PYTHON_MIN="3.14"
+
+check_python() {
+    local required candidate found
+    required="$(echo "${PYTHON_MIN}" | tr '.' ',')"
+    for candidate in "python${PYTHON_MIN}" python3 python; do
+        command -v "$candidate" &>/dev/null || continue
+        if "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (${required}) else 1)" 2>/dev/null; then
+            echo "  ✓ python found: $(command -v "$candidate") ($("$candidate" -V 2>&1 | cut -d' ' -f2))"
+            return 0
+        fi
+        found="$candidate"
+    done
+    echo "  ✗ Python ${PYTHON_MIN}+ not found. Please install Python ${PYTHON_MIN}+ (https://python.org)"
+    if [[ -n "${found:-}" ]]; then
+        echo "    (\`$found\` is $("$found" -V 2>&1 | cut -d' ' -f2), which is below the ${PYTHON_MIN} floor)"
+        echo "    On Ubuntu/Debian: sudo add-apt-repository ppa:deadsnakes/ppa && sudo apt install python${PYTHON_MIN}-venv"
+    fi
+    return 1
+}
+
 check_cmd node "Node.js 22+ (https://nodejs.org)" || exit 1
-check_cmd python3 "Python 3.12+ (https://python.org)" || exit 1
+check_python || exit 1
 check_cmd psql "PostgreSQL 16+ (https://postgresql.org)" || exit 1
 check_cmd claude "Claude Code CLI (npm install -g @anthropic-ai/claude-code)" || true
 

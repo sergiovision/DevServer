@@ -5,6 +5,7 @@ through the web UI instead of manual file editing.
 """
 
 import asyncio
+import os
 import re
 from pathlib import Path
 
@@ -153,34 +154,135 @@ class EnvUpdateRequest(BaseModel):
 
 @router.get("/env")
 async def get_env():
-    """Return all env variables with their current values and metadata."""
+    """Return all env variables with their current values and metadata.
+
+    The .env FILE is only one of the two ways this worker is configured, and
+    in Docker it is the one that does not exist: compose delivers everything
+    through ``env_file:``/``environment:``, which lands in the process
+    environment, and the image ships no ``/app/.env``. Reading the file alone
+    therefore returned every field blank in a container — which made the
+    Database card offer ``127.0.0.1`` and an empty password as its fallback,
+    and every "Test connection" fail. So fall back to ``os.environ`` per key.
+
+    ``source`` says which one each value came from, because it decides whether
+    saving can stick: a process-env value set by compose outranks the file for
+    pydantic, so editing it here is a no-op until the compose env changes too.
+    """
     current = _parse_env_file()
     variables = []
     for schema in ENV_SCHEMA:
+        key = schema["key"]
+        file_value = current.get(key, "")
+        env_value = os.environ.get(key, "")
+        # An empty file entry is not a value — fall through to the environment.
+        value = file_value or env_value
         variables.append({
             **schema,
-            "value": current.get(schema["key"], ""),
+            "value": value,
+            "source": "file" if file_value else ("env" if env_value else ""),
         })
-    return {"variables": variables, "env_path": str(_ENV_PATH)}
+    return {
+        "variables": variables,
+        "env_path": str(_ENV_PATH),
+        "env_file_exists": _ENV_PATH.exists(),
+        "in_container": config.in_container(),
+    }
 
 
 @router.put("/env")
 async def update_env(req: EnvUpdateRequest):
-    """Update env variables in the .env file."""
-    _write_env_file(req.variables)
-    return {"success": True, "updated": list(req.variables.keys())}
+    """Update env variables in the .env file.
+
+    Reports the keys whose saved value will NOT reach the process, because a
+    real environment variable outranks the .env file for pydantic. In Docker
+    those are the ones compose sets — the DB coordinates among them — so a save
+    that looked successful used to change nothing on the next restart. The UI
+    needs to say so rather than imply the switch took.
+    """
+    try:
+        _ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _write_env_file(req.variables)
+    except OSError as e:
+        # Was a bare 500 with a stack trace, which the wizard rendered as the
+        # unhelpful "Failed to save configuration".
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Cannot write {_ENV_PATH}: {e.strerror or e}. "
+                + (
+                    "The worker runs in a container as uid 10001 — point "
+                    "DEVSERVER_ENV_FILE at a writable volume path (the compose "
+                    "files use /app/config/.env)."
+                    if config.in_container()
+                    else "Check the file's ownership and permissions."
+                )
+            ),
+        ) from e
+
+    shadowed = [k for k in req.variables if os.environ.get(k)]
+    return {
+        "success": True,
+        "updated": list(req.variables.keys()),
+        "env_path": str(_ENV_PATH),
+        "shadowed_by_environment": shadowed,
+    }
 
 
 class DbTestRequest(BaseModel):
     """Connection parameters to probe. Either ``database_url`` OR the discrete
     host/port/user/password/database fields. Nothing is persisted — this only
-    opens a short-lived connection and reports success/failure."""
+    opens a short-lived connection and reports success/failure.
+
+    ``container_host``/``container_port`` are the same database addressed from
+    *inside* a container (the bundled DB's ``postgres`` service name, or
+    ``host.docker.internal`` for one on the host OS). The UI knows this mapping
+    — it already computes it for ``PGHOST_CONTAINER`` — so it passes it along
+    rather than making this endpoint re-derive the topology.
+    """
     host: str | None = None
     port: int | None = None
     user: str | None = None
     password: str | None = None
     database: str | None = None
     database_url: str | None = None
+    container_host: str | None = None
+    container_port: int | None = None
+
+
+# Hosts that mean "this machine" — and so mean a *different* machine depending
+# on which side of the container boundary you evaluate them from.
+_LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
+
+
+def _probe_targets(req: DbTestRequest) -> list[tuple[str, int]]:
+    """Ordered, de-duplicated (host, port) candidates to try.
+
+    The probe answers "can the worker reach this database?", so it must be
+    made from the worker's own vantage point. When the worker is containerised
+    the host-side coordinates the UI shows are the wrong ones: 127.0.0.1 is the
+    container itself, where nothing listens — which is the whole of the
+    ``[Errno 111] Connection refused`` this used to report for every DB mode.
+    """
+    host = (req.host or "127.0.0.1").strip()
+    port = req.port or 5432
+    targets: list[tuple[str, int]] = []
+
+    if config.in_container():
+        # The caller's container-perspective mapping wins when it gave one.
+        if req.container_host:
+            targets.append((req.container_host.strip(), req.container_port or port))
+        # A loopback host can never be right from in here; the host OS's
+        # Postgres is reachable as host.docker.internal (compose grants every
+        # tier that alias via extra_hosts).
+        if host in _LOOPBACK_HOSTS:
+            targets.append(("host.docker.internal", port))
+        else:
+            targets.append((host, port))
+    else:
+        targets.append((host, port))
+
+    seen: set[tuple[str, int]] = set()
+    return [t for t in targets if not (t in seen or seen.add(t))]
 
 
 @router.post("/env/test-db")
@@ -189,37 +291,60 @@ async def test_db(req: DbTestRequest):
 
     Runs from the worker process, which is the vantage point that actually
     matters — it's the host that runs tasks and reads/writes the queue. Returns
-    ``{ok: True, version}`` on success or ``{ok: False, error}`` on failure
-    (never raises, so the UI always gets a clean verdict).
+    ``{ok: True, version, target}`` on success or ``{ok: False, error}`` on
+    failure (never raises, so the UI always gets a clean verdict).
     """
     import asyncpg
 
-    try:
-        if req.database_url:
+    async def _connect(**kwargs):
+        conn = await asyncio.wait_for(asyncpg.connect(**kwargs), timeout=8)
+        try:
+            return await conn.fetchval("SELECT version()")
+        finally:
+            await conn.close()
+
+    if req.database_url:
+        try:
             # asyncpg only understands the plain scheme, not the SQLAlchemy
             # ``postgresql+asyncpg://`` variant the worker uses internally.
             dsn = req.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-            conn = await asyncio.wait_for(asyncpg.connect(dsn=dsn), timeout=8)
-        else:
-            conn = await asyncio.wait_for(
-                asyncpg.connect(
-                    host=req.host or "127.0.0.1",
-                    port=req.port or 5432,
-                    user=req.user or "devserver",
-                    password=req.password or "",
-                    database=req.database or "devserver",
-                ),
-                timeout=8,
-            )
+            return {"ok": True, "version": await _connect(dsn=dsn), "target": "DATABASE_URL"}
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "Connection timed out after 8s — check host/port and firewall."}
+        except Exception as e:  # noqa: BLE001 — surface any driver error verbatim
+            return {"ok": False, "error": str(e)}
+
+    targets = _probe_targets(req)
+    first_error = ""
+    for host, port in targets:
         try:
-            version = await conn.fetchval("SELECT version()")
-        finally:
-            await conn.close()
-        return {"ok": True, "version": version}
-    except asyncio.TimeoutError:
-        return {"ok": False, "error": "Connection timed out after 8s — check host/port and firewall."}
-    except Exception as e:  # noqa: BLE001 — surface any driver error verbatim
-        return {"ok": False, "error": str(e)}
+            version = await _connect(
+                host=host,
+                port=port,
+                user=req.user or "devserver",
+                password=req.password or "",
+                database=req.database or "devserver",
+            )
+            return {"ok": True, "version": version, "target": f"{host}:{port}"}
+        except asyncio.TimeoutError:
+            first_error = first_error or f"Connection to {host}:{port} timed out after 8s — check host/port and firewall."
+        except (OSError, asyncpg.CannotConnectNowError) as e:
+            # Unreachable — worth trying the next vantage point.
+            first_error = first_error or f"{e} (tried {host}:{port})"
+        except Exception as e:  # noqa: BLE001 — reached the server; it said no.
+            # Authentication and "database does not exist" are answers, not
+            # routing problems: another target would fail identically, and
+            # retrying only buries the real message.
+            return {"ok": False, "error": f"{e} (reached {host}:{port})"}
+
+    error = first_error or "Connection failed."
+    if config.in_container() and len(targets) > 1:
+        error += (
+            " — the worker runs in a container, where 127.0.0.1 is the container itself. "
+            'Use the "postgres" service name for the bundled database, or '
+            "host.docker.internal for a PostgreSQL on the host OS."
+        )
+    return {"ok": False, "error": error, "tried": [f"{h}:{p}" for h, p in targets]}
 
 
 @router.post("/env/apply")

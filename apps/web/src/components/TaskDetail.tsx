@@ -28,6 +28,7 @@ import { MaxTurnsInput } from './MaxTurnsInput';
 import { VendorModelPicker } from './VendorModelPicker';
 import { PatchesPanel, MessagesPanel } from './pro-loader';
 import { PredictionCard } from './PredictionCard';
+import { useAssistantPageContext } from './AssistantProvider';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 import { fillVendorLabel } from '@/lib/agent-vendors';
@@ -42,6 +43,21 @@ interface TaskDetailProps {
 
 export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const router = useRouter();
+
+  // Tell the Ask Agent panel which task is on screen, so "why is this stuck?"
+  // is answered about this one rather than in the abstract. The repo id also
+  // scopes the assistant's code/doc search to the right repository.
+  useAssistantPageContext(
+    {
+      kind: 'task',
+      id: task.id,
+      key: task.task_key,
+      status: task.status,
+      name: task.title,
+    },
+    'Task detail',
+    task.repo_id ?? null,
+  );
 
   // Description / acceptance editable state
   const [description, setDescription] = useState(task.description ?? '');

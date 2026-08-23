@@ -50,9 +50,14 @@ postgres_data/
 dist/
 build/
 coverage/
+# Incremental TypeScript build state. Local-only, rewritten on every build,
+# and half a megabyte of diff noise when tracked.
+apps/web/tsconfig.tsbuildinfo
 
-# ── Claude Code session state ────────────────────────────
+# ── Agent tool session state ─────────────────────────────
 .claude/settings.local.json
 .claude/projects/
-apps/web/package-lock.json
-apps/web/package-lock.json
+.gemini/
+
+# NOTE: apps/web/package-lock.json is deliberately NOT ignored — it is tracked
+# and `docker/Dockerfile` COPYs it for a reproducible `npm ci`.

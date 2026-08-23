@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { query } from '@/lib/db';
 import { tryDbPage } from '@/lib/db-page';
 import type { Settings } from '@/lib/types';
@@ -28,7 +29,22 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <h2 className="mb-4">Settings</h2>
+      <div className="d-flex justify-content-between align-items-center mb-4">
+        <h2 className="mb-0">Settings</h2>
+        {/* The wizard is only auto-shown until the setup cookie is set, so on
+            a fresh install reached through a different browser — or after
+            clearing cookies — there was no way back to it from the UI. The
+            caption rides with the button so the hint sits beside what it
+            describes; it drops out below sm, where the row would wrap. */}
+        <div className="d-flex align-items-center gap-3">
+          <small className="text-body-secondary text-end d-none d-sm-block">
+            Running DevServer for the first time? Start with Setup.
+          </small>
+          <Link href="/setup" className="btn btn-primary flex-shrink-0">
+            Setup
+          </Link>
+        </div>
+      </div>
       <LicensePanel />
       <SettingsForm settings={r.data} />
       <DatabaseSettingsCard deployMode={deployMode} />

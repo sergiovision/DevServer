@@ -28,7 +28,7 @@ export interface VendorEntry {
 export const AGENT_VENDORS: VendorEntry[] = [
   {
     id: 'anthropic',
-    // Verified against GET https://api.anthropic.com/v1/models (2026-07-25).
+    // Verified against GET https://api.anthropic.com/v1/models (2026-08-19).
     // `claude-mythos-5` is deliberately absent — Project Glasswing only.
     label: 'Anthropic',
     models: [
@@ -82,9 +82,13 @@ export const AGENT_VENDORS: VendorEntry[] = [
   {
     id: 'glm',
     label: 'GLM (Zhipu)',
-    // Verified against GET https://open.bigmodel.cn/api/paas/v4/models (2026-07-25).
+    // Verified against GET https://open.bigmodel.cn/api/paas/v4/models (2026-08-19).
+    // glm-5.3 (2026-08-14) — same 744B-A40B MoE base as 5.2, far heavier
+    // post-training: ~50% better coding, top open-weights on Terminal Bench 3.0.
+    // Runs through the Claude Code CLI like the rest of GLMBackend.
     models: [
-      { id: 'glm-5.2',       label: 'GLM-5.2 (thinking, latest flagship)' },
+      { id: 'glm-5.3',       label: 'GLM-5.3 (thinking, latest flagship — best open-weights coding)' },
+      { id: 'glm-5.2',       label: 'GLM-5.2 (thinking, previous flagship)' },
       { id: 'glm-5.1',       label: 'GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)' },
       { id: 'glm-5-turbo',   label: 'GLM-5 Turbo (fast, cheap)' },
       { id: 'glm-5',         label: 'GLM-5' },

@@ -19,6 +19,9 @@ export interface LicenseStatus {
   trialDaysLeft?: number | null;
   isActive: boolean;
   message?: string;
+  /** capitaltools storefront page for this product, built by the worker from
+   *  CAPITALTOOLS_URL so a self-hosted issuer points at its own store. */
+  buyUrl?: string;
 }
 
 const CACHE_KEY = 'devserver.license.v1';

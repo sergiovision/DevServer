@@ -150,6 +150,42 @@ def create_summary(checks: List[Dict[str, Any]]) -> Dict[str, int]:
     }
 
 
+async def check_agent_clis() -> Dict[str, Any]:
+    """Report which vendor CLIs are present.
+
+    A CLI that is simply not installed yet is NOT a problem: the image ships
+    none of them and the worker fetches one the first time a task selects that
+    vendor. Only a *failed* install degrades this check — that is the signal
+    worth waking someone for, because it usually means the worker has no
+    egress and every task on that vendor will now fail fast.
+    """
+    from services import agent_cli_installer
+
+    start_time = time.time()
+    try:
+        report = agent_cli_installer.installed_report()
+        failed = {n: d["failed_reason"] for n, d in report.items() if d["failed_reason"]}
+        return {
+            "name": "agent_clis",
+            "status": "degraded" if failed else "healthy",
+            "response_time": round((time.time() - start_time) * 1000, 2),
+            "details": {
+                "install_dir": agent_cli_installer.install_dir(),
+                "auto_install": agent_cli_installer.is_enabled(),
+                "installed": [n for n, d in report.items() if d["installed"]],
+                "not_installed": [n for n, d in report.items() if not d["installed"]],
+                "install_failures": failed,
+            },
+        }
+    except Exception as e:
+        return {
+            "name": "agent_clis",
+            "status": "degraded",
+            "response_time": round((time.time() - start_time) * 1000, 2),
+            "error": str(e),
+        }
+
+
 # NOTE: the simple GET /health endpoint is served by routes/health.py (kept
 # for backward compatibility). This router only adds the detailed/readiness
 # probes below to avoid registering a duplicate /health handler.
@@ -167,6 +203,7 @@ async def detailed_health():
             check_database(),
             check_queue_system(),
             check_file_system(),
+            check_agent_clis(),
             return_exceptions=True
         )
 

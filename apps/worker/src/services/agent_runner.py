@@ -29,6 +29,7 @@ from models.task_event import TaskEvent
 from models.task_run import TaskRun
 from services import (
     agent_backends,
+    agent_cli_installer,
     app_settings,
     compaction,
     error_classifier,
@@ -471,10 +472,19 @@ async def _run_agent(
     ``billing_mode`` argument to the backend's ``build_env`` and only the
     Claude backend does anything meaningful with it.
     """
-    # Fail fast with an actionable message if the vendor's CLI isn't installed,
-    # rather than letting subprocess raise a bare FileNotFoundError that the
-    # operator can't interpret. Applies to every deployment (local + Docker).
-    if not backend.is_available():
+    # The image ships no vendor CLIs, so the first task to pick a vendor fetches
+    # its binary into the install volume (~60–90 s, once per deployment). The
+    # events let the dashboard show that instead of a task that looks hung.
+    # Returns False for an air-gapped deployment, an operator-supplied binary
+    # path, or a failed download — all of which fall through to the original
+    # fail-fast message below rather than letting subprocess raise a bare
+    # FileNotFoundError the operator can't interpret.
+    async def _cli_event(event_type: str, payload: dict) -> None:
+        await _emit_event(db, task_id, run_id, event_type, payload)
+
+    installed = await agent_cli_installer.ensure_cli(backend, on_event=_cli_event)
+
+    if not installed:
         msg = backend.not_installed_message()
         logger.error(msg)
         await _emit_event(db, task_id, run_id, "log_line", {"line": msg, "stream": "stderr"})

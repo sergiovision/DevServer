@@ -25,11 +25,12 @@ knowledge in one file per vendor and lets the runner stay vendor-agnostic.
 Current backends:
     - :class:`ClaudeBackend` (Anthropic) — fully implemented, production tested
     - :class:`AntigravityBackend` (Google) — ``agy`` CLI, verified on 1.0.10
-    - :class:`OpenAIBackend` (Codex CLI) — command shape known, untested
+    - :class:`OpenAIBackend` (Codex CLI) — verified against Codex JSONL/CLI contract
     - :class:`GLMBackend`    (Zhipu AI)   — wraps Claude Code CLI via ``glm`` launcher
 
-Only ``claude`` is exercised end-to-end as of this commit. The others are
-structurally complete so that adding a real fallback is a small change
+Only ``claude`` is exercised end-to-end against a live account as of this commit.
+The Codex command, authentication environment, and JSONL parser have regression
+coverage; the remaining backends are structurally complete so that adding a real fallback is a small change
 (swap the CLI binary name, verify the JSON shape, done) rather than a
 full refactor.
 
@@ -90,7 +91,7 @@ class CLINotInstalledError(RuntimeError):
 # that gets auto-selected when a user switches vendor in the UI.
 
 VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
-    # Verified against ``GET https://api.anthropic.com/v1/models`` (2026-07-25).
+    # Verified against ``GET https://api.anthropic.com/v1/models`` (2026-08-19).
     # ``claude-opus-5`` is the current flagship Opus (1M ctx, 128K output) at
     # Opus 4.8 pricing; ``claude-mythos-5`` is deliberately absent — it is only
     # served to Project Glasswing accounts.
@@ -140,10 +141,16 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
         {"id": "gpt-5.2",                      "label": "GPT-5.2 (long-running agents)"},
     ],
     # Verified against ``GET https://open.bigmodel.cn/api/paas/v4/models``
-    # (2026-07-25) — Zhipu currently serves glm-4.5, glm-4.5-air, glm-4.6,
-    # glm-4.7, glm-5, glm-5-turbo, glm-5.1 and glm-5.2.
+    # (2026-08-19) — Zhipu currently serves glm-4.5, glm-4.5-air, glm-4.6,
+    # glm-4.7, glm-5, glm-5-turbo, glm-5.1, glm-5.2 and glm-5.3.
+    # glm-5.3 (2026-08-14) is the same 744B-A40B MoE base as 5.2 with a much
+    # heavier post-training stage: ~50% better coding on Zhipu's own evals and
+    # top open-weights on Terminal Bench 3.0. It ships through the GLM Coding
+    # Plan and is explicitly supported by the Claude Code CLI — which is
+    # exactly how ``GLMBackend`` runs it — so it is the new default.
     "glm": [
-        {"id": "glm-5.2",                      "label": "GLM-5.2 (thinking, latest flagship)"},
+        {"id": "glm-5.3",                      "label": "GLM-5.3 (thinking, latest flagship — best open-weights coding)"},
+        {"id": "glm-5.2",                      "label": "GLM-5.2 (thinking, previous flagship)"},
         {"id": "glm-5.1",                      "label": "GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)"},
         {"id": "glm-5-turbo",                  "label": "GLM-5 Turbo (fast, cheap)"},
         {"id": "glm-5",                        "label": "GLM-5"},
@@ -250,6 +257,16 @@ class AgentBackend(ABC):
                 return override
         return self.cli_bin
 
+    @property
+    def configured_bin(self) -> str:
+        """Public read of the configured CLI name/path.
+
+        ``services/agent_cli_installer`` needs this to decide whether the
+        binary is the stock one it knows how to fetch or a deployment override
+        it must leave alone.
+        """
+        return self._configured_bin()
+
     def resolve_bin(self) -> str | None:
         """Resolve the CLI to a runnable path, or ``None`` if not found.
 
@@ -305,8 +322,27 @@ class AgentBackend(ABC):
         allowed_tools: str,
         session_id: str | None,
         max_turns: int | None,
+        mcp_config_path: str | None = None,
+        stream_json: bool = False,
+        extra_args: list[str] | None = None,
     ) -> list[str]:
-        """Return argv for a subprocess.exec invocation."""
+        """Return argv for a subprocess.exec invocation.
+
+        The last three arguments exist for the Ask Agent panel, which needs
+        capabilities no task run does, and all three default to off so task
+        behaviour is untouched:
+
+        - ``mcp_config_path`` — mount a specific MCP server file and *only*
+          that file, so the assistant sees exactly the tools DevServer granted
+          it rather than whatever the operator has configured globally.
+        - ``stream_json`` — ask for incremental structured output instead of a
+          single JSON blob at exit, so the panel can render tokens and tool
+          activity as they happen.
+        - ``extra_args`` — escape hatch for vendor-specific flags.
+
+        A backend whose CLI cannot do one of these ignores it; callers must
+        treat all three as best-effort.
+        """
 
     #: Name of the env var this vendor uses for its API key. Subclasses
     #: override so that ``billing_mode='max'`` can strip it uniformly.
@@ -412,6 +448,9 @@ class ClaudeBackend(AgentBackend):
         allowed_tools: str,
         session_id: str | None,
         max_turns: int | None,
+        mcp_config_path: str | None = None,
+        stream_json: bool = False,
+        extra_args: list[str] | None = None,
     ) -> list[str]:
         # POSIX (macOS/Linux): prompt is the positional after ``-p`` — the
         # original, proven delivery. Windows: prompt goes on stdin (see
@@ -420,17 +459,36 @@ class ClaudeBackend(AgentBackend):
         cmd = [self.bin_argv0(), "-p"]
         if not self._deliver_prompt_on_stdin():
             cmd.append(prompt)
-        cmd += [
-            "--dangerously-skip-permissions",
-            "--output-format", "json",
-            "--model", model,
-        ]
+        if stream_json:
+            # --verbose is REQUIRED by the CLI alongside stream-json in print
+            # mode; --include-partial-messages upgrades the output from one
+            # line per finished message to real token deltas.
+            cmd += [
+                "--output-format", "stream-json",
+                "--verbose",
+                "--include-partial-messages",
+            ]
+        else:
+            cmd += ["--output-format", "json"]
+        # Autonomous task runs auto-approve every tool. The assistant panel
+        # deliberately does NOT pass this: --dangerously-skip-permissions
+        # overrides --allowedTools entirely, which would hand a browser chat
+        # box Bash and Write. Callers that omit it get deny-by-default.
+        if not (extra_args and "--permission-mode" in extra_args):
+            cmd.append("--dangerously-skip-permissions")
+        cmd += ["--model", model]
         if max_turns is not None:
             cmd.extend(["--max-turns", str(max_turns)])
         if allowed_tools:
             cmd.extend(["--allowedTools", allowed_tools])
+        if mcp_config_path:
+            # --strict-mcp-config suppresses ~/.claude.json and any project
+            # .mcp.json, so the subprocess sees only this file's servers.
+            cmd.extend(["--mcp-config", mcp_config_path, "--strict-mcp-config"])
         if session_id:
             cmd.extend(["--resume", session_id])
+        if extra_args:
+            cmd.extend(extra_args)
         return cmd
 
     def is_rate_limit_error(self, stdout: str, stderr: str, exit_code: int) -> bool:
@@ -603,6 +661,9 @@ class AntigravityBackend(AgentBackend):
         allowed_tools: str,  # noqa: ARG002 — agy has no tool-allow-list flag
         session_id: str | None,  # noqa: ARG002 — print mode has no resumable ID
         max_turns: int | None,  # noqa: ARG002 — agy has no --max-turns flag
+        mcp_config_path: str | None = None,  # noqa: ARG002 — agy has no MCP flag
+        stream_json: bool = False,  # noqa: ARG002 — agy has no --output-format
+        extra_args: list[str] | None = None,
     ) -> list[str]:
         # AUTONOMOUS / HEADLESS — these flags are mandatory. Do not remove:
         #   -p <prompt>                     non-interactive print mode (else a TUI).
@@ -621,6 +682,8 @@ class AntigravityBackend(AgentBackend):
             "--dangerously-skip-permissions",
             "--print-timeout", self._PRINT_TIMEOUT,
         ]
+        if extra_args:
+            cmd.extend(extra_args)
         return cmd
 
     def is_rate_limit_error(self, stdout: str, stderr: str, exit_code: int) -> bool:
@@ -652,7 +715,7 @@ class AntigravityBackend(AgentBackend):
 # Supported flags (what we use):
 #   --json                         JSONL event stream on stdout
 #   --model <MODEL>                model name (or Azure deployment name)
-#   --full-auto                    workspace-write sandbox, no prompts
+#   --sandbox workspace-write      allow edits inside the task worktree
 #   --skip-git-repo-check          let codex run in existing git worktree
 #   -C, --cd <DIR>                 working root
 #   -c key=value                   TOML config override (repeatable)
@@ -662,8 +725,9 @@ class AntigravityBackend(AgentBackend):
 #   Session resume is a distinct subcommand (``codex exec resume``) with a
 #   different shape — skipped here; each invocation runs fresh.
 #
-# Auth: reads ``OPENAI_API_KEY`` from env, or uses the ChatGPT OAuth login
-# stored by ``codex login``. For Azure AI Foundry, OPENAI_API_KEY is the
+# Auth: reads ``CODEX_API_KEY`` for automation, or uses the ChatGPT OAuth login
+# stored by ``codex login``. DevServer mirrors its existing OPENAI_API_KEY to
+# CODEX_API_KEY for standard OpenAI runs. For Azure AI Foundry, OPENAI_API_KEY is the
 # Azure resource key and extra ``-c`` overrides route codex through the
 # Azure provider (see build_command below).
 #
@@ -684,9 +748,21 @@ class OpenAIBackend(AgentBackend):
     cli_bin = "codex"
     bin_setting = "codex_bin"
     install_hint = "npm install -g @openai/codex"
-    # Codex CLI reads OPENAI_API_KEY. In 'max' mode we strip it so the
-    # CLI falls back to the ChatGPT-Plus OAuth session from ``codex login``.
+    # OPENAI_API_KEY remains the project's direct HTTP/Azure setting. Codex's
+    # documented automation variable is CODEX_API_KEY; build_env bridges them.
     api_key_env = "OPENAI_API_KEY"
+
+    def build_env(self, billing_mode: str = "api") -> dict[str, str] | None:
+        """Build a Codex environment without leaking API auth into Max runs."""
+        env = dict(os.environ)
+        if billing_mode == "max":
+            env.pop("OPENAI_API_KEY", None)
+            env.pop("CODEX_API_KEY", None)
+            return env
+
+        if env.get("OPENAI_API_KEY") and not env.get("CODEX_API_KEY"):
+            env["CODEX_API_KEY"] = env["OPENAI_API_KEY"]
+        return env
 
     #: ``gpt-5.5-codex`` shipped as this backend's default for a while but is
     #: not in Codex's model catalog and is rejected by the CLI. Tasks and
@@ -705,7 +781,14 @@ class OpenAIBackend(AgentBackend):
         allowed_tools: str,  # noqa: ARG002 — codex has no equivalent flag
         session_id: str | None,  # noqa: ARG002 — see module docstring
         max_turns: int | None,  # noqa: ARG002 — codex has no --max-turns
+        mcp_config_path: str | None = None,  # noqa: ARG002 — see below
+        stream_json: bool = False,  # noqa: ARG002 — codex always emits --json
+        extra_args: list[str] | None = None,
     ) -> list[str]:
+        # mcp_config_path is accepted but unused: codex mounts MCP servers via
+        # repeatable `-c mcp_servers.<name>.command=...` TOML overrides rather
+        # than a config file, so wiring it needs a translation step. Until then
+        # the assistant treats codex as a text-only vendor.
         # Azure AI Foundry routing. When OPENAI_BASE_URL is set we assume
         # the user wants an OpenAI-compatible alternative endpoint (Azure
         # is the only supported case today). Rather than ask the user to
@@ -725,7 +808,7 @@ class OpenAIBackend(AgentBackend):
             self.bin_argv0(), "exec",
             "--json",                      # JSONL event stream on stdout
             "--skip-git-repo-check",       # worktrees are valid repos but already on a branch
-            "--full-auto",                 # workspace-write sandbox + no approval prompts
+            "--sandbox", "workspace-write",  # explicit, supported automation sandbox
         ]
         if model:
             resolved = model if base_url else self._LEGACY_MODEL_ALIASES.get(model, model)
@@ -750,6 +833,10 @@ class OpenAIBackend(AgentBackend):
                     f'model_providers.azure.query_params={{api-version="{api_version}"}}',
                 ])
 
+        # extra_args must go BEFORE the prompt — codex mis-parses if the
+        # positional prompt is not last.
+        if extra_args:
+            cmd.extend(extra_args)
         # Prompt is positional and must come last.
         cmd.append(prompt)
         return cmd
@@ -807,6 +894,13 @@ class OpenAIBackend(AgentBackend):
                 )
                 if sid:
                     res.session_id = sid
+            elif etype == "item.completed":
+                item = payload.get("item") or {}
+                if item.get("type") in ("agent_message", "agent.message"):
+                    msg = item.get("text") or item.get("message") or ""
+                    if isinstance(msg, str) and msg:
+                        last_message = msg
+                        turns += 1
             elif etype in ("agent.message", "agent_message", "message"):
                 msg = payload.get("message") or payload.get("content") or ""
                 if isinstance(msg, str) and msg:
@@ -814,7 +908,9 @@ class OpenAIBackend(AgentBackend):
                     turns += 1
             elif etype in ("turn.completed", "token_count"):
                 usage = payload.get("usage") or {}
-                tt = usage.get("total_tokens") or usage.get("total") or 0
+                tt = usage.get("total_tokens") or usage.get("total")
+                if tt is None:
+                    tt = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
                 try:
                     total_tokens = int(tt) or total_tokens
                 except (TypeError, ValueError):
@@ -823,8 +919,10 @@ class OpenAIBackend(AgentBackend):
                 final = payload.get("last_agent_message") or payload.get("message")
                 if isinstance(final, str) and final:
                     last_message = final
-            elif etype == "error":
+            elif etype in ("error", "turn.failed"):
                 err_msg = payload.get("message") or payload.get("error") or ""
+                if isinstance(err_msg, dict):
+                    err_msg = err_msg.get("message") or str(err_msg)
                 if isinstance(err_msg, str) and err_msg:
                     errors.append(err_msg)
 

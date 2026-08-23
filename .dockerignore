@@ -1,0 +1,63 @@
+# Root build context for docker/Dockerfile — every target builds from here.
+#
+# Without this the context is ~2.7 GB (node_modules, .next, the worker venv and
+# worktrees/ full of agent checkouts) and, worse, `COPY apps/web/ .` in the
+# webbuild stage would bake apps/web/.env.local into an image layer. Deny
+# secrets and heavyweight generated trees; everything the Dockerfile actually
+# COPYs is listed in the "kept" note at the bottom.
+
+# --- secrets: never in a build context ---
+.env
+.env.*
+**/.env
+**/.env.*
+!config/.env.example
+*.pem
+*.key
+id_rsa*
+
+# --- VCS / CI local state ---
+.git
+.gitignore
+.github
+
+# --- dependency + build output trees (re-created inside the image) ---
+**/node_modules
+**/.next
+**/.venv
+**/.venv-*
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+
+# --- runtime + operational data, never part of an image ---
+worktrees/
+logs/
+backups/
+*.oci.tar
+*.tar.gz
+*.log
+
+# --- editor / OS noise ---
+.vscode
+.idea
+.DS_Store
+
+# Kept deliberately (required by docker/Dockerfile):
+#   docker/sourceless.sh   .py -> .pyc for the Pro modules, used in two stages
+#   docker/devserver-bootstrap.py
+#                          first-start schema apply + settings seed
+#   database/migrations/** the schema that bootstrap applies. NOTE: `logs/`
+#                          above is root-anchored (Go filepath.Match), so it
+#                          does NOT strip apps/web/src/app/api/logs — verified,
+#                          not assumed.
+#   apps/web/**            source, package.json, package-lock.json, public/, server.ts
+#   version.json           read by next.config.ts at build time
+#   apps/worker/**         pyproject.toml, uv.lock, src/
+#   apps/mcp-memory/**     optional Pro MCP server (bracketed COPY tolerates absence)
+#   .claude/skills/**      agent skills baked into the worker image
+#   docs/assistant/**      Ask Agent knowledge pack
+#   scripts/**             maintenance scripts the Ask Agent can propose

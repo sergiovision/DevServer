@@ -52,13 +52,66 @@ _VENDOR_CONFIGS: dict[str, dict] = {
         "format": "openai",
     },
     "google": {
-        # Google Generative AI REST endpoint. The model name is
-        # interpolated into the URL by the caller.
-        "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        # Google Generative AI REST endpoint. The model name *and the method*
+        # are interpolated by the builder — Gemini switches the URL, not a body
+        # flag, to stream (``generateContent`` → ``streamGenerateContent``).
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/{model}:{method}",
         "api_key_attr": "gemini_api_key",
         "format": "google",
     },
 }
+
+
+# ── Conversation helpers ──────────────────────────────────────────────────────
+#
+# Every builder below takes a *message list* rather than a single prompt string,
+# so the same code serves both the one-shot system calls (Fill Task, DevPlan,
+# memory rerank) and the multi-turn Ask Agent panel. ``complete()`` keeps its
+# original prompt-string signature by wrapping the prompt in a one-element list.
+
+ChatMessage = dict  # {"role": "user" | "assistant", "content": str}
+
+
+def _normalize_alternating(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Merge consecutive same-role turns and drop empties.
+
+    The Anthropic Messages API rejects a transcript whose roles do not strictly
+    alternate (``400 messages: roles must alternate``). A chat UI produces such
+    transcripts easily — e.g. two user messages in a row when the first turn
+    errored — so normalise instead of letting the vendor 400.
+    """
+    out: list[ChatMessage] = []
+    for msg in messages:
+        role = "assistant" if msg.get("role") == "assistant" else "user"
+        content = (msg.get("content") or "").strip()
+        if not content:
+            continue
+        if out and out[-1]["role"] == role:
+            out[-1]["content"] = f"{out[-1]['content']}\n\n{content}"
+        else:
+            out.append({"role": role, "content": content})
+    # Anthropic also requires the transcript to start with a user turn.
+    while out and out[0]["role"] == "assistant":
+        out.pop(0)
+    return out or [{"role": "user", "content": "(empty)"}]
+
+
+def _flatten_transcript(messages: list[ChatMessage], system: str | None) -> str:
+    """Render a transcript as one prompt string for the CLI (subscription) path.
+
+    The agent CLIs take a single ``-p`` prompt, so a multi-turn conversation has
+    to be flattened. This is lossy — the CLI sees a transcript it did not
+    produce — and is only used as a fallback; the Ask Agent panel's agentic path
+    uses the CLI's own ``--resume`` for real multi-turn continuity.
+    """
+    parts: list[str] = []
+    if system:
+        parts.append(system.strip())
+    for msg in messages:
+        label = "Assistant" if msg.get("role") == "assistant" else "User"
+        parts.append(f"{label}: {(msg.get('content') or '').strip()}")
+    parts.append("Assistant:")
+    return "\n\n".join(p for p in parts if p)
 
 
 # ── Builders ──────────────────────────────────────────────────────────────────
@@ -66,14 +119,20 @@ _VENDOR_CONFIGS: dict[str, dict] = {
 def _build_anthropic_request(
     api_key: str,
     model: str,
-    prompt: str,
+    messages: list[ChatMessage],
     max_tokens: int,
     json_mode: bool = False,
+    *,
+    system: str | None = None,
+    stream: bool = False,
+    tools: list[dict] | None = None,
 ) -> tuple[str, dict, dict]:
     """Return (url, headers, json_body) for Anthropic-format APIs.
 
     Anthropic has no dedicated JSON-output flag, so ``json_mode`` is a no-op
-    here — callers rely on the prompt + robust parsing for these vendors.
+    here — callers rely on the prompt + robust parsing for these vendors. The
+    system prompt is a **top-level body field**, not a message with
+    ``role: 'system'`` (that shape is an OpenAI-ism and Anthropic rejects it).
     """
     vendor_cfg = _VENDOR_CONFIGS.get("anthropic", {})
     url = vendor_cfg["url"]
@@ -85,17 +144,27 @@ def _build_anthropic_request(
     body: dict = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": _normalize_alternating(messages),
     }
+    if system:
+        body["system"] = system
+    if stream:
+        body["stream"] = True
+    if tools:
+        body["tools"] = tools
     return url, headers, body
 
 
 def _build_glm_request(
     api_key: str,
     model: str,
-    prompt: str,
+    messages: list[ChatMessage],
     max_tokens: int,
     json_mode: bool = False,
+    *,
+    system: str | None = None,
+    stream: bool = False,
+    tools: list[dict] | None = None,
 ) -> tuple[str, dict, dict]:
     """GLM uses Anthropic-compatible format, different URL + key.
 
@@ -110,20 +179,47 @@ def _build_glm_request(
     body: dict = {
         "model": model,
         "max_tokens": max_tokens,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": _normalize_alternating(messages),
     }
+    if system:
+        body["system"] = system
+    if stream:
+        body["stream"] = True
+    if tools:
+        body["tools"] = tools
     # Enable thinking for GLM-5.x models (per docs.z.ai/guides/overview/migrate-to-glm-new)
     if model.startswith("glm-5"):
         body["thinking"] = {"type": "enabled"}
+        # Thinking tokens come out of the same output budget, and GLM-5.1 will
+        # happily spend *all* of a small one before writing a single word of the
+        # answer (observed: max_tokens=64 → 64 thinking tokens, stop_reason
+        # max_tokens, empty text). Same failure mode, and same fix, as the
+        # Gemini floor in _build_google_request.
+        body["max_tokens"] = max(max_tokens, 4096)
     return url, headers, body
+
+
+def _openai_uses_completion_tokens(model: str) -> bool:
+    """True when the model rejects ``max_tokens`` in favour of ``max_completion_tokens``.
+
+    OpenAI's reasoning-era models (o-series, gpt-5.x) 400 on ``max_tokens``;
+    older chat models only understand ``max_tokens``. Sniff the model name
+    rather than picking one and breaking the other half of the range.
+    """
+    m = (model or "").lower()
+    return m.startswith(("gpt-5", "o1", "o3", "o4"))
 
 
 def _build_openai_request(
     api_key: str,
     model: str,
-    prompt: str,
+    messages: list[ChatMessage],
     max_tokens: int,
     json_mode: bool = False,
+    *,
+    system: str | None = None,
+    stream: bool = False,
+    tools: list[dict] | None = None,
 ) -> tuple[str, dict, dict]:
     """OpenAI Chat Completions format. Supports Azure Foundry via OPENAI_BASE_URL."""
     # Check for Azure Foundry / custom endpoint override
@@ -147,35 +243,63 @@ def _build_openai_request(
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+    # Chat Completions has no separate system field — instructions are the
+    # first message. Reasoning-era models use the newer ``developer`` role;
+    # keep ``system`` for older models that predate it.
+    chat: list[dict] = []
+    if system:
+        instruction_role = (
+            "developer" if base_url or _openai_uses_completion_tokens(model) else "system"
+        )
+        chat.append({"role": instruction_role, "content": system})
+    chat.extend(
+        {"role": m.get("role", "user"), "content": m.get("content", "")}
+        for m in messages
+    )
     # Azure Foundry requires max_completion_tokens for newer models
-    # (gpt-4o, gpt-4.1, gpt-5.x), while standard OpenAI uses max_tokens
+    # (gpt-4o, gpt-4.1, gpt-5.x), while older standard OpenAI models use
+    # max_tokens — and gpt-5.x/o-series reject it outright.
     if base_url:
-        body = {
-            "messages": [{"role": "user", "content": prompt}],
-            "max_completion_tokens": max_tokens,
-        }
+        body = {"messages": chat, "max_completion_tokens": max_tokens}
+    elif _openai_uses_completion_tokens(model):
+        body = {"model": model, "messages": chat, "max_completion_tokens": max_tokens}
     else:
-        body = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        }
+        body = {"model": model, "messages": chat, "max_tokens": max_tokens}
     # Standard OpenAI / Azure both support JSON output mode for chat models.
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    if stream:
+        body["stream"] = True
+        # Without this the final chunk carries no token counts at all.
+        body["stream_options"] = {"include_usage": True}
+    if tools:
+        body["tools"] = tools
     return url, headers, body
 
 
 def _build_google_request(
     api_key: str,
     model: str,
-    prompt: str,
+    messages: list[ChatMessage],
     max_tokens: int,
     json_mode: bool = False,
+    *,
+    system: str | None = None,
+    stream: bool = False,
+    tools: list[dict] | None = None,
 ) -> tuple[str, dict, dict]:
-    """Google Generative AI REST format."""
+    """Google Generative AI REST format.
+
+    Two Gemini-specific traps handled here: the assistant role on the wire is
+    ``"model"`` (not ``"assistant"``), and streaming changes the **URL method**
+    — ``:streamGenerateContent`` plus a mandatory ``alt=sse``, without which the
+    response is one big JSON array rather than an SSE stream.
+    """
     base = _VENDOR_CONFIGS["google"]["url"]
-    url = f"{base.format(model=model)}?key={api_key}"
+    method = "streamGenerateContent" if stream else "generateContent"
+    url = f"{base.format(model=model, method=method)}?key={api_key}"
+    if stream:
+        url += "&alt=sse"
     headers = {"Content-Type": "application/json"}
     gen_cfg: dict = {
         # Gemini 2.5+/3 spend output tokens on internal "thinking"; a tight
@@ -187,10 +311,20 @@ def _build_google_request(
         # Force structured output: the model returns bare JSON with no markdown
         # fences or prose preamble — exactly what the JSON callers expect.
         gen_cfg["responseMimeType"] = "application/json"
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}],
+    body: dict = {
+        "contents": [
+            {
+                "role": "model" if m.get("role") == "assistant" else "user",
+                "parts": [{"text": m.get("content", "")}],
+            }
+            for m in messages
+        ],
         "generationConfig": gen_cfg,
     }
+    if system:
+        body["systemInstruction"] = {"parts": [{"text": system}]}
+    if tools:
+        body["tools"] = [{"functionDeclarations": tools}]
     return url, headers, body
 
 
@@ -282,11 +416,14 @@ async def _complete_via_cli(
     API-key env var is stripped via ``build_env(billing_mode='max')`` so the
     CLI falls back to its OAuth / subscription session.
     """
-    from services import agent_backends
+    from services import agent_backends, agent_cli_installer
     from services import proc as proc_util
 
     backend = agent_backends.get_backend(vendor)
-    if not backend.is_available():
+    # The image ships no vendor CLIs — fetch this one on first use. No task
+    # context here, so no events: the install is logged and, if it fails, the
+    # existing not-installed message explains the fix.
+    if not await agent_cli_installer.ensure_cli(backend):
         raise ValueError(backend.not_installed_message())
     cmd = backend.build_command(
         prompt=prompt,
@@ -396,21 +533,83 @@ async def complete(
             vendor=vendor, model=model, prompt=prompt, timeout=timeout,
         )
 
-    cfg = _VENDOR_CONFIGS[vendor]
-    api_key_attr = cfg["api_key_attr"]
-    api_key = getattr(settings, api_key_attr, "") or ""
-    if not api_key:
-        raise ValueError(
-            f"System LLM vendor is {vendor!r} but {api_key_attr.upper()} "
-            f"is not set in .env"
+    return await _complete_via_http(
+        vendor=vendor,
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        system=None,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        json_mode=json_mode,
+    )
+
+
+async def complete_chat(
+    *,
+    vendor: str,
+    model: str,
+    messages: list[ChatMessage],
+    system: str | None = None,
+    max_tokens: int = 4096,
+    timeout: int = 120,
+    json_mode: bool = False,
+    mode: str = "api",
+) -> str:
+    """Multi-turn sibling of :func:`complete` — a transcript plus a system prompt.
+
+    Same vendors, same auth, same billing modes; the difference is that the
+    caller supplies a ``[{"role": ..., "content": ...}]`` list and an optional
+    system prompt instead of one prompt string. This is what the Ask Agent panel
+    uses for its non-agentic (chat) turns.
+
+    ``mode`` defaults to ``'api'`` here, not ``'max'``: the CLI path can only
+    take a single prompt, so a subscription-mode chat turn is flattened into a
+    fabricated transcript (see :func:`_flatten_transcript`) and loses real turn
+    structure. Callers that want genuine multi-turn under a subscription should
+    use the agentic path's ``--resume`` instead.
+    """
+    if vendor not in _BUILDERS:
+        raise ValueError(f"Unknown system LLM vendor: {vendor!r}")
+    if mode == "max" and vendor != "glm":
+        return await _complete_via_cli(
+            vendor=vendor,
+            model=model,
+            prompt=_flatten_transcript(messages, system),
+            timeout=timeout,
         )
+    return await _complete_via_http(
+        vendor=vendor,
+        model=model,
+        messages=messages,
+        system=system,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        json_mode=json_mode,
+    )
+
+
+async def _complete_via_http(
+    *,
+    vendor: str,
+    model: str,
+    messages: list[ChatMessage],
+    system: str | None,
+    max_tokens: int,
+    timeout: int,
+    json_mode: bool,
+) -> str:
+    """Shared direct-HTTP leg for :func:`complete` and :func:`complete_chat`."""
+    api_key = resolve_api_key(vendor)
 
     builder = _BUILDERS[vendor]
-    url, headers, body = builder(api_key, model, prompt, max_tokens, json_mode)
+    url, headers, body = builder(
+        api_key, model, messages, max_tokens, json_mode, system=system,
+    )
 
+    prompt_len = sum(len(m.get("content") or "") for m in messages)
     logger.info(
-        "System LLM call: vendor=%s model=%s prompt_len=%d",
-        vendor, model, len(prompt),
+        "System LLM call: vendor=%s model=%s turns=%d prompt_len=%d",
+        vendor, model, len(messages), prompt_len,
     )
 
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -426,3 +625,18 @@ async def complete(
     if not text:
         logger.warning("System LLM returned empty text for vendor=%s", vendor)
     return text
+
+
+def resolve_api_key(vendor: str) -> str:
+    """Return the configured API key for ``vendor`` or raise a actionable error."""
+    cfg = _VENDOR_CONFIGS.get(vendor)
+    if cfg is None:
+        raise ValueError(f"Unknown system LLM vendor: {vendor!r}")
+    api_key_attr = cfg["api_key_attr"]
+    api_key = getattr(settings, api_key_attr, "") or ""
+    if not api_key:
+        raise ValueError(
+            f"System LLM vendor is {vendor!r} but {api_key_attr.upper()} "
+            f"is not set in .env"
+        )
+    return api_key

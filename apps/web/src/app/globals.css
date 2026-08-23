@@ -46,7 +46,56 @@
   height: 100vh;
   overflow-y: auto;
   z-index: 1030;
-  transition: transform 0.2s ease;
+  transition: transform 0.2s ease, width 0.2s ease;
+}
+
+/* Icons-only rail. Desktop only: on mobile the sidebar is an off-canvas
+   drawer, where a 56px rail would be pointless — so every rule here is
+   scoped to the wide viewport and the drawer keeps its labels. */
+@media (min-width: 768px) {
+  .app-sidebar.collapsed {
+    width: 56px;
+  }
+
+  .app-sidebar.collapsed .app-sidebar-nav-title,
+  .app-sidebar.collapsed .app-sidebar-nav-label {
+    display: none;
+  }
+
+  .app-sidebar.collapsed .app-sidebar-header {
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
+  }
+
+  .app-sidebar.collapsed .app-sidebar-nav {
+    padding-top: 0.75rem;
+  }
+
+  .app-sidebar.collapsed .app-sidebar-nav-link {
+    justify-content: center;
+    gap: 0;
+    padding: 0.6rem 0;
+    /* The 3px active marker would push the icon off-centre. */
+    border-left-width: 0;
+    border-right: 3px solid transparent;
+    position: relative;
+  }
+
+  .app-sidebar.collapsed .app-sidebar-nav-link.active {
+    border-right-color: var(--cui-primary);
+  }
+
+  /* The "needs you" count has no room beside the icon — pin it to the
+     corner so the signal survives the collapse. */
+  .app-sidebar.collapsed .app-sidebar-nav-badge {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.4rem;
+    margin: 0 !important;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.3rem;
+    line-height: 1;
+  }
 }
 
 .app-sidebar-header {
@@ -121,9 +170,10 @@
   z-index: 1029;
 }
 
-/* Hamburger button - hidden on desktop */
+/* Hamburger: collapses the rail on desktop, opens the drawer on mobile. */
 .app-sidebar-toggler {
-  display: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 /* Mobile: sidebar becomes an off-canvas drawer */
@@ -143,11 +193,6 @@
 
   .app-sidebar-backdrop.show {
     display: block;
-  }
-
-  .app-sidebar-toggler {
-    display: inline-flex;
-    align-items: center;
   }
 }
 
@@ -226,4 +271,113 @@ h2 {
 @keyframes notif-slide-up {
   from { transform: translateY(100%); opacity: 0; }
   to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* ─── Ask Agent panel ──────────────────────────────────────────────────────
+   Layering: sidebar 1030, its backdrop 1029, the notification bar 9999. The
+   drawer sits above the sidebar but below notifications, and the FAB is lifted
+   clear of the notification bar so an error toast never covers it. */
+
+.ask-agent-fab {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 4.25rem;
+  z-index: 1036;
+  width: 3.25rem;
+  height: 3.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.ask-agent-fab:hover {
+  transform: translateY(-2px);
+}
+
+/* With the drawer open the button moves clear of it and acts as the toggle. */
+.ask-agent-fab.is-open {
+  opacity: 0.85;
+  right: calc(var(--ask-agent-width, 440px) + 1.5rem);
+}
+
+/* The drawer insets the page instead of covering it — otherwise it sits on top
+   of the header's right-hand controls (theme toggle) and they can't be
+   clicked. Padding goes on .app-shell so the sticky header shifts too; the
+   sidebar is position:fixed on the left and is unaffected. */
+body.ask-agent-open .app-shell {
+  padding-right: var(--ask-agent-width, 440px);
+}
+
+/* Without this the padding above does nothing: a flex item defaults to
+   min-width:auto, so a wide table (the Repos and Tasks grids) floors the
+   wrapper at its min-content width and it overflows the padded box straight
+   back under the drawer. */
+body.ask-agent-open .app-shell > .wrapper {
+  min-width: 0;
+}
+
+.app-shell,
+.ask-agent-fab {
+  transition: padding-right 0.18s ease, right 0.18s ease;
+}
+
+.ask-agent-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  z-index: 1035;
+  background: var(--cui-body-bg);
+  border-left: 1px solid var(--cui-border-color);
+  box-shadow: -0.5rem 0 1.5rem rgba(0, 0, 0, 0.12);
+  animation: ask-agent-slide-in 0.18s ease-out;
+}
+
+/* No backdrop by design — the operator keeps reading the page they are asking
+   about. On a phone there is no room for that, so it goes full width. */
+@media (max-width: 575.98px) {
+  .ask-agent-panel {
+    width: 100vw !important;
+  }
+  .ask-agent-resizer {
+    display: none;
+  }
+  /* Full-width drawer: insetting would leave nothing, and the FAB would be
+     pushed off-screen. The panel's own close button takes over. */
+  body.ask-agent-open .app-shell {
+    padding-right: 0;
+  }
+  .ask-agent-fab.is-open {
+    display: none;
+  }
+}
+
+.ask-agent-resizer {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+}
+
+.ask-agent-resizer:hover {
+  background: var(--cui-border-color);
+}
+
+.assistant-md > *:last-child {
+  margin-bottom: 0 !important;
+}
+
+.assistant-md ul,
+.assistant-md ol {
+  margin-bottom: 0.5rem;
+}
+
+@keyframes ask-agent-slide-in {
+  from { transform: translateX(1.5rem); opacity: 0; }
+  to   { transform: translateX(0);      opacity: 1; }
 }

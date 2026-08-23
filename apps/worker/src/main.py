@@ -21,6 +21,7 @@ from config import settings
 from routes.health import router as health_router
 from routes.enhanced_health import router as enhanced_health_router
 from routes.internal import router as internal_router
+from routes.assistant import router as assistant_router
 from routes.env_config import router as env_config_router
 from services import embeddings
 from services import telemetry
@@ -28,24 +29,43 @@ from services.queue_consumer import start_consumer, stop_consumer
 from services.scheduler import start_scheduler, stop_scheduler
 from services.telegram_polling import start_polling, stop_polling
 
+
+def _optional_module_is_absent(exc: ModuleNotFoundError, module: str) -> bool:
+    """Return whether *module* (or one of its parents) is genuinely absent.
+
+    Pro modules are deliberately stripped from the free distribution.  A
+    missing dependency imported *by* a present Pro module is different: hiding
+    that error would start a superficially healthy worker with every Pro route
+    missing, including ``/internal/license/status``.
+    """
+    missing = exc.name or ""
+    return missing == module or module.startswith(f"{missing}.")
+
+
 # Pro features: conditionally import night cycle + pro routes.
 # If services/pro/ is absent (free version), these gracefully degrade.
 try:
     from services.pro.night_cycle import resume_if_active
-except ImportError:
+except ModuleNotFoundError as exc:
+    if not _optional_module_is_absent(exc, "services.pro.night_cycle"):
+        raise
     async def resume_if_active(): pass  # type: ignore[misc]
 
 # Pro licensing: evaluate the license at startup and gate Pro features on it.
 # Absent in the free edition (services/pro/ stripped) → no-op.
 try:
     from services.pro.licensing import init_license
-except ImportError:
+except ModuleNotFoundError as exc:
+    if not _optional_module_is_absent(exc, "services.pro.licensing"):
+        raise
     async def init_license(): pass  # type: ignore[misc]
 
 try:
     from routes.pro_internal import router as pro_router
     _has_pro_routes = True
-except ImportError:
+except ModuleNotFoundError as exc:
+    if not _optional_module_is_absent(exc, "routes.pro_internal"):
+        raise
     _has_pro_routes = False
 
 logging.basicConfig(
@@ -100,6 +120,7 @@ app = FastAPI(
 app.include_router(health_router)
 app.include_router(enhanced_health_router)
 app.include_router(internal_router)
+app.include_router(assistant_router)
 app.include_router(env_config_router)
 if _has_pro_routes:
     app.include_router(pro_router)

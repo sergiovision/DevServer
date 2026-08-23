@@ -29,12 +29,65 @@ binary raises ``FileNotFoundError`` — identical across platforms — so existi
 
 import abc
 import asyncio
+import contextlib
+import queue as _queue
 import subprocess
 import sys
 import threading
-from typing import Callable
+from typing import AsyncIterator, Callable
 
-__all__ = ["run", "run_shell_streamed", "ProcessRunner"]
+__all__ = ["run", "run_shell_streamed", "run_streamed", "ProcessRunner"]
+
+# ── Streaming defaults ──────────────────────────────────────────────────────
+# A single ``--output-format stream-json`` line from an agent CLI carries a
+# whole tool_result, which for a ``Read`` of a large file is megabytes. We do
+# our own newline splitting over ``read(n)`` chunks rather than
+# ``StreamReader.readline()`` precisely so that a long line cannot raise
+# ``ValueError: Separator is not found, and chunk exceed the limit`` (the 64 KiB
+# default) and kill the stream mid-conversation. ``line_limit`` is only a
+# safety valve: a "line" that grows past it is flushed as-is instead of being
+# buffered forever by a process that never emits a newline.
+_DEFAULT_LINE_LIMIT = 8 * 1024 * 1024
+_READ_CHUNK = 64 * 1024
+# Bounded so a stalled consumer applies backpressure all the way down: the
+# queue fills, the pump stops draining the pipe, and the child blocks on write
+# instead of the worker ballooning in memory.
+_QUEUE_MAXSIZE = 256
+
+
+async def _pump_stream(
+    reader: asyncio.StreamReader,
+    tag: str,
+    out: asyncio.Queue,
+    line_limit: int,
+) -> None:
+    """Split ``reader`` into lines and put ``(tag, line)`` onto ``out``."""
+    buf = bytearray()
+    while True:
+        chunk = await reader.read(_READ_CHUNK)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        while True:
+            idx = buf.find(b"\n")
+            if idx < 0:
+                break
+            line = bytes(buf[: idx + 1])
+            del buf[: idx + 1]
+            await out.put((tag, line.decode(errors="replace")))
+        if len(buf) > line_limit:
+            await out.put((tag, bytes(buf).decode(errors="replace")))
+            buf.clear()
+    if buf:
+        await out.put((tag, bytes(buf).decode(errors="replace")))
+
+
+async def _pumps_sentinel(pumps: list[asyncio.Task], out: asyncio.Queue) -> None:
+    """Wait for every pump, then push the ``None`` end-of-output sentinel."""
+    try:
+        await asyncio.gather(*pumps)
+    finally:
+        await out.put(None)
 
 
 class ProcessRunner(abc.ABC):
@@ -70,6 +123,32 @@ class ProcessRunner(abc.ABC):
         on_line: Callable[[str], None],
     ) -> int:
         """Run a *shell* command, streaming merged stdout+stderr line-by-line."""
+
+    @abc.abstractmethod
+    def run_streamed(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict | None = None,
+        timeout: float | None = None,
+        stdin_input: bytes | None = None,
+        line_limit: int = _DEFAULT_LINE_LIMIT,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Run ``cmd``, yielding ``(channel, line)`` as output arrives.
+
+        ``channel`` is ``'stdout'`` or ``'stderr'``; the final yield is
+        ``('exit', str(returncode))``. Unlike
+        :meth:`run_shell_streamed` this takes an argv list (no shell quoting),
+        keeps **stderr on its own channel** (a CLI warning must never be
+        interleaved into an NDJSON stdout stream), and accepts ``env`` — all
+        three are prerequisites for driving an agent CLI in
+        ``--output-format stream-json`` mode.
+
+        Implementations must kill the child when the consumer closes the
+        generator (``GeneratorExit`` / cancellation), otherwise an abandoned
+        browser tab leaks an agent process holding a repo directory.
+        """
 
 
 class PosixProcessRunner(ProcessRunner):
@@ -170,6 +249,68 @@ class PosixProcessRunner(ProcessRunner):
         await proc.wait()
         return proc.returncode or 0
 
+    async def run_streamed(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict | None = None,
+        timeout: float | None = None,
+        stdin_input: bytes | None = None,
+        line_limit: int = _DEFAULT_LINE_LIMIT,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Native-asyncio streaming exec. See :meth:`ProcessRunner.run_streamed`."""
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+            env=env,
+            stdin=(
+                asyncio.subprocess.PIPE
+                if stdin_input is not None
+                else asyncio.subprocess.DEVNULL
+            ),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=max(line_limit, _READ_CHUNK),
+        )
+        out: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_MAXSIZE)
+        assert proc.stdout is not None and proc.stderr is not None
+        pumps = [
+            asyncio.create_task(_pump_stream(proc.stdout, "stdout", out, line_limit)),
+            asyncio.create_task(_pump_stream(proc.stderr, "stderr", out, line_limit)),
+        ]
+        sentinel = asyncio.create_task(_pumps_sentinel(pumps, out))
+
+        if stdin_input is not None and proc.stdin is not None:
+            proc.stdin.write(stdin_input)
+            with contextlib.suppress(Exception):
+                await proc.stdin.drain()
+            proc.stdin.close()
+
+        try:
+            # asyncio.timeout(None) is a valid no-op, so one code path covers both.
+            async with asyncio.timeout(timeout):
+                while True:
+                    item = await out.get()
+                    if item is None:
+                        break
+                    yield item
+                rc = await proc.wait()
+            yield ("exit", str(rc))
+        finally:
+            # Reached on normal exit, on timeout, and — critically — when the
+            # consumer abandons the generator: GeneratorExit lands here and the
+            # child must not survive it.
+            for task in (sentinel, *pumps):
+                task.cancel()
+            with contextlib.suppress(Exception):
+                await asyncio.gather(sentinel, *pumps, return_exceptions=True)
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+
 
 class WindowsProcessRunner(PosixProcessRunner):
     """Windows-native runner: native transport when available, else a thread.
@@ -226,6 +367,110 @@ class WindowsProcessRunner(PosixProcessRunner):
                 )
             except subprocess.TimeoutExpired:
                 raise asyncio.TimeoutError from None
+
+    async def run_streamed(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict | None = None,
+        timeout: float | None = None,
+        stdin_input: bytes | None = None,
+        line_limit: int = _DEFAULT_LINE_LIMIT,
+    ) -> AsyncIterator[tuple[str, str]]:
+        # An async generator does nothing until the first ``__anext__``, so the
+        # SelectorEventLoop's NotImplementedError surfaces here rather than at
+        # construction — hence the manual first-step probe.
+        native = super().run_streamed(
+            cmd,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            stdin_input=stdin_input,
+            line_limit=line_limit,
+        )
+        try:
+            first = await native.__anext__()
+        except StopAsyncIteration:
+            return
+        except NotImplementedError:
+            with contextlib.suppress(Exception):
+                await native.aclose()
+            async for item in self._run_streamed_thread(
+                cmd, cwd, env, timeout, stdin_input, line_limit
+            ):
+                yield item
+            return
+        try:
+            yield first
+            async for item in native:
+                yield item
+        finally:
+            with contextlib.suppress(Exception):
+                await native.aclose()
+
+    async def _run_streamed_thread(
+        self,
+        cmd: list[str],
+        cwd: str | None,
+        env: dict | None,
+        timeout: float | None,
+        stdin_input: bytes | None,
+        line_limit: int,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Thread-based streaming fallback for the SelectorEventLoop.
+
+        One reader thread per pipe feeds a plain ``queue.Queue``; the event loop
+        drains it through the default executor. ``line_limit`` is unused here —
+        ``Popen`` pipes iterate by line with no separator cap.
+        """
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE if stdin_input is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        q: _queue.Queue = _queue.Queue(maxsize=_QUEUE_MAXSIZE)
+        alive = {"n": 2}
+        lock = threading.Lock()
+
+        def reader(pipe, tag: str) -> None:
+            try:
+                for raw in iter(pipe.readline, b""):
+                    q.put((tag, raw.decode(errors="replace")))
+            finally:
+                with lock:
+                    alive["n"] -= 1
+                    if alive["n"] == 0:
+                        q.put(None)
+
+        threads = [
+            threading.Thread(target=reader, args=(proc.stdout, "stdout"), daemon=True),
+            threading.Thread(target=reader, args=(proc.stderr, "stderr"), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        if stdin_input is not None and proc.stdin is not None:
+            with contextlib.suppress(Exception):
+                proc.stdin.write(stdin_input)
+                proc.stdin.close()
+
+        loop = asyncio.get_running_loop()
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    item = await loop.run_in_executor(None, q.get)
+                    if item is None:
+                        break
+                    yield item
+                rc = await loop.run_in_executor(None, proc.wait)
+            yield ("exit", str(rc or 0))
+        finally:
+            if proc.poll() is None:
+                with contextlib.suppress(Exception):
+                    proc.kill()
 
     # ── Blocking fallbacks, run on a worker thread ──────────────────────
     @staticmethod
@@ -366,4 +611,34 @@ async def run_shell_streamed(
     """
     return await _RUNNER.run_shell_streamed(
         cmd, cwd=cwd, timeout=timeout, on_line=on_line
+    )
+
+
+def run_streamed(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict | None = None,
+    timeout: float | None = None,
+    stdin_input: bytes | None = None,
+    line_limit: int = _DEFAULT_LINE_LIMIT,
+) -> AsyncIterator[tuple[str, str]]:
+    """Run ``cmd`` via the platform runner, yielding output lines as they arrive.
+
+    Yields ``('stdout' | 'stderr', line)`` and finally ``('exit', str(rc))``.
+    Raises ``asyncio.TimeoutError`` on timeout. This is the transport behind the
+    Ask Agent panel: it keeps stderr separate so an agent CLI's NDJSON stdout
+    stays parseable, and it kills the child as soon as the consumer stops
+    iterating.
+
+    Note this is a plain ``def`` returning an async generator, so nothing runs
+    until the first ``async for`` step.
+    """
+    return _RUNNER.run_streamed(
+        cmd,
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        stdin_input=stdin_input,
+        line_limit=line_limit,
     )

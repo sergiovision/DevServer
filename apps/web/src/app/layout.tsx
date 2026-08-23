@@ -3,6 +3,7 @@ import './globals.css';
 import { AppShell } from '@/components/AppShell';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { NotificationProvider } from '@/components/NotificationProvider';
+import { AssistantProvider } from '@/components/AssistantProvider';
 
 export function generateMetadata(): Metadata {
   const host = process.env.NEXT_PUBLIC_HOSTNAME || 'unknown';
@@ -32,7 +33,11 @@ export default function RootLayout({
       <body>
         <ThemeProvider>
           <NotificationProvider>
-            <AppShell>{children}</AppShell>
+            {/* Wraps AppShell so any page can register what it is showing and
+                the Ask Agent panel can answer about it. */}
+            <AssistantProvider>
+              <AppShell>{children}</AppShell>
+            </AssistantProvider>
           </NotificationProvider>
         </ThemeProvider>
       </body>

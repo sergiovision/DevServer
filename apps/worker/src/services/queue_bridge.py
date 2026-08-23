@@ -25,11 +25,10 @@ async def enqueue_via_web(task_id: int) -> bool:
     decide whether a failed enqueue is fatal (the task row already exists in
     ``status='pending'`` and can be enqueued again).
     """
-    web_port = settings.web_port  # Next.js port (WEB_PORT in .env, default 3200)
     try:
         async with httpx.AsyncClient(timeout=8) as client:
             resp = await client.post(
-                f"http://localhost:{web_port}/api/tasks/{task_id}/enqueue"
+                f"{settings.web_base_url}/api/tasks/{task_id}/enqueue"
             )
             return resp.status_code == 200
     except Exception:

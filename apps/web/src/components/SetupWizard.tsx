@@ -261,7 +261,12 @@ export function SetupWizard({ deployMode = 'development' }: { deployMode?: strin
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ variables: values }),
       });
-      if (!res.ok) throw new Error('Failed to save configuration');
+      if (!res.ok) {
+        // The worker explains what it could not write and why; "Failed to save
+        // configuration" on its own sent people looking in the wrong place.
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail || body?.error || 'Failed to save configuration');
+      }
 
       // 2. Apply config to running worker
       await fetch('/api/env/apply', { method: 'POST' });

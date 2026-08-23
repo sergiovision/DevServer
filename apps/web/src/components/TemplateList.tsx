@@ -43,7 +43,7 @@ const EMPTY_FORM = {
   description: '',
   acceptance: '',
   task_type: 'coding' as TaskType,
-  git_flow: 'branch' as GitFlow,
+  git_flow: 'untracked' as GitFlow,
   claude_mode: 'max' as ClaudeMode,
   agent_vendor: 'anthropic' as AgentVendor,
   claude_model: '',
@@ -280,9 +280,10 @@ export function TemplateList({ templates }: TemplateListProps) {
             <CCol md={4}>
               <CFormLabel>Git Flow</CFormLabel>
               <CFormSelect name="git_flow" value={form.git_flow} onChange={handleChange}>
+                <option value="untracked">Untracked</option>
+                <option value="commit">Direct Commit</option>
+                <option value="patch">Patch</option>
                 <option value="branch">Branch + PR</option>
-                <option value="commit">Direct commit</option>
-                <option value="patch">Patch only</option>
               </CFormSelect>
             </CCol>
             )}

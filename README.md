@@ -12,14 +12,14 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=next.js&logoColor=white)](https://nextjs.org/)
 [![React 19](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](https://react.dev/)
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://python.org/)
+[![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker/)
 
 <img src="assets/viewtask.png" alt="DevServer task detail view — live event log, run history, and the agent settings sidebar" width="90%" />
 
-[Why](#why-devserver) · [Features](#features) · [Architecture](#architecture) · [Design Decisions](#design-decisions) · [Quick Start](#quick-start) · [Project Layout](#project-layout) · [Pro Edition](#pro-edition) · [Roadmap](#roadmap)
+[Why](#why-devserver) · [Features](#features) · [What's new](#whats-new-in-1015) · [Architecture](#architecture) · [Design Decisions](#design-decisions) · [Quick Start](#quick-start) · [Project Layout](#project-layout) · [Pro Edition](#pro-edition) · [Roadmap](#roadmap)
 
 </div>
 
@@ -191,6 +191,84 @@ A schedule binds a name + cron expression (`@hourly`, `@daily`, `every 30m`, `ev
 
 📂 [`apps/web/src/components/SchedulesPanel.tsx`](apps/web/src/components/SchedulesPanel.tsx) · [`apps/worker/src/services/scheduler.py`](apps/worker/src/services/scheduler.py)
 
+---
+
+### Ask Agent — an assistant that knows the product and the page you're on
+
+A button in the bottom-right of every screen (or `⌘/Ctrl + K`) opens a chat drawer that runs on your configured **System LLM** — so it costs whatever that model costs, and nothing else. It always knows which page you're looking at, and on a task or repo page it knows *which* task or repo, so "why is this stuck?" is answered about that one.
+
+It is grounded in a curated handbook shipped in the repo ([`docs/assistant/`](docs/assistant/)) rather than the model's memory of DevServer, so it explains the actual screens, statuses, git flows and settings this version has. Answers stream token by token.
+
+A combobox in the drawer's toolbar picks the **model** for the next turn, from whatever your System LLM vendor offers — reach for a bigger model on a hard question, drop back to a cheap one for the rest. The vendor itself stays a Settings decision, since changing it also changes credentials and billing. Your choice is remembered.
+
+In the free edition it answers questions and says plainly when it cannot see something. **In Pro** it gains tools: semantic code and doc search across all your repositories, the per-repo memory knowledge base, prior decisions, and live task state — plus the ability to *propose* a fix, such as running `scripts/dbrestart.sh` when Postgres is down, which runs only after you click **Run**. It never has a shell of its own.
+
+📂 [`apps/web/src/components/AskAgentPanel.tsx`](apps/web/src/components/AskAgentPanel.tsx) · [`apps/worker/src/routes/assistant.py`](apps/worker/src/routes/assistant.py) · [`apps/worker/src/services/assistant_kb.py`](apps/worker/src/services/assistant_kb.py)
+
+---
+
+## What's new in 1.0.15
+
+Since **1.0.14**. Highlights first; the rest is grouped by area.
+
+### Ask Agent
+
+An in-product assistant on every screen (`⌘/Ctrl + K`), running on your configured System LLM and grounded in a shipped handbook rather than the model's memory of DevServer. It knows which page — and which task or repo — you are looking at. Streams token by token, with a per-turn model picker. Free answers questions; Pro adds cross-repo search, memory recall, and one-click proposed fixes that only run after you click **Run**. Full description [above](#ask-agent--an-assistant-that-knows-the-product-and-the-page-youre-on).
+
+### Docker: one Dockerfile, images that fit
+
+- **All images build from a single [`docker/Dockerfile`](docker/Dockerfile)**, selected with `--target web` / `--target worker` (`pydeps` is a build-time convenience stage). The three old files — `docker/Dockerfile.web`, `docker/Dockerfile.worker`, `apps/worker/Dockerfile` — are gone.
+- **The image no longer bakes in the vendor CLIs.** `claude` (316 MB), `codex` (259 MB) and `agy` (196 MB) were 771 MB of a 1.9 GB image, for four vendors of which a deployment typically uses one. The worker now fetches the CLI a task actually selects, into `AGENT_CLI_DIR` — a named volume, so it downloads once per deployment (~60–90 s), not once per container start. A vendor you never pick is never fetched.
+  - Version pins moved from Dockerfile `ARG`s to `.env`: `CLAUDE_CODE_VERSION`, `CODEX_VERSION`, `AGY_VERSION`.
+  - `AGENT_CLI_AUTO_INSTALL=false` for air-gapped deployments — a missing CLI then fails fast with an actionable message instead of reaching for the network.
+  - Point any `*_BIN` var at an absolute path (e.g. `CLAUDE_BIN=/host-clis/bin/claude`) and the installer stands down for that binary.
+  - `GET /health/detailed` now reports install directory, auto-install state, which CLIs are present, and any install failure.
+- **The web image ships as a Next.js standalone build** (`output: 'standalone'`), keeping only the traced dependency set instead of the full `node_modules` tree (~336 MB image). The custom server is preserved as the entrypoint, since it is what terminates the `/api/ws` upgrade.
+- **First-start bootstrap.** [`docker/devserver-bootstrap.py`](docker/devserver-bootstrap.py) applies the database schema and seeds settings the first time the stack comes up, so a fresh `docker compose up -d --build` needs no separate migrate step. Images are built from this checkout — DevServer publishes nothing to a container registry, and `DEVSERVER_IMAGE` lets you retag for one of your own.
+- **New root [`.dockerignore`](.dockerignore).** The build context was ~2.7 GB and, worse, `COPY apps/web/ .` would have baked `apps/web/.env.local` into an image layer.
+- **Compose hardening.** Services share YAML anchors instead of duplicated blocks; container names and the Postgres user/database are parameterised (`DEVSERVER_STACK`, `PGUSER`, `PGDATABASE`); the worker port is published on `127.0.0.1` by default (`WORKER_BIND=0.0.0.0` opens it deliberately); the Claude credential mount target moved to `/home/devserver/.claude`, matching the unprivileged `devserver` user (uid 10001) the containers now run as.
+
+### Agents and models
+
+- **GLM-5.3 is the new default GLM model** — same 744B-A40B MoE base as 5.2 with a much heavier post-training stage (~50% better coding on Zhipu's evals, top open-weights on Terminal Bench 3.0). 5.2 remains selectable.
+- **The Codex (OpenAI) backend is no longer "command shape known, untested."** `CODEX_API_KEY` is mirrored from `OPENAI_API_KEY` for CLI subprocesses (and both are stripped in `max` mode so the ChatGPT OAuth session is used); `--full-auto` became the explicit `--sandbox workspace-write`; the JSONL parser now handles `item.completed`, `turn.failed`, dict-shaped errors, and derives token totals from `input_tokens`/`output_tokens` when no total is reported. Covered by new regression tests.
+- **Backends can be driven in streaming mode.** `build_command` gained `stream_json`, `mcp_config_path` and `extra_args`, all defaulting to off so task runs are unchanged. Claude runs get `--strict-mcp-config` when an MCP file is mounted, and callers that pass `--permission-mode` no longer get `--dangerously-skip-permissions` bolted on — that is what keeps a browser chat box from inheriting Bash and Write.
+- **Model catalogues re-verified** against the Anthropic and Zhipu model endpoints (2026-08-19).
+
+### System LLM client
+
+- **Multi-turn and streaming across all four vendors.** New `complete_chat()` takes a transcript plus a system prompt; every request builder gained `system`, `stream` and `tools`. `complete()` is unchanged.
+- Vendor-specific traps handled rather than worked around: Anthropic's strict role alternation (consecutive same-role turns are merged, leading assistant turns dropped) and top-level `system` field; OpenAI's `max_completion_tokens` + `developer` role for gpt-5/o-series and `stream_options.include_usage`; Gemini's `:streamGenerateContent` + mandatory `alt=sse` and `model` (not `assistant`) role; a 4096-token floor for GLM-5.x so thinking tokens cannot consume the whole output budget before a word of answer is written.
+
+### Fleet / notifications
+
+- **`INSTANCE_NAME`** tags every Telegram notification with `[name]` so several DevServer boxes can report into one chat and still be told apart. Blank keeps single-instance output byte-identical.
+- **`/status@name` addressing.** Commands can be aimed at one bot *or* one instance; an unaddressed command in a shared chat is no longer executed by every instance against a different database.
+- **`TELEGRAM_POLLING_ENABLED`** plus escalating 409 back-off (15s → 300s). Telegram allows exactly one `getUpdates` consumer per bot token; instances sharing one now hold a cheap election instead of flapping forever. Notifications are unaffected either way.
+
+### Reliability
+
+- **The dashboard no longer dies on a dropped Postgres connection.** `server.ts`'s `LISTEN` client had no `'error'` listener, so an `ECONNRESET` was an uncaught exception that took the whole process down. It now has one, and reconnects — `LISTEN` lives on the connection, so without reconnecting every live task update stops silently even when the process survives.
+- **`WEB_URL`** — in Docker the worker's `localhost` is itself, so every enqueue failed with `ConnectError` and `/internal/tasks/create` returned `enqueued=false`. Compose now points the worker at `http://web:3200`.
+- **`INTERNAL_API_TOKEN`** — shared secret (`X-Internal-Token`) guarding the one worker endpoint that executes something on the host, the Ask Agent approved-action runner. Unset keeps the historical unenforced behaviour and logs a warning.
+- **A missing dependency inside a *present* Pro module is no longer swallowed** as "free edition". The old blanket `except ImportError` could start a superficially healthy worker with every Pro route — including `/internal/license/status` — silently missing.
+- **Process streaming** — new `run_streamed()` keeps stderr on its own channel (a CLI warning must never interleave into an NDJSON stdout stream) and kills the child when the consumer disconnects, so an abandoned browser tab cannot leak an agent process holding a repo directory.
+- **Scheduler** uses timezone-aware datetimes (`datetime.utcnow()` is deprecated).
+
+### UI
+
+- **Collapsible sidebar** — icons-only rail on desktop, drawer on mobile, preference persisted; dense routes collapse it automatically.
+- **Host and user in the header**, so it stays visible on mobile where the footer is a scroll away.
+- Task and agent pages register what they are showing, which is what lets Ask Agent answer about *this* task.
+- Template git-flow options relabelled, defaulting to **Untracked**.
+
+### Platform and tooling
+
+- **Python floor raised to 3.14.** `scripts/setup-local.sh` probes for a versioned interpreter first, so an unmet floor fails with an actionable message (including the deadsnakes hint on Ubuntu/Debian) instead of an opaque `uv pip install` resolver error.
+- `scripts/start.ps1` fails loudly when worker dependency installation or verification fails, instead of starting uvicorn with the Pro router silently unavailable.
+- **New [`scripts/dbrestart.sh`](scripts/dbrestart.sh)** — restarts Postgres across all three deployment shapes (bundled container, host service, raw `pg_ctl` data directory), clears a stale `postmaster.pid`, and verifies the server actually came back.
+- `scripts/bump-version.sh` removed.
+
 ## Architecture
 
 ```mermaid
@@ -318,7 +396,7 @@ It is **fully opt-in and zero-overhead**: a no-op unless `OTEL_EXPORTER_OTLP_END
 | Layer | Choice | Why |
 |---|---|---|
 | **Frontend** | Next.js 15 App Router · React 19 · CoreUI Pro | Server components for task pages, client components for real-time panels. |
-| **Backend worker** | Python 3.12 · FastAPI · SQLAlchemy 2.0 async · asyncpg | Async from top to bottom — every subprocess, DB call, and agent invocation is non-blocking. |
+| **Backend worker** | Python 3.14 · FastAPI · SQLAlchemy 2.0 async · asyncpg | Async from top to bottom — every subprocess, DB call, and agent invocation is non-blocking. |
 | **Job queue** | [PgQueuer](https://github.com/janbjorge/pgqueuer) | PostgreSQL-native queue. No Redis, no RabbitMQ — one fewer service to monitor. |
 | **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
 | **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
@@ -334,7 +412,7 @@ It is **fully opt-in and zero-overhead**: a no-op unless `OTEL_EXPORTER_OTLP_END
 ### Prerequisites
 
 - Node.js >= 22 LTS
-- Python >= 3.12
+- Python >= 3.14
 - PostgreSQL >= 16
 - At least one agent CLI installed and authenticated (e.g. `claude login`)
 - `uv` for Python dependency management — [install guide](https://docs.astral.sh/uv/)
@@ -420,6 +498,33 @@ task, and *where the worker runs* decides where those CLIs run:
 Pick **worker-on-host** if you want the agents to use the subscription logins
 already set up on your machine; pick **all-in-Docker** for a single portable
 stack. Both are documented below.
+
+**One image per tier.** The `worker` and `web` containers run separate tags —
+`devserver:worker-latest` and `devserver:web-latest` — built from the one
+`docker/Dockerfile` with `--target worker` / `--target web`. Each image carries
+its own start command and health probe, so nothing picks a role at runtime.
+Keep the pair on one version — build them together from a single commit.
+
+**You build these images yourself.** DevServer publishes nothing to a container
+registry, so the tags above are plain local names and there is no `docker
+compose pull` path. Set `DEVSERVER_IMAGE` in `.env` if you want to tag and push
+them to a registry of your own. Both services declare `image:` *and* `build:`,
+which means:
+
+```bash
+docker compose up -d --build      # always rebuild (what the scripts do)
+docker compose up -d              # build only if the image is absent locally
+docker compose up -d --no-build   # run whatever is already tagged locally
+```
+
+Everything is built from one `docker/Dockerfile`; pick an artifact with
+`--target`:
+
+| Target | What | Used by |
+|---|---|---|
+| `web` | dashboard only, no Python/agent CLIs (~336 MB) | every topology, including `docker-compose.host-worker.yml` |
+| `worker` | agent tier only | `docker-compose.yml` |
+| `pydeps` | Python dependency stage, for iterating on the worker's deps | nothing — a build-time convenience |
 
 #### Linux / macOS — host PostgreSQL (recommended)
 
@@ -535,8 +640,11 @@ login from `claude login` — which lives in your host home dir. Run
 uncommenting this line under the `worker` service in `docker-compose.yml`:
 
 ```yaml
-    # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude:ro
+    # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/home/devserver/.claude:ro
 ```
+
+The container runs as the unprivileged `devserver` user (uid 10001), so the
+mount target is `/home/devserver/.claude` — the CLI reads `$HOME`.
 
 Leave `ANTHROPIC_API_KEY` empty in `.env` so the CLI falls back to the mounted
 login. (The worker-on-host topology above needs none of this — it uses your
@@ -559,7 +667,7 @@ Use **PowerShell** (not CMD) for everything below.
 
 #### Option A — Native (PowerShell, recommended for development)
 
-Prerequisites: **Node.js 22+**, **Python 3.12+**, **PostgreSQL 16+**, **uv**
+Prerequisites: **Node.js 22+**, **Python 3.14+**, **PostgreSQL 16+**, **uv**
 ([install](https://docs.astral.sh/uv/)), and at least one agent CLI
 (e.g. `npm install -g @anthropic-ai/claude-code` then `claude login`).
 
@@ -677,11 +785,14 @@ database/
 config/
   .env.example                        → Sanitised environment template
 docker/
+  Dockerfile                          → EVERY image; pick one with --target (web|worker|pydeps)
   docker-compose.yml                  → Full stack deployment (Postgres + web + worker)
   docker-compose.host-worker.yml      → Postgres + web in Docker, worker on host
+  devserver-bootstrap.py              → First-start schema apply + settings seed
 scripts/
   build.sh / start.sh / stop.sh / restart.sh  → Dev + prod + docker lifecycle helpers
   migrate.sh                          → Run database migrations
+  dbrestart.sh                        → Restart and verify PostgreSQL (container, service, or pg_ctl)
   devserver-backup.sh                 → Full-system backup
   devserver-restore.sh                → Restore from backup archive
 ```
@@ -698,6 +809,7 @@ DevServer ships as two editions:
 | Auto-failover between vendors | ✅ | ✅ |
 | Rate-limit backoff (per-subprocess 429 handling) | ✅ | ✅ |
 | Dashboard with analytics charts | ✅ | ✅ |
+| Ask Agent panel (product Q&A, page-aware) | ✅ | ✅ |
 | Pipeline board (Grid ⇄ Board task view, live lanes) | ✅ | ✅ |
 | Architecture diagram (Mermaid module tree, no LLM) | ✅ | ✅ |
 | Governance analytics (cost-per-PR, abstain savings) | ✅ | ✅ |
@@ -714,6 +826,8 @@ DevServer ships as two editions:
 | Full build/test/lint verifier | ✅ | ✅ |
 | Outcome forecast (success probability + duration) | ✅ repo baseline | ✅ similar-task |
 | Reality gate (0–100 evidence scoring) | — | ✅ |
+| Session observatory (watch every Claude / Codex agent on the host) | — | ✅ |
+| Ask Agent tools (cross-repo search, memory, one-click fixes) | — | ✅ |
 | Strict abstain gate (block low-evidence tasks before they run) | — | ✅ |
 | Per-repo memory knowledge base (past task recall) | — | ✅ |
 | Local embeddings — fastembed, no cloud key (powers Pro memory) | ✅ infra | ✅ |

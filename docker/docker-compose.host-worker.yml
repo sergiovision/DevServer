@@ -37,7 +37,7 @@ services:
   # ── PostgreSQL 17 + pgvector ─────────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: devserver-postgres
+    container_name: ${DEVSERVER_STACK:-devserver}-postgres
     # The bundled DB only starts under the `bundled-db` profile. The Settings /
     # Setup-wizard Database card writes DEVSERVER_HOST_DB=1 for the Host-OS /
     # External modes, and the lifecycle scripts then drop this profile so the
@@ -45,9 +45,9 @@ services:
     # (the scripts' default) runs it.
     profiles: ["bundled-db"]
     environment:
-      POSTGRES_USER:     devserver
+      POSTGRES_USER:     ${PGUSER:-devserver}
       POSTGRES_PASSWORD: ${PGPASSWORD:-changeme}
-      POSTGRES_DB:       devserver
+      POSTGRES_DB:       ${PGDATABASE:-devserver}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ../database/migrations:/docker-entrypoint-initdb.d:ro
@@ -55,7 +55,7 @@ services:
       # Published so the HOST worker can reach the DB on localhost:5432.
       - "${PGPORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U devserver -d devserver"]
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-devserver} -d ${PGDATABASE:-devserver}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -63,10 +63,20 @@ services:
 
   # ── DevServer Web (Next.js + queue producer + WebSocket) ─────────────────
   web:
+    # The `web` TARGET of the one Dockerfile, not the `worker` one the
+    # all-in-Docker stack also builds: this topology deliberately keeps the
+    # agent tier on the host, so building ~2 GB of Python venv, agent CLIs and
+    # embedding weights to serve a dashboard would be waste. Same file, same
+    # Node build stages, so the two images cannot drift.
+    #
+    # A plain LOCAL tag — nothing is published to a registry, so this is built
+    # here (`up -d --build`), never pulled.
+    image: ${DEVSERVER_IMAGE:-devserver}:${DEVSERVER_WEB_VERSION:-web-latest}
     build:
       context: ..
-      dockerfile: docker/Dockerfile.web
-    container_name: devserver-web
+      dockerfile: docker/Dockerfile
+      target: web
+    container_name: ${DEVSERVER_STACK:-devserver}-web
     # Lets the container resolve the host via host.docker.internal on Linux
     # too (Docker Desktop on macOS/Windows provides it automatically).
     extra_hosts:

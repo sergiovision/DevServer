@@ -11,6 +11,7 @@ import {
 } from '@coreui/react-pro';
 import { AgentLog } from './AgentLog';
 import type { Task, TaskEvent } from '@/lib/types';
+import { useAssistantPageContext } from './AssistantProvider';
 
 interface AgentDetailViewProps {
   task: Task;
@@ -19,6 +20,13 @@ interface AgentDetailViewProps {
 
 export function AgentDetailView({ task, events: initialEvents }: AgentDetailViewProps) {
   const router = useRouter();
+
+  // Which agent run the Ask Agent panel should answer about.
+  useAssistantPageContext(
+    { kind: 'agent', id: task.id, key: task.task_key, status: task.status, name: task.title },
+    'Agent detail',
+    task.repo_id ?? null,
+  );
   const [events, setEvents] = useState<TaskEvent[]>(initialEvents);
 
   useEffect(() => {

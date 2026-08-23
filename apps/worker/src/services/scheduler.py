@@ -164,13 +164,15 @@ async def _run_memory_archive() -> str:
 async def _cleanup_old_logs() -> int:
     if not os.path.exists(settings.log_dir):
         return 0
-    cutoff = datetime.utcnow() - timedelta(days=7)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     deleted_count = 0
     try:
         for filename in os.listdir(settings.log_dir):
             file_path = os.path.join(settings.log_dir, filename)
             if os.path.isfile(file_path):
-                file_mtime = datetime.utcfromtimestamp(os.path.getmtime(file_path))
+                file_mtime = datetime.fromtimestamp(
+                    os.path.getmtime(file_path), tz=timezone.utc
+                )
                 if file_mtime < cutoff:
                     os.remove(file_path)
                     deleted_count += 1

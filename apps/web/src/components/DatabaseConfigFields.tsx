@@ -222,6 +222,16 @@ export function DatabaseConfigFields({ deployMode, values, onChange }: FieldsPro
     setTesting(true);
     setTestResult(null);
     try {
+      // The probe runs in the WORKER, so it must be told how to address the
+      // database from there. Sending only the host-side PGHOST made every mode
+      // fail with ECONNREFUSED once the worker was containerised: 127.0.0.1
+      // inside a container is the container. containerDbTarget already knows
+      // the remap — it is what fills PGHOST_CONTAINER — so pass it along and
+      // let the worker pick whichever side it is actually on.
+      const target =
+        deployMode === 'docker'
+          ? containerDbTarget(mode, values.PGHOST || '', values.PGPORT || '')
+          : null;
       const res = await fetch('/api/env/test-db', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -231,12 +241,14 @@ export function DatabaseConfigFields({ deployMode, values, onChange }: FieldsPro
           user: values.PGUSER || 'devserver',
           password: values.PGPASSWORD || '',
           database: values.PGDATABASE || 'devserver',
+          ...(target ? { container_host: target.host, container_port: parseInt(target.port, 10) } : {}),
         }),
       });
       const data = await res.json();
       if (data.ok) {
         const v = String(data.version || '').split(' ').slice(0, 2).join(' ');
-        setTestResult({ ok: true, msg: `Connected${v ? ` — ${v}` : ''}` });
+        const via = data.target ? ` via ${data.target}` : '';
+        setTestResult({ ok: true, msg: `Connected${via}${v ? ` — ${v}` : ''}` });
       } else {
         setTestResult({ ok: false, msg: data.error || 'Connection failed' });
       }
@@ -245,7 +257,7 @@ export function DatabaseConfigFields({ deployMode, values, onChange }: FieldsPro
     } finally {
       setTesting(false);
     }
-  }, [values]);
+  }, [values, deployMode, mode]);
 
   return (
     <div>

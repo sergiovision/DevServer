@@ -19,11 +19,16 @@ import { PRO_NAV_ITEMS } from './pro-loader';
 interface SidebarProps {
   visible: boolean;
   onVisibleChange: (visible: boolean) => void;
+  /**
+   * Icons-only rail. Desktop only — on mobile the sidebar is an off-canvas
+   * drawer where a 56px rail would be useless, so the CSS ignores it there.
+   */
+  collapsed?: boolean;
 }
 
-// Free nav entries. Pro-only entries (Webhooks) are spliced in
-// from ``PRO_NAV_ITEMS`` so ``strip-pro.sh`` removes them along with
-// the rest of the pro bundle.
+// Free nav entries. Pro-only entries (Sessions, Webhooks, Agent Peers) are
+// spliced in from ``PRO_NAV_ITEMS`` so ``strip-pro.sh`` removes them along
+// with the rest of the pro bundle.
 const baseNavItems = [
   { name: 'Dashboard', href: '/', icon: cilSpeedometer },
   { name: 'Tasks', href: '/tasks', icon: cilTask },
@@ -35,14 +40,14 @@ const baseNavItems = [
   { name: 'Logs', href: '/logs', icon: cilDescription },
 ];
 
-// Webhooks sits next to Templates in pro; in free it's absent.
+// Pro entries sit next to Templates; in free they're absent.
 const navItems = [
   ...baseNavItems.slice(0, 3),       // Dashboard, Tasks, Templates
-  ...PRO_NAV_ITEMS,                  // Webhooks (pro)
+  ...PRO_NAV_ITEMS,                  // Sessions, Webhooks, Agent Peers (pro)
   ...baseNavItems.slice(3),          // Ideas, Jobs, Repos, Settings, Logs
 ];
 
-export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
+export function Sidebar({ visible, onVisibleChange, collapsed = false }: SidebarProps) {
   const pathname = usePathname();
   // "Needs you" pill: tasks awaiting a human decision (blocked = plan
   // approval / budget / preflight). Polled so the sidebar is a pull surface.
@@ -91,7 +96,9 @@ export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
         aria-hidden="true"
       />
       <aside
-        className={`app-sidebar border-end${visible ? ' show' : ''}`}
+        className={`app-sidebar border-end${visible ? ' show' : ''}${
+          collapsed ? ' collapsed' : ''
+        }`}
         aria-label="Main navigation"
       >
         <Link
@@ -100,11 +107,13 @@ export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
           onClick={handleLinkClick}
           aria-label="DevServer home"
         >
+          {/* The wordmark does not survive a 56px rail — swap in the square
+              icon so the header keeps an anchor back to the dashboard. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/devserver-logo.png"
+            src={collapsed ? '/icon.png' : '/devserver-logo.png'}
             alt="DevServer"
-            width={120}
+            width={collapsed ? 28 : 120}
             className="brand-mark sidebar-brand-logo"
             style={{ height: 'auto' }}
           />
@@ -124,12 +133,14 @@ export function Sidebar({ visible, onVisibleChange }: SidebarProps) {
                     className={`app-sidebar-nav-link${isActive ? ' active' : ''}`}
                     onClick={handleLinkClick}
                     aria-current={isActive ? 'page' : undefined}
+                    // The only affordance left once the label is hidden.
+                    title={collapsed ? item.name : undefined}
                   >
                     <CIcon customClassName="app-sidebar-nav-icon" icon={item.icon} />
-                    <span>{item.name}</span>
+                    <span className="app-sidebar-nav-label">{item.name}</span>
                     {item.name === 'Tasks' && needsYou > 0 && (
                       <span
-                        className="badge rounded-pill bg-warning text-dark ms-auto"
+                        className="badge rounded-pill bg-warning text-dark ms-auto app-sidebar-nav-badge"
                         title={`${needsYou} task(s) awaiting your action`}
                       >
                         {needsYou}

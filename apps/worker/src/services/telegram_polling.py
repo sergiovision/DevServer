@@ -302,6 +302,16 @@ _HELP = (
 )
 
 
+def _help_text() -> str:
+    """/help, naming this instance so its address is discoverable."""
+    return (
+        f"{_HELP}\n\n"
+        f"This instance is `{settings.instance_label}`. When several share "
+        f"this chat, aim a command at one with `@name` — "
+        f"e.g. `/status@{settings.instance_label}`."
+    )
+
+
 # ─── Dispatch ────────────────────────────────────────────────────────────────
 
 async def _dispatch(cmd: str, args: list[str]) -> str | None:
@@ -330,7 +340,7 @@ async def _dispatch(cmd: str, args: list[str]) -> str | None:
     if cmd == "/budget":
         return await _cmd_budget(args[0]) if args else "Usage: /budget TASK-KEY"
     if cmd == "/help":
-        return _HELP
+        return _help_text()
     return None
 
 
@@ -366,6 +376,49 @@ async def _handle_callback_query(callback_query: dict) -> None:
             logger.exception("Error handling plan callback %s", data)
 
 
+# ─── Instance addressing ─────────────────────────────────────────────────────
+
+# This bot's own @username, resolved once via getMe. None until resolved (or
+# if the call failed) — in that case only the instance name can address us.
+_bot_username: str | None = None
+
+
+async def _resolve_bot_username() -> str | None:
+    """Fetch this bot's @username so `/cmd@thisbot` can be told apart.
+
+    Best-effort: a failure only costs us the ability to distinguish bots,
+    which is exactly the situation before this existed.
+    """
+    global _bot_username
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://api.telegram.org/bot{settings.telegram_bot_token}/getMe"
+            )
+        data = resp.json()
+        if data.get("ok"):
+            _bot_username = (data.get("result") or {}).get("username")
+            logger.info(
+                "Telegram bot identified as @%s (instance %r)",
+                _bot_username, settings.instance_label,
+            )
+    except Exception as exc:
+        logger.warning("getMe failed (%s) — @bot addressing disabled", exc)
+    return _bot_username
+
+
+def _addressed_to_us(target: str) -> bool:
+    """True when `@target` names this bot or this instance.
+
+    Matching the instance name as well as the bot username is what lets a
+    fleet sharing one bot token still aim a command at one machine.
+    """
+    target = target.lower()
+    if _bot_username and target == _bot_username.lower():
+        return True
+    return target == settings.instance_label.lower()
+
+
 # ─── Update handler ──────────────────────────────────────────────────────────
 
 async def _handle_update(upd: dict) -> None:
@@ -390,8 +443,19 @@ async def _handle_update(upd: dict) -> None:
         return
 
     parts = text.split()
-    cmd = parts[0].split("@")[0].lower()
+    cmd, _, target = parts[0].partition("@")
+    cmd = cmd.lower()
     args = parts[1:]
+
+    # `/cmd@target` — Telegram's native group syntax. In a chat shared by
+    # several DevServer instances (each with its own bot, or several bots
+    # plus several workers) an unaddressed command would otherwise be run by
+    # every one of them, against a different database each time. Accept the
+    # command only when it is addressed to this bot, to this instance by
+    # name, or to nobody in particular.
+    if target and not _addressed_to_us(target):
+        logger.debug("Ignoring %s@%s — not this instance", cmd, target)
+        return
 
     logger.info("Telegram command: %s %s", cmd, args)
     try:
@@ -406,9 +470,21 @@ async def _handle_update(upd: dict) -> None:
 
 # ─── Polling loop ────────────────────────────────────────────────────────────
 
+# Escalating waits after a 409 "terminated by other getUpdates request".
+# Telegram allows exactly one getUpdates consumer per bot token, so a second
+# instance polling the same token kicks the first off and the two flap
+# forever at a fixed retry interval. Backing off turns that into a cheap
+# election: whoever holds the channel keeps it, the others idle, and if the
+# holder dies one of them takes over within the last interval. Notifications
+# are unaffected either way — sendMessage has no such exclusivity.
+_CONFLICT_BACKOFF_SCHEDULE = (15, 30, 60, 120, 300)
+
+
 async def _poll() -> None:
     base_url = f"https://api.telegram.org/bot{settings.telegram_bot_token}"
     offset = 0
+    conflicts = 0
+    await _resolve_bot_username()
     logger.info("Telegram long-polling started")
 
     while True:
@@ -429,9 +505,33 @@ async def _poll() -> None:
                 )
             data = resp.json()
             if not data.get("ok"):
+                if data.get("error_code") == 409:
+                    delay = _CONFLICT_BACKOFF_SCHEDULE[
+                        min(conflicts, len(_CONFLICT_BACKOFF_SCHEDULE) - 1)
+                    ]
+                    if conflicts == 0:
+                        logger.warning(
+                            "Telegram command channel is held by another instance "
+                            "(409 Conflict). Only one getUpdates consumer per bot "
+                            "token is allowed. Backing off; notifications from this "
+                            "instance (%r) are unaffected. To silence this, either "
+                            "give each instance its own bot token or set "
+                            "TELEGRAM_POLLING_ENABLED=false here.",
+                            settings.instance_label,
+                        )
+                    conflicts += 1
+                    await asyncio.sleep(delay)
+                    continue
                 logger.warning("getUpdates not-ok: %s", data)
                 await asyncio.sleep(5)
                 continue
+
+            if conflicts:
+                logger.info(
+                    "Telegram command channel acquired by instance %r",
+                    settings.instance_label,
+                )
+                conflicts = 0
 
             for upd in data.get("result", []):
                 offset = upd["update_id"] + 1
@@ -464,6 +564,15 @@ def start_polling() -> None:
     global _poll_task
     if not settings.telegram_bot_token:
         logger.warning("TELEGRAM_BOT_TOKEN not set — polling disabled")
+        return
+    if not settings.telegram_polling_enabled:
+        # Notifications still go out; this instance just does not compete for
+        # the single command channel the bot token allows.
+        logger.info(
+            "Telegram command polling disabled for instance %r "
+            "(TELEGRAM_POLLING_ENABLED=false) — notifications still send",
+            settings.instance_label,
+        )
         return
     _poll_task = asyncio.create_task(_poll())
 

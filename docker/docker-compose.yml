@@ -4,6 +4,20 @@
 #   cd docker && cp ../.env.example .env   # fill in credentials
 #   docker compose up -d --build
 #
+# ONE IMAGE PER TIER. `worker` and `web` are separate tags out of the one
+# docker/Dockerfile (`--target worker` / `--target web`), each with its own CMD
+# and HEALTHCHECK baked in — nothing here selects a role.
+#
+# YOU BUILD THESE IMAGES. DevServer publishes nothing to a container registry,
+# so `devserver:worker-latest` / `devserver:web-latest` are plain LOCAL tags and
+# there is no `docker compose pull` path — a pull would 404. Set DEVSERVER_IMAGE
+# in .env only if you want the build tagged for a registry of your own.
+#
+# Both services carry `image:` AND `build:`. Consequences worth knowing:
+#   docker compose up -d             → builds only if the tag is absent locally
+#   docker compose up -d --build     → always rebuilds (what the scripts do)
+#   docker compose up -d --no-build  → run whatever is already tagged locally
+#
 # This default stack runs PostgreSQL inside Docker so it works out of the
 # box on every platform — Windows users in particular must use this mode
 # because Docker Desktop has no host Postgres to talk to.
@@ -15,13 +29,57 @@
 #
 # For Max subscription (Claude OAuth): mount your host Claude config dir.
 # Uncomment the claude_auth line in the worker service below.
+#
+# UPGRADING an install created before the images went non-root: both containers
+# now run as uid/gid 10001, so volumes written by the old root-owned images need
+# their ownership handed over once. Fresh installs need none of this.
+#
+#   docker compose down
+#   docker run --rm -v devserver_worktrees:/w -v devserver_worker_logs:/l \
+#     alpine chown -R 10001:10001 /w /l
+#   docker compose up -d --build
+#
+# (Prefix the volume names with your compose project if it is not `devserver` —
+# `docker volume ls` shows the real names.) Skipping this does not break the
+# app: the log tee degrades with a warning, but agent worktrees do need write
+# access, so run it.
+
+# ── Shared definitions ───────────────────────────────────────────────────────
+# Both tiers run the same image and reach the same database, so those facts are
+# declared once here and merged in with `<<:`. Keeping them in anchors is what
+# stops the two service blocks from drifting.
+
+# Everything both tiers share EXCEPT the image reference, which differs by
+# target. One local repository name holds both; the tag prefix separates them.
+x-devserver-common: &devserver-common
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  # Resolve the host (for Host-OS / External DB modes) on Linux too.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  restart: unless-stopped
+
+# Container-perspective DB coordinates. PGHOST_CONTAINER/PGPORT_CONTAINER
+# default to the bundled postgres:5432; the Settings/Setup-wizard Database card
+# rewrites them for Host-OS / External modes.
+x-db-env: &db-env
+  PGHOST:     ${PGHOST_CONTAINER:-postgres}
+  PGPORT:     "${PGPORT_CONTAINER:-5432}"
+  PGUSER:     ${PGUSER:-devserver}
+  PGPASSWORD: ${PGPASSWORD:-changeme}
+  PGDATABASE: ${PGDATABASE:-devserver}
 
 services:
 
   # ── PostgreSQL 17 + pgvector ─────────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: devserver-postgres
+    # container_name is daemon-global, so two stacks collide even under
+    # different `-p` project names. Override DEVSERVER_STACK to run a second
+    # stack beside this one. scripts/migrate.sh, dbrestart.sh and the
+    # backup/restore pair all `docker exec` this container by name.
+    container_name: ${DEVSERVER_STACK:-devserver}-postgres
     # Bundled DB only starts under the `bundled-db` profile. The Database card
     # writes DEVSERVER_HOST_DB=1 for Host-OS / External modes and the lifecycle
     # scripts then drop this profile, so the redundant container never starts.
@@ -29,45 +87,148 @@ services:
     environment:
       # devserver is created as superuser by Docker (required for CREATE EXTENSION vector).
       # The init SQL files' CREATE USER/DATABASE lines are no-ops since they already exist.
-      POSTGRES_USER:     devserver
+      POSTGRES_USER:     ${PGUSER:-devserver}
       POSTGRES_PASSWORD: ${PGPASSWORD:-changeme}
-      POSTGRES_DB:       devserver
+      POSTGRES_DB:       ${PGDATABASE:-devserver}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # All migration files run automatically on first init (as postgres superuser)
+      # All migration files run automatically on first init (as postgres
+      # superuser). This bind-mount is one reason the stack needs the repo
+      # checked out — the other being that the images are built from it.
       - ../database/migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      - "${PGPORT:-5432}:5432"
+      # Loopback by default, on the same reasoning as the worker port below:
+      # the only thing guarding this is PGPASSWORD, which defaults to
+      # "changeme". Set PGBIND=0.0.0.0 to publish it on every interface.
+      - "${PGBIND:-127.0.0.1}:${PGPORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U devserver -d devserver"]
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-devserver} -d ${PGDATABASE:-devserver}"]
       interval: 10s
       timeout: 5s
       retries: 10
     restart: unless-stopped
 
-  # ── DevServer Web (Next.js + queue producer + WebSocket) ─────────────────
-  web:
+  # ── DevServer Worker (Python FastAPI + PgQueuer consumer + agent CLIs) ───
+  worker:
+    <<: *devserver-common
+    image: ${DEVSERVER_IMAGE:-devserver}:${DEVSERVER_WORKER_VERSION:-worker-latest}
     build:
       context: ..
-      dockerfile: docker/Dockerfile.web
-    container_name: devserver-web
-    # Resolve the host (for Host-OS / External DB modes) on Linux too.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      dockerfile: docker/Dockerfile
+      target: worker
+    container_name: ${DEVSERVER_STACK:-devserver}-worker
+    # Passes docker/.env straight through, so the first-start bootstrap knobs
+    # (DEVSERVER_SETUP_COMPLETED and any number of DEVSERVER_SETTING_<KEY>
+    # entries) reach the container without a compose edit per key. Compose
+    # applies env_file first, so every explicit value below still wins.
+    env_file:
+      - path: .env
+        required: false
     environment:
-      # Database — both DATABASE_URL and the discrete PG* vars are set because
-      # different code paths read different forms (server.ts uses DATABASE_URL,
-      # lib/db.ts uses PG*). Container-perspective host/port come from
-      # PGHOST_CONTAINER/PGPORT_CONTAINER (default postgres:5432 = bundled);
-      # the Database card rewrites them for Host-OS / External modes.
+      <<: *db-env
+      # asyncpg driver for the worker's SQLAlchemy engine.
+      DATABASE_URL: postgresql+asyncpg://${PGUSER:-devserver}:${PGPASSWORD:-changeme}@${PGHOST_CONTAINER:-postgres}:${PGPORT_CONTAINER:-5432}/${PGDATABASE:-devserver}
+      # Telegram
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID:-}
+      # Names this deployment in notifications when several share one chat,
+      # and makes `/status@name` addressable. Blank = single-instance output.
+      INSTANCE_NAME: ${INSTANCE_NAME:-}
+      # Telegram permits exactly one getUpdates consumer per bot token.
+      # sendMessage has no such limit, so a deployment with this false still
+      # delivers every notification — it just stops competing for commands.
+      # Leave true on one instance per shared token; false on the rest.
+      TELEGRAM_POLLING_ENABLED: ${TELEGRAM_POLLING_ENABLED:-true}
+      # The web tier is a separate container, so the worker's own localhost is
+      # not it. Without this every enqueue-from-worker path (task create/run,
+      # decomposer, the MCP task tools) fails with ConnectError and returns
+      # enqueued=false. `web` is the service name on the shared network.
+      WEB_URL: ${WEB_URL:-http://web:3200}
+      # Claude — API mode: set key below. Max mode: leave empty + uncomment claude_auth volume.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CLAUDE_BIN: claude
+      # Paths inside container
+      DEVSERVER_ROOT: /app
+      # The .env the Settings/Setup Database card writes. It must be a
+      # devserver-owned path on a VOLUME: /app is root-owned, so a save
+      # there fails, and an unmounted path would not survive a recreate.
+      DEVSERVER_ENV_FILE: /app/config/.env
+      WORKTREE_DIR:   /app/worktrees
+      LOG_DIR:        /app/logs/tasks
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      # Shared secret guarding the one worker endpoint that executes something
+      # on the host (the Ask Agent panel's approved-action runner). Port 8000
+      # has no other authentication — set this in .env.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
+    ports:
+      # Loopback by default, because this port's only auth is
+      # INTERNAL_API_TOKEN. Set WORKER_BIND=0.0.0.0 in .env to publish it on
+      # every interface — deliberately, and only behind something that
+      # authenticates.
+      - "${WORKER_BIND:-127.0.0.1}:${WORKER_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false   # absent under Host-OS / External modes (profile off)
+    volumes:
+      # Persistent worktrees: bare repos + checked-out branches survive restarts
+      - worktrees:/app/worktrees
+      - worker_logs:/app/logs
+      # Vendor agent CLIs (claude / codex / agy). The image ships none of them
+      # — 771 MB for four vendors most deployments do not all use — so the
+      # worker fetches the one a task selects on first use. This volume is what
+      # makes that a once-per-deployment cost rather than once per container.
+      - agent_clis:/opt/agents
+      - worker_config:/app/config
+      # ── Reuse the HOST's agent CLIs instead of downloading (LINUX ONLY) ──
+      # Skips the first-use download entirely. Mount the directory holding the
+      # host's CLI and point the matching *_BIN var at it — the worker's
+      # auto-installer stands down for any binary named by an override, so
+      # nothing is fetched.
+      #
+      #   - ${HOST_NPM_ROOT:-/usr/lib/node_modules}:/host-clis/node_modules:ro
+      #   - ${HOST_NPM_BIN:-/usr/bin}:/host-clis/bin:ro
+      # then set in .env:  CLAUDE_BIN=/host-clis/bin/claude
+      #
+      # LINUX HOSTS ONLY, and only when host and container agree on arch and
+      # libc. These CLIs ship as native executables, not scripts: a macOS host
+      # installs a Mach-O binary and Windows a PE one, neither of which the
+      # Linux container can exec. On macOS/Windows use the download above, or
+      # run the whole agent tier on the host with
+      # docker-compose.host-worker.yml.
+      #
+      # NOTE this is about the *binaries*. Mounting ~/.claude for Max-mode
+      # OAuth (below) is a separate thing and works on every host OS.
+      # ── Max subscription (Claude OAuth) ──────────────────────────────────
+      # Uncomment to use Claude Max instead of API key.
+      # Requires `claude login` to have been run on the HOST machine first.
+      # macOS/Linux: the ${HOME}/.claude default works out of the box.
+      # Windows: ${HOME} is NOT set for `docker compose`, so set CLAUDE_CONFIG_DIR
+      # in .env to your host config dir using forward slashes, e.g.
+      #   CLAUDE_CONFIG_DIR=C:/Users/<you>/.claude
+      # The target is /home/devserver, not /root: the worker container runs as
+      # the unprivileged `devserver` user (uid 10001) and the CLI reads $HOME.
+      # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/home/devserver/.claude:ro
+
+  # ── DevServer Web (Next.js + queue producer + WebSocket) ─────────────────
+  web:
+    <<: *devserver-common
+    image: ${DEVSERVER_IMAGE:-devserver}:${DEVSERVER_WEB_VERSION:-web-latest}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: web
+    container_name: ${DEVSERVER_STACK:-devserver}-web
+    environment:
+      <<: *db-env
+      # server.ts reads DATABASE_URL; lib/db.ts reads the discrete PG* vars
+      # merged in from *db-env above.
       DATABASE_URL: postgresql://${PGUSER:-devserver}:${PGPASSWORD:-changeme}@${PGHOST_CONTAINER:-postgres}:${PGPORT_CONTAINER:-5432}/${PGDATABASE:-devserver}
-      PGHOST:     ${PGHOST_CONTAINER:-postgres}
-      PGPORT:     "${PGPORT_CONTAINER:-5432}"
-      PGUSER:     ${PGUSER:-devserver}
-      PGPASSWORD: ${PGPASSWORD:-changeme}
-      PGDATABASE: ${PGDATABASE:-devserver}
       # Worker — internal service URL (not localhost)
       WORKER_URL: http://worker:8000
+      # Must match the worker's value — the web tier attaches it as
+      # X-Internal-Token when the operator approves an assistant action.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       # Deploy mode for versioning
       DEPLOY_MODE: docker
       # /logs viewer reads files from this dir. Shared volume with the worker.
@@ -88,58 +249,6 @@ services:
     volumes:
       # Shared with the worker so the /logs viewer can read both files
       - worker_logs:/app/logs
-    restart: unless-stopped
-
-  # ── DevServer Worker (Python FastAPI + PgQueuer consumer + Claude CLI) ───
-  worker:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.worker
-    container_name: devserver-worker
-    # Resolve the host (for Host-OS / External DB modes) on Linux too.
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      # Database — asyncpg driver. Container-perspective host/port default to
-      # the bundled postgres:5432; the Database card rewrites
-      # PGHOST_CONTAINER/PGPORT_CONTAINER for Host-OS / External modes.
-      DATABASE_URL: postgresql+asyncpg://${PGUSER:-devserver}:${PGPASSWORD:-changeme}@${PGHOST_CONTAINER:-postgres}:${PGPORT_CONTAINER:-5432}/${PGDATABASE:-devserver}
-      # Telegram
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      TELEGRAM_CHAT_ID:   ${TELEGRAM_CHAT_ID}
-      # Claude — API mode: set key below. Max mode: leave empty + uncomment claude_auth volume.
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      CLAUDE_BIN: claude
-      # Paths inside container
-      DEVSERVER_ROOT: /app
-      WORKTREE_DIR:   /app/worktrees
-      LOG_DIR:        /app/logs/tasks
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-        required: false   # absent under Host-OS / External modes (profile off)
-    volumes:
-      # Persistent worktrees: bare repos + checked-out branches survive restarts
-      - worktrees:/app/worktrees
-      - worker_logs:/app/logs
-      # ── Max subscription (Claude OAuth) ──────────────────────────────────
-      # Uncomment to use Claude Max instead of API key.
-      # Requires `claude login` to have been run on the HOST machine first.
-      # macOS/Linux: the ${HOME}/.claude default works out of the box.
-      # Windows: ${HOME} is NOT set for `docker compose`, so set CLAUDE_CONFIG_DIR
-      # in .env to your host config dir using forward slashes, e.g.
-      #   CLAUDE_CONFIG_DIR=C:/Users/<you>/.claude
-      # - ${CLAUDE_CONFIG_DIR:-${HOME}/.claude}:/root/.claude:ro
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
 
 volumes:
   postgres_data:
@@ -147,3 +256,8 @@ volumes:
   # Stored in a named volume so clones survive container rebuilds.
   worktrees:
   worker_logs:
+  # Agent CLIs installed on first use. Safe to delete: the next task that needs
+  # a vendor re-fetches it.
+  # Writable .env for the in-app Database card; see DEVSERVER_ENV_FILE.
+  worker_config:
+  agent_clis:

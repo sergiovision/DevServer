@@ -1,0 +1,17 @@
+# The Dockerfile only needs pyproject.toml and src/ — everything else is build
+# context sent to the daemon on every build. Without this, the local .venv
+# (~280 MB) is uploaded each time and silently dominates build time.
+.venv
+.venv*
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/
+scripts/
+*.log
+.env
+.env.*
