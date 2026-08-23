@@ -874,20 +874,6 @@ Contributions and issues are welcome.
 
 [MIT](LICENSE) — free for personal and commercial use. Attribution appreciated but not required.
 
-## Support / Donations
-
-DevServer is built and maintained in my spare time. If it saves you hours of
-work or you'd like to see development continue, consider sending a tip — it
-directly funds new features, faster fixes, and ongoing maintenance.
-
-**USDT (TRC20 — Tron network):**
-
-```
-TLkm4qjsXWTWhnKJ6JW77ieD891qtJE2a5
-```
-
-Every contribution, regardless of size, is genuinely appreciated. Thank you!
-
 ---
 
 <div align="center">
