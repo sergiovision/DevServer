@@ -13,7 +13,6 @@
     "@coreui/icons": "~3.1.0",
     "@coreui/icons-react": "~2.3.0",
     "@coreui/react-pro": "^5.26.0",
-    "@next/swc-darwin-arm64": "^16.2.10",
     "chart.js": "^4.5.1",
     "cross-env": "^10.1.0",
     "mermaid": "^11.16.0",
