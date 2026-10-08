@@ -375,7 +375,7 @@ function ConfluenceSettingsCard() {
     setPinging(true);
     setPing(null);
     try {
-      const res = await fetch('/api/pro/import/confluence/ping', { cache: 'no-store' });
+      const res = await fetch('/api/import/confluence/ping', { cache: 'no-store' });
       setPing(await res.json());
     } catch {
       setPing({ ok: false, error: 'worker unreachable' });

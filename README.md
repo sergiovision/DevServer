@@ -205,6 +205,67 @@ In the free edition it answers questions and says plainly when it cannot see som
 
 📂 [`apps/web/src/components/AskAgentPanel.tsx`](apps/web/src/components/AskAgentPanel.tsx) · [`apps/worker/src/routes/assistant.py`](apps/worker/src/routes/assistant.py) · [`apps/worker/src/services/assistant_kb.py`](apps/worker/src/services/assistant_kb.py)
 
+### Agent guardrails — evidence, budget, and a deterministic preflight
+
+Every coding task passes through three checks that need no extra LLM call:
+
+- **Reality gate (lite).** Before the agent starts, DevServer scores the task 0–100 from two weighted signals that run in parallel: how many of the task's identifiers actually appear in the repo map, and whether the files it touches changed in the last 14 days. If a signal fails, its weight goes to the other one. The score, evidence and warnings are injected into the prompt. Set `reality_abstain_threshold` to block low-evidence tasks before any tokens are spent.
+- **Budget circuit breaker.** `max_cost_usd` / `max_wall_seconds` on a task emit a `budget_warning` event at 80% and stop retries at 100%, marking the task `blocked`.
+- **PR preflight.** Before anything is pushed, the diff is scanned for leaked secrets (API keys, tokens, private keys), forbidden files (`.env`, key files), files over 1 MB, and a wrong commit author. A failure marks the task `blocked` instead of opening a PR.
+
+📂 [`reality_gate.py`](apps/worker/src/services/reality_gate.py) · [`pr_preflight.py`](apps/worker/src/services/pr_preflight.py) · [`secret_rules.py`](apps/worker/src/services/secret_rules.py) · [`_free_hooks.py`](apps/worker/src/services/_free_hooks.py)
+
+### Memory — hybrid recall of past task experience
+
+Every successful task is summarised into `agent_memory` with a local [fastembed](https://github.com/qdrant/fastembed) embedding (no cloud key). The next task on the same repo recalls the most relevant entries through two lanes: pgvector cosine similarity, and Postgres full-text search, which catches exact symbols, error strings and file paths. The two ranked lists are combined with **Reciprocal Rank Fusion** (k=60), and the top hits go into the prompt as "Prior Experience".
+
+📂 [`apps/worker/src/services/memory.py`](apps/worker/src/services/memory.py) · [`apps/worker/src/services/embeddings.py`](apps/worker/src/services/embeddings.py)
+
+### MCP server — drive DevServer from Claude Code, Codex or Gemini
+
+A small stdio MCP server lets an interactive coding CLI create a task in the current repo with a chosen vendor and model, start it on the worker, poll its status and read its output (`task_options`, `task_create`, `task_run`, `task_list`, `task_status`, `task_output`, `task_cancel`). Setup for each CLI is in its README.
+
+📂 [`apps/mcp-memory/`](apps/mcp-memory/README.md) · design notes in [`docs/`](docs/)
+
+---
+
+## What's new in 1.0.17
+
+Since **1.0.15**. Several guardrails that used to be Pro-only now come with the free edition, plus a new MCP server and refreshed model catalogues.
+
+### Agent guardrails in Free
+
+- **Reality gate (lite).** Before a run, the task gets a 0–100 evidence score from two signals: how many of its identifiers appear in the repo map, and whether the files it touches changed in the last 14 days. The score and warnings go into the prompt. The **strict abstain gate** (`reality_abstain_threshold`) can block low-evidence tasks before any tokens are spent. Pro adds PR-collision and history signals.
+- **PR preflight.** Before anything is pushed, the diff is checked for leaked secrets (API keys, tokens, private keys), forbidden files (`.env`, key files), files over 1 MB, and a wrong commit author. A failure marks the task `blocked` and no PR is opened. The detection rules live in one place, [`secret_rules.py`](apps/worker/src/services/secret_rules.py).
+- **Budget circuit breaker.** `max_cost_usd` / `max_wall_seconds` emit a `budget_warning` event at 80% and stop retries at 100%, marking the task `blocked`.
+
+### Memory: hybrid recall in Free
+
+Each successful task is summarised into `agent_memory` with a local fastembed embedding. The next task on the same repo recalls past experience through pgvector similarity plus Postgres full-text search, merged with Reciprocal Rank Fusion (k=60). LLM rerank and the full knowledge base remain in Pro. See [`memory.py`](apps/worker/src/services/memory.py).
+
+### MCP server for coding CLIs
+
+New stdio MCP server [`apps/mcp-memory/`](apps/mcp-memory/README.md) (`devserver-mcp`). From Claude Code, Codex or Gemini CLI you can create a task in the current repo with a chosen vendor and model, start it, poll its status and read its output (`task_options`, `task_create`, `task_run`, `task_list`, `task_status`, `task_output`, `task_cancel`). Configure it with `DEVSERVER_WORKER_URL`, `DEVSERVER_TOKEN` (optional) and `DEVSERVER_AGENT`.
+
+### Confluence import works in Free
+
+The Import dialog and the Settings **Ping** button called `/api/pro/import/*` routes, which do not exist in the free edition. New free routes under `/api/import/*` (sources, ping, scopes, search, item preview, import) and matching worker endpoints under `/internal/import/*` fix this. Import is idempotent: each page is tracked in the `external_imports` ledger and is created, updated in place when its Confluence version changes, or skipped.
+
+### Models
+
+- **Anthropic:** Claude **Sonnet 5.5** (new default), **Opus 5.5** and **Fable 5.1**. The 5.0 models stay selectable for tasks and repos pinned to them. Generated tasks now default to `claude-opus-5-5`.
+- **OpenAI:** **GPT-6 Astra** added (codex-cli 0.155.1 catalogue). GPT-6 models use `max_completion_tokens`, like GPT-5 and the o-series.
+- **Google (agy 1.2.16):** Gemini **3.8 Flash** (High/Medium/Low) and **3.7 Flash** added. Gemini 3.5 Flash was dropped by agy, so its slugs now map to the matching 3.8 Flash tier and existing tasks keep running.
+
+### Dependencies
+
+- **Web:** Next.js 16.4, React 19.3, Mermaid 12.1, CoreUI Pro 5.29.1, pg 8.23. CoreUI 5.29 types table rows more loosely, so the new [`smart-table.ts`](apps/web/src/lib/smart-table.ts) helpers keep `CSmartTable` call sites typed.
+- **Worker:** FastAPI 0.143, Uvicorn 0.54, asyncpg 0.32, SQLAlchemy 2.1.4, pydantic-settings 2.15, cryptography 50, fastembed 0.9, OpenTelemetry 1.45 (optional `otel` extra).
+
+### Docs
+
+Design notes are now in [`docs/`](docs/): RLM memory lanes, the A2A gateway, and shared-memory MCP.
+
 ---
 
 ## What's new in 1.0.15
@@ -763,9 +824,15 @@ apps/
       analytics/                      → Dashboard analytics data
       logs/                           → Log file streaming
       settings/                       → Worker settings read/write
+      import/                         → Confluence import (sources, search, preview, import)
+  mcp-memory/                         → stdio MCP server — task control for coding CLIs (devserver-mcp)
   worker/                             → Python FastAPI worker + PgQueuer consumer
     src/services/
-      _free_hooks.py                  → No-op stubs for pro features (always present)
+      _free_hooks.py                  → Free hook implementations + no-op stubs for pro features (always present)
+      reality_gate.py                 → Reality gate lite (0–100 pre-run evidence score)
+      pr_preflight.py                 → Deterministic pre-push checks (secrets, size, author)
+      secret_rules.py                 → Shared secret-detection regex rules + scanner
+      memory.py                       → Basic agent memory: store + hybrid (vector + lexical RRF) recall
       agent_runner.py                 → Main task execution loop with retry logic
       agent_backends.py               → Vendor abstraction (Claude, Gemini, Codex, GLM)
       repo_map.py                     → Multi-language symbol map + Mermaid diagram (build_mermaid)
@@ -780,6 +847,7 @@ apps/
       import_sources/                 → Pluggable external-import adapters (Confluence)
     src/routes/
       internal.py                     → Status, pause, cancel, generate-task, prediction, MCP task control
+docs/                               → Architecture design notes (RLM memory lanes, A2A, shared-memory MCP)
 database/
   migrations/                         → Versioned SQL migrations (002 adds the external-import ledger)
 config/
@@ -823,15 +891,17 @@ DevServer ships as two editions:
 | Git worktree isolation + Gitea/GitHub PRs | ✅ | ✅ |
 | Local Git repos (any provider's local clone — no remote, no tokens) | ✅ | ✅ |
 | Cron schedules that re-run tasks | ✅ | ✅ |
+| Import from Confluence (pages → Tasks / Ideas) | ✅ | ✅ |
+| MCP server — task control from Claude Code / Codex / Gemini | ✅ (`task_*` tools, stdio) | ✅ + memory/corpus tools, remote HTTP |
 | Full build/test/lint verifier | ✅ | ✅ |
 | Outcome forecast (success probability + duration) | ✅ repo baseline | ✅ similar-task |
-| Reality gate (0–100 evidence scoring) | — | ✅ |
+| Reality gate (0–100 evidence scoring) | ✅ lite (repo map + recent commits) | ✅ + PR collision + history |
 | Session observatory (watch every Claude / Codex agent on the host) | — | ✅ |
 | Ask Agent tools (cross-repo search, memory, one-click fixes) | — | ✅ |
-| Strict abstain gate (block low-evidence tasks before they run) | — | ✅ |
-| Per-repo memory knowledge base (past task recall) | — | ✅ |
-| Local embeddings — fastembed, no cloud key (powers Pro memory) | ✅ infra | ✅ |
-| Hybrid recall (vector + lexical RRF) + optional LLM rerank | — | ✅ |
+| Strict abstain gate (block low-evidence tasks before they run) | ✅ | ✅ |
+| Per-repo memory knowledge base (past task recall) | ✅ basic (store + recall) | ✅ full KB |
+| Local embeddings — fastembed, no cloud key (powers memory recall) | ✅ | ✅ |
+| Hybrid recall (vector + lexical RRF) + optional LLM rerank | ✅ (no rerank) | ✅ |
 | Verbatim transcript drawers + pre-compaction save | — | ✅ |
 | Temporal facts + invalidation (knowledge-graph-lite) | — | ✅ |
 | Topic scoping + cross-repo memory tunnels | — | ✅ |
@@ -841,8 +911,8 @@ DevServer ships as two editions:
 | Decision / causal memory (problem → choice → reasoning) | — | ✅ |
 | Iterative multi-hop memory recall | — | ✅ |
 | Interactive plan approval gate | — | ✅ |
-| Per-task budget circuit breaker | — | ✅ |
-| PR preflight (secret scan, allow-list, author check) | — | ✅ |
+| Per-task budget circuit breaker | ✅ | ✅ + Telegram alerts |
+| PR preflight (secret scan, allow-list, author check) | ✅ (no plan allow-list) | ✅ |
 | Patch export (`git format-patch` + `combined.mbox`) | — | ✅ |
 | Night cycle (autonomous overnight batch) | — | ✅ |
 | Rich Telegram (inline keyboards) | — | ✅ |
@@ -851,8 +921,10 @@ DevServer ships as two editions:
 | Hardened Docker Compose (resource limits, log rotation, security) | — | ✅ |
 
 The free edition compiles and runs without errors — the agent runner
-gracefully degrades when pro modules are absent, falling back to no-op
-stubs in `_free_hooks.py`.
+gracefully degrades when pro modules are absent, falling back to
+`_free_hooks.py`, which provides the free implementations above (reality
+gate lite, PR preflight, budget circuit breaker, basic hybrid memory) and
+no-op stubs for everything else.
 
 See [README.PRO.md](README.PRO.md) for full Pro feature documentation.
 

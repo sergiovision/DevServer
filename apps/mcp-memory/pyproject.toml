@@ -1,0 +1,20 @@
+[project]
+name = "devserver-mcp"
+version = "0.1.0"
+description = "The DevServer MCP server — task control for coding CLIs (Claude Code / Codex / Gemini), backed by the DevServer worker."
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastmcp>=3.4.4",
+    "httpx>=0.28.1",
+]
+
+[project.scripts]
+devserver-mcp = "devserver_memory_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devserver_memory_mcp"]

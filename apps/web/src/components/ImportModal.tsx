@@ -121,7 +121,7 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     (async () => {
       try {
         const [srcRes, repoRes] = await Promise.all([
-          fetch('/api/pro/import/sources', { cache: 'no-store' }),
+          fetch('/api/import/sources', { cache: 'no-store' }),
           fetch('/api/repos', { cache: 'no-store' }),
         ]);
         if (srcRes.ok) setSources(await srcRes.json());
@@ -137,7 +137,7 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     if (!visible) return;
     (async () => {
       try {
-        const res = await fetch(`/api/pro/import/confluence/scopes${repoQs}`, { cache: 'no-store' });
+        const res = await fetch(`/api/import/confluence/scopes${repoQs}`, { cache: 'no-store' });
         const data = await res.json();
         setScopes(res.ok ? data.scopes || [] : []);
       } catch {
@@ -156,7 +156,7 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
       const params = new URLSearchParams({ q: queryText, limit: '25' });
       if (scope) params.set('scope', scope);
       if (repoId) params.set('repo_id', String(repoId));
-      const res = await fetch(`/api/pro/import/confluence/search?${params}`, { cache: 'no-store' });
+      const res = await fetch(`/api/import/confluence/search?${params}`, { cache: 'no-store' });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
       setItems(data.items || []);
@@ -172,7 +172,7 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     setPreview(null);
     try {
       const params = repoId ? `?repo_id=${repoId}` : '';
-      const res = await fetch(`/api/pro/import/confluence/item/${encodeURIComponent(id)}${params}`, {
+      const res = await fetch(`/api/import/confluence/item/${encodeURIComponent(id)}${params}`, {
         cache: 'no-store',
       });
       const data = await res.json();
@@ -196,7 +196,7 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     setError('');
     setResults(null);
     try {
-      const res = await fetch('/api/pro/import/confluence', {
+      const res = await fetch('/api/import/confluence', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
