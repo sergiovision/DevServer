@@ -202,12 +202,12 @@ def _build_glm_request(
 def _openai_uses_completion_tokens(model: str) -> bool:
     """True when the model rejects ``max_tokens`` in favour of ``max_completion_tokens``.
 
-    OpenAI's reasoning-era models (o-series, gpt-5.x) 400 on ``max_tokens``;
+    OpenAI's reasoning-era models (o-series, gpt-5.x, gpt-6.x) 400 on ``max_tokens``;
     older chat models only understand ``max_tokens``. Sniff the model name
     rather than picking one and breaking the other half of the range.
     """
     m = (model or "").lower()
-    return m.startswith(("gpt-5", "o1", "o3", "o4"))
+    return m.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
 
 
 def _build_openai_request(

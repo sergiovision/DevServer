@@ -12,6 +12,7 @@ from services.llm_stream import _translate_openai
 @pytest.mark.parametrize(
     ("model", "expected"),
     [
+        ("gpt-6-astra", True),
         ("gpt-5.6-sol", True),
         ("o1", True),
         ("o3-mini", True),

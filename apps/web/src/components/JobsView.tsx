@@ -7,6 +7,7 @@ import {
   CButton,
   CSpinner,
 } from '@coreui/react-pro';
+import { asScopedColumns, asTableItems } from '@/lib/smart-table';
 
 interface Job {
   name: string;
@@ -113,11 +114,11 @@ export function JobsView() {
         </div>
       ) : (
         <CSmartTable
-          items={jobs ?? []}
+          items={asTableItems(jobs ?? [])}
           columns={columns}
           tableProps={{ hover: true, responsive: true, striped: true }}
           columnSorter
-          scopedColumns={{
+          scopedColumns={asScopedColumns<Job>({
             is_running: (item: Job) => (
               <td>
                 {item.is_running ? (
@@ -159,7 +160,7 @@ export function JobsView() {
                 </CButton>
               </td>
             ),
-          }}
+          })}
         />
       )}
     </>

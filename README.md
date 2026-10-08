@@ -49,7 +49,7 @@ One platform. Every model. **Ride your AI at Ferrari style — and Ferrari speed
 
 Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted orchestration platform** for people who already run their own infrastructure and want agents to work on their terms.
 
-- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Sonnet 5**, **Claude Fable 5**, and **Gemini 3.5 Pro**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
+- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Sonnet 5.5**, **Claude Opus 5.5**, **Claude Fable 5.1**, **GPT-6 Astra**, and **Gemini 3.8 Flash**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
 - **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (flat-rate subscription). Subscription mode works across vendors — Claude **Max**, ChatGPT **Plus** (Codex), and Google **AI Pro / Ultra** (via the Antigravity CLI) — by falling back to the CLI's own OAuth login instead of an API key.
 - **Outcome forecast.** Before a task runs, see a success-probability and expected duration/turns estimate from your repo's history. Free uses a repo-level baseline; Pro upgrades it to similar-task matching via pgvector.
 - **Error-class-aware retries.** Failures are classified by 20+ regex rules (import errors, TS compile errors, test failures, merge conflicts, ...) and the next attempt receives a surgical remediation hint. Recurring hard errors *escalate* instead of burning retries.
@@ -334,9 +334,9 @@ DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers
 
 | Vendor | CLI Binary | Latest models | Status |
 |---|---|---|---|
-| `anthropic` | `claude` | **Claude Sonnet 5** (default), Opus 5, Fable 5, Opus 4.8, Haiku 4.5 | Production-tested |
-| `google` | `agy` | **Gemini 3.1 Pro** (default, High/Low), Gemini 3.6 Flash, Gemini 3.5 Flash (via the Antigravity CLI) | Verified (agy 1.1.7) |
-| `openai` | `codex` | GPT-5.6 Sol / Terra / Luna, GPT-5.5, GPT-5.4, GPT-5.3 Codex | Structurally complete |
+| `anthropic` | `claude` | **Claude Sonnet 5.5** (default), Opus 5.5, Fable 5.1, Sonnet 5, Opus 5, Fable 5, Opus 4.8, Haiku 4.5 | Production-tested |
+| `google` | `agy` | **Gemini 3.1 Pro** (default, High/Low), Gemini 3.8 / 3.7 / 3.6 Flash (via the Antigravity CLI) | Listed by agy 1.2.16 |
+| `openai` | `codex` | **GPT-6 Astra**, GPT-5.6 Sol / Terra / Luna, GPT-5.5, GPT-5.4, GPT-5.3 Codex | Structurally complete |
 | `glm` | `claude` | GLM-5.2 / 5.1 / 5 Turbo — runs the Claude CLI against Zhipu's Anthropic-compatible API | Production-tested |
 
 Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.

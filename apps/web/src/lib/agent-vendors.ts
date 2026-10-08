@@ -28,13 +28,16 @@ export interface VendorEntry {
 export const AGENT_VENDORS: VendorEntry[] = [
   {
     id: 'anthropic',
-    // Verified against GET https://api.anthropic.com/v1/models (2026-08-19).
+    // Current Claude line (2026-10-08): Sonnet 5.5, Opus 5.5, Fable 5.1.
     // `claude-mythos-5` is deliberately absent — Project Glasswing only.
     label: 'Anthropic',
     models: [
-      { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5 (default, Max)' },
-      { id: 'claude-opus-5',                label: 'Claude Opus 5 (flagship — agentic coding, long-horizon)' },
-      { id: 'claude-fable-5',               label: 'Claude Fable 5 (most capable, premium)' },
+      { id: 'claude-sonnet-5-5',            label: 'Claude Sonnet 5.5 (default, Max)' },
+      { id: 'claude-opus-5-5',              label: 'Claude Opus 5.5 (flagship — agentic coding, long-horizon)' },
+      { id: 'claude-fable-5-1',             label: 'Claude Fable 5.1 (most capable, premium)' },
+      { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5' },
+      { id: 'claude-opus-5',                label: 'Claude Opus 5' },
+      { id: 'claude-fable-5',               label: 'Claude Fable 5' },
       { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8' },
       { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7' },
       { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6' },
@@ -51,25 +54,30 @@ export const AGENT_VENDORS: VendorEntry[] = [
     // Antigravity CLI (`agy`). As of agy 1.1.2 `--model` is validated strictly
     // and the reasoning effort is baked into the slug (`<model>-<low|high>`);
     // the old bare slugs are rejected. Every slug below is listed by
-    // `agy models` and smoke-tested on agy 1.1.7. Keep in sync with
+    // `agy models` on agy 1.2.16 (Gemini 3.5 Flash is gone). Keep in sync with
     // VENDOR_MODELS in apps/worker/src/services/agent_backends.py.
     models: [
       { id: 'gemini-3.1-pro-high',     label: 'Gemini 3.1 Pro (High) — strong coding, default' },
       { id: 'gemini-3.1-pro-low',      label: 'Gemini 3.1 Pro (Low) — faster' },
-      { id: 'gemini-3.6-flash-high',   label: 'Gemini 3.6 Flash (High) — newest flash, deeper reasoning' },
-      { id: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium) — newest flash, balanced' },
-      { id: 'gemini-3.6-flash-low',    label: 'Gemini 3.6 Flash (Low) — newest flash, fastest' },
-      { id: 'gemini-3.5-flash-low',    label: 'Gemini 3.5 Flash (Low) — fast, cheap' },
+      { id: 'gemini-3.8-flash-high',   label: 'Gemini 3.8 Flash (High) — newest flash, deeper reasoning' },
+      { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium) — newest flash, balanced' },
+      { id: 'gemini-3.8-flash-low',    label: 'Gemini 3.8 Flash (Low) — newest flash, fastest' },
+      { id: 'gemini-3.7-flash-high',   label: 'Gemini 3.7 Flash (High)' },
+      { id: 'gemini-3.7-flash-low',    label: 'Gemini 3.7 Flash (Low) — fast, cheap' },
+      { id: 'gemini-3.6-flash-high',   label: 'Gemini 3.6 Flash (High)' },
+      { id: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
+      { id: 'gemini-3.6-flash-low',    label: 'Gemini 3.6 Flash (Low)' },
     ],
   },
   {
     id: 'openai',
     label: 'OpenAI',
-    // Slugs from the model catalog bundled in codex-cli 0.144.1. The GPT-5.6
-    // trio (Sol / Terra / Luna) is the current agentic-coding line;
-    // `gpt-5.5-codex` was never a real slug and has been dropped.
+    // Slugs from the model catalog bundled in codex-cli 0.155.1. GPT-6 Astra
+    // is the new flagship; the GPT-5.6 trio (Sol / Terra / Luna) remains the
+    // agentic-coding line. `gpt-5.5-codex` was never a real slug.
     models: [
-      { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol — latest frontier agentic coding' },
+      { id: 'gpt-6-astra',   label: 'GPT-6 Astra — most capable, complex demanding work' },
+      { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol — frontier agentic coding' },
       { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra — balanced agentic coding' },
       { id: 'gpt-5.6-luna',  label: 'GPT-5.6 Luna — fast + affordable agentic coding' },
       { id: 'gpt-5.5',       label: 'GPT-5.5 (frontier: complex coding + research)' },

@@ -91,14 +91,17 @@ class CLINotInstalledError(RuntimeError):
 # that gets auto-selected when a user switches vendor in the UI.
 
 VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
-    # Verified against ``GET https://api.anthropic.com/v1/models`` (2026-08-19).
-    # ``claude-opus-5`` is the current flagship Opus (1M ctx, 128K output) at
-    # Opus 4.8 pricing; ``claude-mythos-5`` is deliberately absent — it is only
-    # served to Project Glasswing accounts.
+    # Current Claude line (2026-10-08): Sonnet 5.5, Opus 5.5 and Fable 5.1.
+    # The 5.0 generation stays selectable for tasks/repos pinned to it.
+    # ``claude-mythos-5`` is deliberately absent — it is only served to
+    # Project Glasswing accounts.
     "anthropic": [
-        {"id": "claude-sonnet-5",              "label": "Claude Sonnet 5 (default, Max)"},
-        {"id": "claude-opus-5",                "label": "Claude Opus 5 (flagship — agentic coding, long-horizon)"},
-        {"id": "claude-fable-5",               "label": "Claude Fable 5 (most capable, premium)"},
+        {"id": "claude-sonnet-5-5",            "label": "Claude Sonnet 5.5 (default, Max)"},
+        {"id": "claude-opus-5-5",              "label": "Claude Opus 5.5 (flagship — agentic coding, long-horizon)"},
+        {"id": "claude-fable-5-1",             "label": "Claude Fable 5.1 (most capable, premium)"},
+        {"id": "claude-sonnet-5",              "label": "Claude Sonnet 5"},
+        {"id": "claude-opus-5",                "label": "Claude Opus 5"},
+        {"id": "claude-fable-5",               "label": "Claude Fable 5"},
         {"id": "claude-opus-4-8",              "label": "Claude Opus 4.8"},
         {"id": "claude-opus-4-7",              "label": "Claude Opus 4.7"},
         {"id": "claude-opus-4-6",              "label": "Claude Opus 4.6"},
@@ -113,25 +116,29 @@ VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
     # (``gemini-3.5-pro`` / ``gemini-3.1-pro`` / ``gemini-3.5-flash``) are
     # rejected with "model … is not recognized". ``gemini-3.5-pro`` no longer
     # exists; Gemini 3.1 Pro is still the strongest coding tier agy offers.
-    # All entries below are listed by ``agy models`` **and** smoke-tested with
-    # a real ``agy -p`` run on agy 1.1.7 with a Google AI subscription — that
-    # includes the ``gemini-3.5-flash-medium`` / ``-high`` pair, which agy
-    # 1.1.2 used to reject at run time and now accepts.
+    # All entries below are listed by ``agy models`` on agy 1.2.16. Gemini
+    # 3.5 Flash is no longer offered (its slug is remapped in
+    # ``AntigravityBackend._LEGACY_MODEL_ALIASES``).
     "google": [
         {"id": "gemini-3.1-pro-high",          "label": "Gemini 3.1 Pro (High) — strong coding, default"},
         {"id": "gemini-3.1-pro-low",           "label": "Gemini 3.1 Pro (Low) — faster"},
-        {"id": "gemini-3.6-flash-high",        "label": "Gemini 3.6 Flash (High) — newest flash, deeper reasoning"},
-        {"id": "gemini-3.6-flash-medium",      "label": "Gemini 3.6 Flash (Medium) — newest flash, balanced"},
-        {"id": "gemini-3.6-flash-low",         "label": "Gemini 3.6 Flash (Low) — newest flash, fastest"},
-        {"id": "gemini-3.5-flash-low",         "label": "Gemini 3.5 Flash (Low) — fast, cheap"},
+        {"id": "gemini-3.8-flash-high",        "label": "Gemini 3.8 Flash (High) — newest flash, deeper reasoning"},
+        {"id": "gemini-3.8-flash-medium",      "label": "Gemini 3.8 Flash (Medium) — newest flash, balanced"},
+        {"id": "gemini-3.8-flash-low",         "label": "Gemini 3.8 Flash (Low) — newest flash, fastest"},
+        {"id": "gemini-3.7-flash-high",        "label": "Gemini 3.7 Flash (High)"},
+        {"id": "gemini-3.7-flash-low",         "label": "Gemini 3.7 Flash (Low) — fast, cheap"},
+        {"id": "gemini-3.6-flash-high",        "label": "Gemini 3.6 Flash (High)"},
+        {"id": "gemini-3.6-flash-medium",      "label": "Gemini 3.6 Flash (Medium)"},
+        {"id": "gemini-3.6-flash-low",         "label": "Gemini 3.6 Flash (Low)"},
     ],
     # Slugs + descriptions taken from the model catalog bundled inside the
-    # Codex CLI binary (codex-cli 0.144.1). The GPT-5.6 trio (Sol / Terra /
-    # Luna) are the current agentic-coding line. ``gpt-5.5-codex`` used to sit
+    # Codex CLI binary (codex-cli 0.155.1). GPT-6 Astra is the new flagship;
+    # the GPT-5.6 trio (Sol / Terra / Luna) remains the agentic-coding line. ``gpt-5.5-codex`` used to sit
     # at the top of this list but is *not* in the catalog and is not a real
     # slug — replaced by ``gpt-5.5``.
     "openai": [
-        {"id": "gpt-5.6-sol",                  "label": "GPT-5.6 Sol — latest frontier agentic coding"},
+        {"id": "gpt-6-astra",                  "label": "GPT-6 Astra — most capable, complex demanding work"},
+        {"id": "gpt-5.6-sol",                  "label": "GPT-5.6 Sol — frontier agentic coding"},
         {"id": "gpt-5.6-terra",                "label": "GPT-5.6 Terra — balanced agentic coding"},
         {"id": "gpt-5.6-luna",                 "label": "GPT-5.6 Luna — fast + affordable agentic coding"},
         {"id": "gpt-5.5",                      "label": "GPT-5.5 (frontier: complex coding + research)"},
@@ -542,7 +549,7 @@ class ClaudeBackend(AgentBackend):
 #                                   agentic — it edits files & runs tools,
 #                                   verified by creating files in a temp repo)
 #   --model <slug>                  e.g. ``gemini-3.1-pro-high`` /
-#                                   ``gemini-3.5-flash-low`` (agy 1.1.2 bakes
+#                                   ``gemini-3.8-flash-low`` (agy 1.1.2 bakes
 #                                   the reasoning effort into the slug and
 #                                   validates it strictly)
 #   --dangerously-skip-permissions  auto-approve every tool call (required
@@ -604,10 +611,15 @@ class AntigravityBackend(AgentBackend):
     #: tasks created before this change keep running instead of failing with
     #: "model … is not recognized". ``gemini-3.5-pro`` no longer exists at
     #: Google, so it falls back to the strongest available Gemini model.
+    #: Gemini 3.5 Flash was dropped from agy (1.2.x), so its slugs move to
+    #: the equivalent Gemini 3.8 Flash tier.
     _LEGACY_MODEL_ALIASES = {
-        "gemini-3.5-pro":   "gemini-3.1-pro-high",
-        "gemini-3.1-pro":   "gemini-3.1-pro-high",
-        "gemini-3.5-flash": "gemini-3.5-flash-low",
+        "gemini-3.5-pro":          "gemini-3.1-pro-high",
+        "gemini-3.1-pro":          "gemini-3.1-pro-high",
+        "gemini-3.5-flash":        "gemini-3.8-flash-low",
+        "gemini-3.5-flash-low":    "gemini-3.8-flash-low",
+        "gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
+        "gemini-3.5-flash-high":   "gemini-3.8-flash-high",
     }
 
     #: Internal print-mode wait cap handed to ``--print-timeout``. ``agy``

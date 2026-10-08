@@ -949,7 +949,7 @@ async def generate_task(body: GenerateTaskRequest):
     if task.get("skip_verify") is None:
         task["skip_verify"] = True
     if not task.get("claude_model"):
-        task["claude_model"] = "claude-opus-5"
+        task["claude_model"] = "claude-opus-5-5"
 
     return task
 

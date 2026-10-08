@@ -13,6 +13,7 @@ import {
 } from '@coreui/react-pro';
 import type { Task, TaskStatus, TaskType } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
+import { asScopedColumns, asTableItems, fromTableItems } from '@/lib/smart-table';
 import { taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 
 interface TaskTableProps {
@@ -51,7 +52,7 @@ function statusBadgeColor(status: TaskStatus) {
 }
 
 function getScopedColumns(router: ReturnType<typeof useRouter>, handleEnqueue: (id: number) => void, includeRepo: boolean) {
-  return {
+  return asScopedColumns<Task>({
     status: (item: Task) => (
       <td>
         <CBadge color={statusBadgeColor(item.status as TaskStatus)}>
@@ -102,7 +103,7 @@ function getScopedColumns(router: ReturnType<typeof useRouter>, handleEnqueue: (
         )}
       </td>
     ),
-  };
+  });
 }
 
 export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSelectionChange }: TaskTableProps) {
@@ -158,7 +159,7 @@ export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSele
               <CCollapse visible={!isCollapsed}>
                 <CCardBody className="p-0">
                   <CSmartTable
-                    items={groupTasks}
+                    items={asTableItems(groupTasks)}
                     columns={groupedColumns}
                     tableProps={{ hover: true, responsive: true, striped: true }}
                     columnSorter
@@ -167,8 +168,8 @@ export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSele
                     itemsPerPageSelect
                     scopedColumns={getScopedColumns(router, handleEnqueue, false)}
                     selectable
-                    selected={groupTasks.filter((t) => selectedIds.has(t.id))}
-                    onSelectedItemsChange={(items) => onSelectionChange(groupTasks, items as Task[])}
+                    selected={asTableItems(groupTasks.filter((t) => selectedIds.has(t.id)))}
+                    onSelectedItemsChange={(items) => onSelectionChange(groupTasks, fromTableItems<Task>(items))}
                   />
                 </CCardBody>
               </CCollapse>
@@ -181,7 +182,7 @@ export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSele
 
   return (
     <CSmartTable
-      items={filteredTasks}
+      items={asTableItems(filteredTasks)}
       columns={columns}
       tableProps={{ hover: true, responsive: true, striped: true }}
       columnSorter
@@ -190,8 +191,8 @@ export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSele
       itemsPerPageSelect
       scopedColumns={getScopedColumns(router, handleEnqueue, true)}
       selectable
-      selected={filteredTasks.filter((t) => selectedIds.has(t.id))}
-      onSelectedItemsChange={(items) => onSelectionChange(filteredTasks, items as Task[])}
+      selected={asTableItems(filteredTasks.filter((t) => selectedIds.has(t.id)))}
+      onSelectedItemsChange={(items) => onSelectionChange(filteredTasks, fromTableItems<Task>(items))}
     />
   );
 }

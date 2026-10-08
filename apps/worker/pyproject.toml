@@ -4,11 +4,11 @@ version = "0.1.0"
 description = "DevServer autonomous coding agent worker"
 requires-python = ">=3.14"
 dependencies = [
-    "fastapi>=0.139.0",
-    "uvicorn[standard]>=0.51",
-    "asyncpg>=0.31",
-    "sqlalchemy[asyncio]>=2.0.51",
-    "pydantic-settings>=2.14.2",
+    "fastapi>=0.143.0",
+    "uvicorn[standard]>=0.54",
+    "asyncpg>=0.32",
+    "sqlalchemy[asyncio]>=2.1.4",
+    "pydantic-settings>=2.15.0",
     # Pinned below 1.0: PgQueuer 1.0 is a breaking "hard reset" that changes the
     # queue table schema (new 'failed' status + 'attempts' column). The Next.js
     # producer (apps/web/src/lib/queue.ts) and database/migrations/001_initial.sql
@@ -17,12 +17,12 @@ dependencies = [
     "httpx>=0.28.1",
     # Ed25519 verification of capitaltools-issued Pro license tokens
     # (services/pro/licensing). Harmless in the free edition.
-    "cryptography>=49",
+    "cryptography>=50",
     "pgvector>=0.5.0",
     # Local, CPU/ONNX text embeddings for semantic memory recall — replaces
     # the old Voyage cloud API (services/embeddings.py). Pulls onnxruntime +
     # huggingface-hub for the model download/cache.
-    "fastembed>=0.8",
+    "fastembed>=0.9",
 ]
 
 [project.optional-dependencies]
@@ -36,9 +36,9 @@ test = [
 # no-ops gracefully when these are absent. Enable with:
 #   uv sync --extra otel   (and set OTEL_EXPORTER_OTLP_ENDPOINT)
 otel = [
-    "opentelemetry-api>=1.43",
-    "opentelemetry-sdk>=1.43",
-    "opentelemetry-exporter-otlp-proto-http>=1.43",
+    "opentelemetry-api>=1.45",
+    "opentelemetry-sdk>=1.45",
+    "opentelemetry-exporter-otlp-proto-http>=1.45",
 ]
 
 [project.scripts]
