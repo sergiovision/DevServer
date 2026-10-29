@@ -1,10 +1,10 @@
 """Tests for telegram service — direct Bot API."""
 
-import sys
 import os
+import sys
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, patch
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -12,11 +12,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ["TELEGRAM_BOT_TOKEN"] = "test-token"
 os.environ["TELEGRAM_CHAT_ID"] = "12345"
 
-from services import telegram
 from config import settings
-
+from services import telegram
 
 # ─── Send tests ─────────────────────────────────────────────────────────────
+
 
 @pytest.mark.anyio
 @patch("services.telegram.httpx.AsyncClient")

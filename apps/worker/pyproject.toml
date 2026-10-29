@@ -56,6 +56,42 @@ asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
+    "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.3",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC"]
+ignore = [
+    "E501",     # line length is the formatter's job; long literals are fine
+    "ASYNC109", # explicit `timeout=` parameters are the house style (D11)
+    "ASYNC230", # sync file I/O in async code is accepted (D13)
+    "ASYNC240", # ditto for pathlib calls
+    "RUF001",   # typographic dashes/quotes in strings are intentional
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# main.py puts src/ on sys.path before importing the app when run directly.
+"src/main.py" = ["E402"]
+# Tests poll real subprocesses and database rows; there is no Event to await.
+"tests/**" = ["ASYNC110"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["config", "main", "models", "routes", "services", "worker"]
+
+[tool.pyright]
+# Basic mode, non-blocking for now: run `uv run pyright` locally; CI only
+# reports. Tightening to blocking is a deliberate, separate decision.
+include = ["src"]
+extraPaths = ["src"]
+pythonVersion = "3.14"
+typeCheckingMode = "basic"

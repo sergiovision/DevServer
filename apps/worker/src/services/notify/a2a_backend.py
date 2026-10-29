@@ -18,7 +18,7 @@ and skipped, never retried into the task's critical path.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -76,19 +76,23 @@ class A2APushBackend(NotifyBackend):
         try:
             async with async_session() as db:
                 rows = (
-                    await db.execute(
-                        text(
-                            """
+                    (
+                        await db.execute(
+                            text(
+                                """
                             SELECT c.url, c.token, c.auth_scheme, c.auth_secret,
                                    t.id AS task_id, t.repo_id, t.status
                               FROM a2a_push_configs c
                               JOIN tasks t ON t.id = c.task_id
                              WHERE t.task_key = :key
                             """
-                        ),
-                        {"key": task_key},
+                            ),
+                            {"key": task_key},
+                        )
                     )
-                ).mappings().all()
+                    .mappings()
+                    .all()
+                )
             return [dict(r) for r in rows]
         except Exception:
             # A missing table (very old database) or a transient DB error must
@@ -96,7 +100,9 @@ class A2APushBackend(NotifyBackend):
             logger.debug("a2a push config lookup failed for %s", task_key, exc_info=True)
             return []
 
-    async def _deliver(self, task_key: str, *, final: bool, extra: dict[str, Any] | None = None) -> bool:
+    async def _deliver(
+        self, task_key: str, *, final: bool, extra: dict[str, Any] | None = None
+    ) -> bool:
         configs = await self._configs_for(task_key)
         if not configs:
             return False
@@ -111,7 +117,7 @@ class A2APushBackend(NotifyBackend):
                 "contextId": context_id,
                 "status": {
                     "state": state,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "timestamp": datetime.now(UTC).isoformat(),
                 },
                 "final": final,
             }
@@ -139,7 +145,9 @@ class A2APushBackend(NotifyBackend):
                 if resp.status_code >= 300:
                     logger.warning(
                         "a2a push %s -> %s: %s",
-                        task_key, resp.status_code, resp.text[:200],
+                        task_key,
+                        resp.status_code,
+                        resp.text[:200],
                     )
                     continue
                 ok_any = True

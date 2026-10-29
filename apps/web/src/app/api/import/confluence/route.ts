@@ -20,7 +20,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
-import { enqueueTask } from '@/lib/queue';
+import { enqueueStoredTask } from '@/lib/tasks';
+import type { Task } from '@/lib/types';
 import { apiErrorResponse } from '@/lib/api-errors';
 import { WORKER_URL } from '@/lib/worker-url';
 
@@ -172,33 +173,23 @@ export async function POST(request: NextRequest) {
       if (target_type === 'task') {
         taskKey = `CONF-${draft.external_id}`;
         const priority = Number(task.priority) || 3;
-        const inserted = await query(
+        // An upsert rather than `insertTask`: a task with this key can exist
+        // without a ledger row (e.g. the ledger was cleared), and re-importing
+        // must refresh it instead of failing on the unique (repo_id, task_key).
+        const inserted = await query<Task>(
           `INSERT INTO tasks (repo_id, task_key, title, description, priority, labels,
                               mode, task_type, claude_mode, agent_vendor, git_flow, status)
            VALUES ($1, $2, $3, $4, $5, $6, 'autonomous', 'coding', 'max', 'anthropic', 'branch', 'pending')
            ON CONFLICT (repo_id, task_key) DO UPDATE
              SET title = EXCLUDED.title, description = EXCLUDED.description, updated_at = NOW()
-           RETURNING id, status`,
+           RETURNING *`,
           [repo_id, taskKey, draft.title, taskDescription(draft), priority, ['confluence']],
         );
-        targetId = inserted.rows[0].id as number;
+        const storedTask = inserted.rows[0];
+        targetId = storedTask.id;
 
-        if (task.enqueue !== false && inserted.rows[0].status === 'pending') {
-          const jobId = await enqueueTask({
-            taskId: targetId,
-            repoId: repo_id as number,
-            taskKey,
-            title: draft.title,
-            priority,
-            mode: 'autonomous',
-            claudeMode: 'max',
-            maxTurns: null,
-            gitFlow: 'branch',
-          });
-          await query(
-            `UPDATE tasks SET status = 'queued', queue_job_id = $1, updated_at = NOW() WHERE id = $2`,
-            [jobId, targetId],
-          );
+        if (task.enqueue !== false && storedTask.status === 'pending') {
+          await enqueueStoredTask(storedTask);
         }
       } else {
         const inserted = await query(

@@ -13,8 +13,8 @@ import {
   cilListRich,
   cilDescription,
   cilCopy,
+  cilBolt,
 } from '@coreui/icons';
-import { PRO_NAV_ITEMS } from './pro-loader';
 
 interface SidebarProps {
   visible: boolean;
@@ -26,25 +26,16 @@ interface SidebarProps {
   collapsed?: boolean;
 }
 
-// Free nav entries. Pro-only entries (Sessions, Webhooks, Agent Peers) are
-// spliced in from ``PRO_NAV_ITEMS`` so ``strip-pro.sh`` removes them along
-// with the rest of the pro bundle.
 const baseNavItems = [
   { name: 'Dashboard', href: '/', icon: cilSpeedometer },
   { name: 'Tasks', href: '/tasks', icon: cilTask },
   { name: 'Templates', href: '/templates', icon: cilCopy },
+  { name: 'Webhooks', href: '/webhooks', icon: cilBolt },
   { name: 'Ideas', href: '/ideas', icon: cilListRich },
   { name: 'Jobs', href: '/jobs', icon: cilClock },
   { name: 'Repos', href: '/repos', icon: cilStorage },
   { name: 'Settings', href: '/settings', icon: cilSettings },
   { name: 'Logs', href: '/logs', icon: cilDescription },
-];
-
-// Pro entries sit next to Templates; in free they're absent.
-const navItems = [
-  ...baseNavItems.slice(0, 3),       // Dashboard, Tasks, Templates
-  ...PRO_NAV_ITEMS,                  // Sessions, Webhooks, Agent Peers (pro)
-  ...baseNavItems.slice(3),          // Ideas, Jobs, Repos, Settings, Logs
 ];
 
 export function Sidebar({ visible, onVisibleChange, collapsed = false }: SidebarProps) {
@@ -121,7 +112,7 @@ export function Sidebar({ visible, onVisibleChange, collapsed = false }: Sidebar
         <nav className="app-sidebar-nav">
           <div className="app-sidebar-nav-title">Navigation</div>
           <ul className="app-sidebar-nav-list">
-            {navItems.map((item) => {
+            {baseNavItems.map((item) => {
               const isActive =
                 item.href === '/'
                   ? pathname === '/'

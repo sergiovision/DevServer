@@ -1,15 +1,9 @@
-"""Outcome prediction (free tier) — repo-level forecast, no embeddings.
+"""Outcome prediction: a repo-level forecast from ``task_runs``.
 
-The Pro edition forecasts from *similar* past tasks via pgvector
-(``services/pro/memory.predict_outcome``). The free edition has no
-embeddings, but it does have ``task_runs``, so we fall back to a
-repo-level baseline: across this repo's tasks that have actually run,
-what share succeeded, and how long / how many turns did they take.
-
-Returned shape matches the Pro predictor so one UI renders both:
-``{sample_size, success_probability, avg_duration_ms, avg_turns,
-similar, basis}``. ``basis='repo'`` lets the UI label it as a baseline
-rather than a similarity match (Pro returns ``basis='similar'``).
+Across this repo's tasks that have actually run, what share succeeded, and
+how long / how many turns did they take? Shape:
+``{sample_size, success_probability, avg_duration_ms, avg_turns, similar,
+basis}``; ``basis='repo'`` lets the UI label the number as a baseline.
 """
 
 from __future__ import annotations
@@ -31,9 +25,10 @@ async def predict_outcome_basic(session: AsyncSession, repo_id: int) -> dict | N
     rate.
     """
     try:
-        row = (await session.execute(
-            text(
-                """
+        row = (
+            await session.execute(
+                text(
+                    """
                 WITH per_task AS (
                     SELECT t.id,
                            BOOL_OR(tr.status = 'success') AS succeeded,
@@ -50,15 +45,21 @@ async def predict_outcome_basic(session: AsyncSession, repo_id: int) -> dict | N
                        COALESCE(AVG(turns), 0)                   AS avg_turns
                 FROM per_task
                 """
-            ),
-            {"repo_id": repo_id},
-        )).fetchone()
+                ),
+                {"repo_id": repo_id},
+            )
+        ).fetchone()
 
         n = int(row[0] or 0)
         if n == 0:
-            return {"sample_size": 0, "success_probability": None,
-                    "avg_duration_ms": 0, "avg_turns": 0, "similar": [],
-                    "basis": "repo"}
+            return {
+                "sample_size": 0,
+                "success_probability": None,
+                "avg_duration_ms": 0,
+                "avg_turns": 0,
+                "similar": [],
+                "basis": "repo",
+            }
         return {
             "sample_size": n,
             "success_probability": round(int(row[1] or 0) / n, 2),

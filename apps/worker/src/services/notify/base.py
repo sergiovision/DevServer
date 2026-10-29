@@ -62,8 +62,7 @@ class NotifyBackend(ABC):
         model: str,
     ) -> bool:
         return await self.send_text(
-            f"[start] {task_key}: {title}\n"
-            f"repo={repo_name} agent={vendor}/{model} mode={mode}"
+            f"[start] {task_key}: {title}\nrepo={repo_name} agent={vendor}/{model} mode={mode}"
         )
 
     async def send_task_success(
@@ -97,9 +96,7 @@ class NotifyBackend(ABC):
     ) -> bool:
         excerpt = (error_context or "").strip()[:400]
         return await self.send_text(
-            f"[FAIL] {task_key}\n"
-            f"repo={repo_name} attempts={attempts} cost=${cost:.4f}\n\n"
-            f"{excerpt}"
+            f"[FAIL] {task_key}\nrepo={repo_name} attempts={attempts} cost=${cost:.4f}\n\n{excerpt}"
         )
 
     async def send_vendor_failover(
@@ -205,9 +202,7 @@ class NotifyBackend(ABC):
         excerpt = body.strip()
         if len(excerpt) > 400:
             excerpt = excerpt[:400] + "…"
-        return await self.send_text(
-            f"[msg from {from_task_key}] ({kind}){subj}\n\n{excerpt}"
-        )
+        return await self.send_text(f"[msg from {from_task_key}] ({kind}){subj}\n\n{excerpt}")
 
     # ── Safe wrapper helpers ──────────────────────────────────────────
 

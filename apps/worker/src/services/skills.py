@@ -71,7 +71,7 @@ def _parse_frontmatter(raw: str) -> tuple[dict[str, str], str]:
         if ":" in line:
             key, _, val = line.partition(":")
             meta[key.strip().lower()] = val.strip()
-    body = "\n".join(lines[end + 1:]).strip()
+    body = "\n".join(lines[end + 1 :]).strip()
     return meta, body
 
 
@@ -109,8 +109,13 @@ def discover(*, with_body: bool = False) -> list[Skill]:
 def list_skills() -> list[dict]:
     """Frontmatter-only listing (progressive disclosure)."""
     return [
-        {"name": s.name, "description": s.description, "domain": s.domain,
-         "version": s.version, "path": s.path}
+        {
+            "name": s.name,
+            "description": s.description,
+            "domain": s.domain,
+            "version": s.version,
+            "path": s.path,
+        }
         for s in discover(with_body=False)
     ]
 
@@ -125,11 +130,7 @@ def load_skill(name: str) -> Skill | None:
 
 def render_skill_prompt_block(skill: Skill) -> str:
     """Wrap a skill body for injection into an agent prompt."""
-    return (
-        f"## Skill: {skill.name}\n"
-        f"_{skill.description}_\n\n"
-        f"{skill.body}"
-    )
+    return f"## Skill: {skill.name}\n_{skill.description}_\n\n{skill.body}"
 
 
 async def sync_to_db(session: AsyncSession) -> dict:
@@ -154,8 +155,13 @@ async def sync_to_db(session: AsyncSession) -> dict:
                     updated_at  = NOW()
                 """
             ),
-            {"name": s.name, "desc": s.description, "path": s.path,
-             "domain": s.domain, "version": s.version},
+            {
+                "name": s.name,
+                "desc": s.description,
+                "path": s.path,
+                "domain": s.domain,
+                "version": s.version,
+            },
         )
         synced.append(s.name)
     await session.commit()
@@ -168,13 +174,15 @@ async def get_skill_body_for_task(session: AsyncSession, task_id: int) -> str:
     Reads ``tasks.skill_id`` → ``skills.name`` via SQL (no ORM column needed),
     then loads the body from disk.
     """
-    row = (await session.execute(
-        text(
-            "SELECT s.name FROM tasks t JOIN skills s ON s.id = t.skill_id "
-            "WHERE t.id = :tid AND s.enabled"
-        ),
-        {"tid": task_id},
-    )).fetchone()
+    row = (
+        await session.execute(
+            text(
+                "SELECT s.name FROM tasks t JOIN skills s ON s.id = t.skill_id "
+                "WHERE t.id = :tid AND s.enabled"
+            ),
+            {"tid": task_id},
+        )
+    ).fetchone()
     if not row:
         return ""
     skill = load_skill(row[0])

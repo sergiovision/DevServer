@@ -41,6 +41,7 @@ two-step "vendor → model" combobox on the task form.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -49,6 +50,7 @@ import shutil
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from config import settings
 
@@ -81,102 +83,173 @@ class CLINotInstalledError(RuntimeError):
     """Raised/surfaced when a vendor's CLI binary is not on $PATH."""
 
 
-# ── Registry: supported vendors and their recommended models ────────────────
+# ── Model registry: the single source of model IDs ──────────────────────────
 #
-# These are the choices the task-form combobox presents. Users are still
-# allowed to type a free-form model string (repo default, old model, etc.),
-# so the list is a hint — not an enforced allow-list.
+# Every model ID the worker or the dashboard knows lives here. The web app
+# reads it through ``GET /internal/agent-registry``; other Python modules use
+# the lookup helpers below instead of string literals, so a model release is
+# one edit in one file.
 #
-# Ordering matters: the first entry in each list is the "strong" default
-# that gets auto-selected when a user switches vendor in the UI.
+# ``deprecated`` models are two or more generations old: hidden from the
+# picker, but still accepted wherever a task or repo already stores them.
+# Users may also type any free-form model string — this is a menu, not an
+# allow-list.
 
-VENDOR_MODELS: dict[str, list[dict[str, str]]] = {
-    # Current Claude line (2026-10-08): Sonnet 5.5, Opus 5.5 and Fable 5.1.
-    # The 5.0 generation stays selectable for tasks/repos pinned to it.
-    # ``claude-mythos-5`` is deliberately absent — it is only served to
-    # Project Glasswing accounts.
-    "anthropic": [
-        {"id": "claude-sonnet-5-5",            "label": "Claude Sonnet 5.5 (default, Max)"},
-        {"id": "claude-opus-5-5",              "label": "Claude Opus 5.5 (flagship — agentic coding, long-horizon)"},
-        {"id": "claude-fable-5-1",             "label": "Claude Fable 5.1 (most capable, premium)"},
-        {"id": "claude-sonnet-5",              "label": "Claude Sonnet 5"},
-        {"id": "claude-opus-5",                "label": "Claude Opus 5"},
-        {"id": "claude-fable-5",               "label": "Claude Fable 5"},
-        {"id": "claude-opus-4-8",              "label": "Claude Opus 4.8"},
-        {"id": "claude-opus-4-7",              "label": "Claude Opus 4.7"},
-        {"id": "claude-opus-4-6",              "label": "Claude Opus 4.6"},
-        {"id": "claude-sonnet-4-6",            "label": "Claude Sonnet 4.6"},
-        {"id": "claude-haiku-4-5-20251001",    "label": "Claude Haiku 4.5"},
-        {"id": "claude-opus-4-5",              "label": "Claude Opus 4.5"},
-        {"id": "claude-sonnet-4-5",            "label": "Claude Sonnet 4.5"},
-    ],
-    # Antigravity CLI (``agy``) model slugs. Since agy 1.1.2 the ``--model``
-    # flag is validated strictly and the reasoning-effort level is part of the
-    # slug (``<model>-<low|medium|high>``); the old bare slugs
-    # (``gemini-3.5-pro`` / ``gemini-3.1-pro`` / ``gemini-3.5-flash``) are
-    # rejected with "model … is not recognized". ``gemini-3.5-pro`` no longer
-    # exists; Gemini 3.1 Pro is still the strongest coding tier agy offers.
-    # All entries below are listed by ``agy models`` on agy 1.2.16. Gemini
-    # 3.5 Flash is no longer offered (its slug is remapped in
-    # ``AntigravityBackend._LEGACY_MODEL_ALIASES``).
-    "google": [
-        {"id": "gemini-3.1-pro-high",          "label": "Gemini 3.1 Pro (High) — strong coding, default"},
-        {"id": "gemini-3.1-pro-low",           "label": "Gemini 3.1 Pro (Low) — faster"},
-        {"id": "gemini-3.8-flash-high",        "label": "Gemini 3.8 Flash (High) — newest flash, deeper reasoning"},
-        {"id": "gemini-3.8-flash-medium",      "label": "Gemini 3.8 Flash (Medium) — newest flash, balanced"},
-        {"id": "gemini-3.8-flash-low",         "label": "Gemini 3.8 Flash (Low) — newest flash, fastest"},
-        {"id": "gemini-3.7-flash-high",        "label": "Gemini 3.7 Flash (High)"},
-        {"id": "gemini-3.7-flash-low",         "label": "Gemini 3.7 Flash (Low) — fast, cheap"},
-        {"id": "gemini-3.6-flash-high",        "label": "Gemini 3.6 Flash (High)"},
-        {"id": "gemini-3.6-flash-medium",      "label": "Gemini 3.6 Flash (Medium)"},
-        {"id": "gemini-3.6-flash-low",         "label": "Gemini 3.6 Flash (Low)"},
-    ],
-    # Slugs + descriptions taken from the model catalog bundled inside the
-    # Codex CLI binary (codex-cli 0.155.1). GPT-6 Astra is the new flagship;
-    # the GPT-5.6 trio (Sol / Terra / Luna) remains the agentic-coding line. ``gpt-5.5-codex`` used to sit
-    # at the top of this list but is *not* in the catalog and is not a real
-    # slug — replaced by ``gpt-5.5``.
-    "openai": [
-        {"id": "gpt-6-astra",                  "label": "GPT-6 Astra — most capable, complex demanding work"},
-        {"id": "gpt-5.6-sol",                  "label": "GPT-5.6 Sol — frontier agentic coding"},
-        {"id": "gpt-5.6-terra",                "label": "GPT-5.6 Terra — balanced agentic coding"},
-        {"id": "gpt-5.6-luna",                 "label": "GPT-5.6 Luna — fast + affordable agentic coding"},
-        {"id": "gpt-5.5",                      "label": "GPT-5.5 (frontier: complex coding + research)"},
-        {"id": "gpt-5.4",                      "label": "GPT-5.4 (strong everyday coding)"},
-        {"id": "gpt-5.3-codex",                "label": "GPT-5.3 Codex (heavy reasoning, agentic)"},
-        {"id": "gpt-5.4-mini",                 "label": "GPT-5.4 Mini (small, fast, cost-efficient)"},
-        {"id": "gpt-5.2",                      "label": "GPT-5.2 (long-running agents)"},
-    ],
-    # Verified against ``GET https://open.bigmodel.cn/api/paas/v4/models``
-    # (2026-08-19) — Zhipu currently serves glm-4.5, glm-4.5-air, glm-4.6,
-    # glm-4.7, glm-5, glm-5-turbo, glm-5.1, glm-5.2 and glm-5.3.
-    # glm-5.3 (2026-08-14) is the same 744B-A40B MoE base as 5.2 with a much
-    # heavier post-training stage: ~50% better coding on Zhipu's own evals and
-    # top open-weights on Terminal Bench 3.0. It ships through the GLM Coding
-    # Plan and is explicitly supported by the Claude Code CLI — which is
-    # exactly how ``GLMBackend`` runs it — so it is the new default.
-    "glm": [
-        {"id": "glm-5.3",                      "label": "GLM-5.3 (thinking, latest flagship — best open-weights coding)"},
-        {"id": "glm-5.2",                      "label": "GLM-5.2 (thinking, previous flagship)"},
-        {"id": "glm-5.1",                      "label": "GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)"},
-        {"id": "glm-5-turbo",                  "label": "GLM-5 Turbo (fast, cheap)"},
-        {"id": "glm-5",                        "label": "GLM-5"},
-        {"id": "glm-4.7",                      "label": "GLM-4.7 (previous generation)"},
-        {"id": "glm-4.5-air",                  "label": "GLM-4.5 Air (budget)"},
-    ],
+
+@dataclass(frozen=True)
+class ModelInfo:
+    id: str
+    label: str
+    is_default: bool = False
+    deprecated: bool = False
+
+
+def _model(id: str, label: str, *, default: bool = False) -> ModelInfo:
+    return ModelInfo(id=id, label=label, is_default=default)
+
+
+def _legacy(id: str, label: str) -> ModelInfo:
+    return ModelInfo(id=id, label=label, deprecated=True)
+
+
+VENDOR_MODELS: dict[str, tuple[ModelInfo, ...]] = {
+    # Anthropic models page, 2026-10. ``claude-mythos-5`` is deliberately
+    # absent: it is only served to Project Glasswing accounts.
+    "anthropic": (
+        _model("claude-sonnet-5-5", "Claude Sonnet 5.5 (default, Max)", default=True),
+        _model("claude-opus-5-5", "Claude Opus 5.5 (flagship — agentic coding, long-horizon)"),
+        _model("claude-fable-5-1", "Claude Fable 5.1 (most capable, premium)"),
+        _model("claude-haiku-5-5", "Claude Haiku 5.5 (fast, affordable)"),
+        _model("claude-sonnet-5", "Claude Sonnet 5"),
+        _model("claude-opus-5", "Claude Opus 5"),
+        _model("claude-fable-5", "Claude Fable 5"),
+        _legacy("claude-opus-4-8", "Claude Opus 4.8"),
+        _legacy("claude-opus-4-7", "Claude Opus 4.7"),
+        _legacy("claude-opus-4-6", "Claude Opus 4.6"),
+        _legacy("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+        _legacy("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+        _legacy("claude-opus-4-5", "Claude Opus 4.5"),
+        _legacy("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+    ),
+    # Slugs as listed by ``agy models`` (Antigravity CLI 1.4.9, 2026-10-29).
+    # Since agy 1.1.2 the reasoning effort is part of the slug. Gemini 3.1 Pro
+    # stays the default per the operator's choice even though agy 1.4.9 no
+    # longer lists it; ``AntigravityBackend`` remaps retired slugs.
+    "google": (
+        _model(
+            "gemini-3.1-pro-high", "Gemini 3.1 Pro (High) — strong coding, default", default=True
+        ),
+        _model("gemini-3.1-pro-low", "Gemini 3.1 Pro (Low) — faster"),
+        _model("gemini-4-argon-high", "Gemini 4 Argon (High) — newest, deepest reasoning"),
+        _model("gemini-4-argon-medium", "Gemini 4 Argon (Medium) — newest, balanced"),
+        _model("gemini-4-argon-low", "Gemini 4 Argon (Low) — newest, fastest"),
+        _model("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
+        _model("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
+        _model("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low) — fast, cheap"),
+        _legacy("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
+        _legacy("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
+        _legacy("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
+        _legacy("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
+        _legacy("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
+    ),
+    # Slugs from the model catalog bundled in codex-cli 0.155.1. The GPT-6.1
+    # Sol/Terra, GPT-6 Luna and GPT-6 Pro slugs are not in that catalog yet,
+    # so they are not offered until the CLI accepts them.
+    "openai": (
+        _model("gpt-6-astra", "GPT-6 Astra — most capable, complex demanding work", default=True),
+        _model("gpt-5.6-sol", "GPT-5.6 Sol — frontier agentic coding"),
+        _model("gpt-5.6-terra", "GPT-5.6 Terra — balanced agentic coding"),
+        _model("gpt-5.6-luna", "GPT-5.6 Luna — fast + affordable agentic coding"),
+        _model("gpt-5.5", "GPT-5.5 (frontier: complex coding + research)"),
+        _legacy("gpt-5.4", "GPT-5.4"),
+        _legacy("gpt-5.3-codex", "GPT-5.3 Codex"),
+        _legacy("gpt-5.4-mini", "GPT-5.4 Mini"),
+        _legacy("gpt-5.2", "GPT-5.2"),
+    ),
+    # ``GET https://open.bigmodel.cn/api/paas/v4/models`` (2026-08-19). GLM runs
+    # through the Claude Code CLI (see GLMBackend).
+    "glm": (
+        _model(
+            "glm-5.3",
+            "GLM-5.3 (thinking, latest flagship — best open-weights coding)",
+            default=True,
+        ),
+        _model("glm-5.2", "GLM-5.2 (thinking, previous flagship)"),
+        _model("glm-5.1", "GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)"),
+        _model("glm-5-turbo", "GLM-5 Turbo (fast, cheap)"),
+        _model("glm-5", "GLM-5"),
+        _legacy("glm-4.7", "GLM-4.7"),
+        _legacy("glm-4.5-air", "GLM-4.5 Air"),
+    ),
 }
 
 VENDOR_LABELS: dict[str, str] = {
     "anthropic": "Anthropic",
-    "google":    "Google (Antigravity)",
-    "openai":    "OpenAI",
-    "glm":       "GLM (Zhipu)",
+    "google": "Google (Antigravity)",
+    "openai": "OpenAI",
+    "glm": "GLM (Zhipu)",
 }
 
 DEFAULT_VENDOR = "anthropic"
 
+#: The model ``tasks.backup_model`` defaults to when a task is created.
+DEFAULT_BACKUP_MODEL = "claude-sonnet-4-6"
+#: The system LLM (task generation, compaction, decomposition, the assistant)
+#: when the operator has not chosen one on the settings page.
+SYSTEM_LLM_DEFAULT_VENDOR = "glm"
+SYSTEM_LLM_DEFAULT_MODEL = "glm-5.1"
+#: Model stamped on tasks generated by the devtask skill when it names none.
+GENERATED_TASK_DEFAULT_MODEL = "claude-opus-5-5"
+
+#: Model-family prefixes for request shaping in ``services.llm_client``.
+#: GLM-5 models need thinking switched on explicitly.
+GLM_THINKING_MODEL_PREFIXES: tuple[str, ...] = ("glm-5",)
+#: OpenAI reasoning-era models reject ``max_tokens`` for ``max_completion_tokens``.
+OPENAI_COMPLETION_TOKENS_PREFIXES: tuple[str, ...] = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
+
+def picker_models(vendor: str) -> tuple[ModelInfo, ...]:
+    """Current (non-deprecated) models of ``vendor``, default first."""
+    models = VENDOR_MODELS.get(vendor, ())
+    current = [m for m in models if not m.deprecated]
+    return tuple(sorted(current, key=lambda m: not m.is_default))
+
+
+def default_model(vendor: str) -> str:
+    """The vendor's default model id ('' for an unknown vendor)."""
+    for model in VENDOR_MODELS.get(vendor, ()):
+        if model.is_default:
+            return model.id
+    return ""
+
+
+def is_known_model(model_id: str) -> bool:
+    """True for any registered id, deprecated ones included."""
+    return any(m.id == model_id for models in VENDOR_MODELS.values() for m in models)
+
+
+def registry_payload() -> dict[str, dict]:
+    """JSON-ready registry for ``/internal/agent-registry``."""
+    return {
+        vendor: {
+            "label": VENDOR_LABELS[vendor],
+            "default_model": default_model(vendor),
+            "models": [
+                {
+                    "id": m.id,
+                    "label": m.label,
+                    "is_default": m.is_default,
+                    "deprecated": m.deprecated,
+                }
+                for m in models
+            ],
+        }
+        for vendor, models in VENDOR_MODELS.items()
+    }
+
 
 # ── Result dataclass — normalised across vendors ────────────────────────────
+
 
 @dataclass
 class AgentResult:
@@ -188,6 +261,7 @@ class AgentResult:
     fields: ``result``, ``cost_usd``, ``num_turns``, ``session_id``,
     ``exit_code``, ``raw_output``, ``subtype``, ``errors``.
     """
+
     result: str = ""
     cost_usd: float = 0.0
     num_turns: int = 0
@@ -214,6 +288,7 @@ class AgentResult:
 
 
 # ── Backend protocol ────────────────────────────────────────────────────────
+
 
 class AgentBackend(ABC):
     """Abstract interface every vendor-specific backend implements."""
@@ -471,7 +546,8 @@ class ClaudeBackend(AgentBackend):
             # mode; --include-partial-messages upgrades the output from one
             # line per finished message to real token deltas.
             cmd += [
-                "--output-format", "stream-json",
+                "--output-format",
+                "stream-json",
                 "--verbose",
                 "--include-partial-messages",
             ]
@@ -513,16 +589,14 @@ class ClaudeBackend(AgentBackend):
         try:
             data = json.loads(raw_output)
             res.result = data.get("result", "") or ""
-            res.cost_usd = float(
-                data.get("total_cost_usd") or data.get("cost_usd") or 0
-            )
+            res.cost_usd = float(data.get("total_cost_usd") or data.get("cost_usd") or 0)
             res.num_turns = int(data.get("num_turns", 0) or 0)
             res.session_id = data.get("session_id", prior_session_id) or prior_session_id
             res.subtype = data.get("subtype", "") or ""
             errors = data.get("errors", [])
             if isinstance(errors, list):
                 res.errors = [str(e) for e in errors]
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except json.JSONDecodeError, TypeError, ValueError:
             res.result = raw_output
             snippet = (raw_output or "").strip()[:500] or "<empty>"
             logger.warning(
@@ -613,13 +687,13 @@ class AntigravityBackend(AgentBackend):
     #: Google, so it falls back to the strongest available Gemini model.
     #: Gemini 3.5 Flash was dropped from agy (1.2.x), so its slugs move to
     #: the equivalent Gemini 3.8 Flash tier.
-    _LEGACY_MODEL_ALIASES = {
-        "gemini-3.5-pro":          "gemini-3.1-pro-high",
-        "gemini-3.1-pro":          "gemini-3.1-pro-high",
-        "gemini-3.5-flash":        "gemini-3.8-flash-low",
-        "gemini-3.5-flash-low":    "gemini-3.8-flash-low",
+    _LEGACY_MODEL_ALIASES: ClassVar[dict[str, str]] = {
+        "gemini-3.5-pro": "gemini-3.1-pro-high",
+        "gemini-3.1-pro": "gemini-3.1-pro-high",
+        "gemini-3.5-flash": "gemini-3.8-flash-low",
+        "gemini-3.5-flash-low": "gemini-3.8-flash-low",
         "gemini-3.5-flash-medium": "gemini-3.8-flash-medium",
-        "gemini-3.5-flash-high":   "gemini-3.8-flash-high",
+        "gemini-3.5-flash-high": "gemini-3.8-flash-high",
     }
 
     #: Internal print-mode wait cap handed to ``--print-timeout``. ``agy``
@@ -632,11 +706,11 @@ class AntigravityBackend(AgentBackend):
     #: absent or the CLI prefers key / Vertex auth and the user's Google AI
     #: Pro / Ultra subscription is never used.
     _SUBSCRIPTION_BLOCKING_ENV = (
-        "ANTIGRAVITY_API_KEY",        # agy's native API key
-        "GEMINI_API_KEY",             # AI Studio API key (bridged in api mode)
+        "ANTIGRAVITY_API_KEY",  # agy's native API key
+        "GEMINI_API_KEY",  # AI Studio API key (bridged in api mode)
         "GOOGLE_API_KEY",
         "GOOGLE_GENAI_USE_VERTEXAI",  # forces Vertex AI auth
-        "GOOGLE_CLOUD_PROJECT",       # Vertex / ADC project selector
+        "GOOGLE_CLOUD_PROJECT",  # Vertex / ADC project selector
         "GOOGLE_CLOUD_LOCATION",
         "GOOGLE_APPLICATION_CREDENTIALS",  # ADC service-account file
     )
@@ -652,11 +726,7 @@ class AntigravityBackend(AgentBackend):
         (the var ``agy`` actually reads) when the latter isn't already set.
         """
         if billing_mode == "max":
-            return {
-                k: v
-                for k, v in os.environ.items()
-                if k not in self._SUBSCRIPTION_BLOCKING_ENV
-            }
+            return {k: v for k, v in os.environ.items() if k not in self._SUBSCRIPTION_BLOCKING_ENV}
         # api mode: reuse the old Gemini key with the new CLI.
         key = os.environ.get(self.api_key_env)
         if key and not os.environ.get(self._AGY_API_KEY_ENV):
@@ -670,11 +740,11 @@ class AntigravityBackend(AgentBackend):
         *,
         prompt: str,
         model: str,
-        allowed_tools: str,  # noqa: ARG002 — agy has no tool-allow-list flag
-        session_id: str | None,  # noqa: ARG002 — print mode has no resumable ID
-        max_turns: int | None,  # noqa: ARG002 — agy has no --max-turns flag
-        mcp_config_path: str | None = None,  # noqa: ARG002 — agy has no MCP flag
-        stream_json: bool = False,  # noqa: ARG002 — agy has no --output-format
+        allowed_tools: str,
+        session_id: str | None,
+        max_turns: int | None,
+        mcp_config_path: str | None = None,
+        stream_json: bool = False,
         extra_args: list[str] | None = None,
     ) -> list[str]:
         # AUTONOMOUS / HEADLESS — these flags are mandatory. Do not remove:
@@ -689,10 +759,14 @@ class AntigravityBackend(AgentBackend):
         #   each invocation runs fresh (resume is interactive-only). Same as Codex.
         # max_turns / allowed_tools: ``agy`` has no equivalent flags — ignored.
         cmd = [
-            self.bin_argv0(), "-p", prompt,
-            "--model", self._LEGACY_MODEL_ALIASES.get(model, model),
+            self.bin_argv0(),
+            "-p",
+            prompt,
+            "--model",
+            self._LEGACY_MODEL_ALIASES.get(model, model),
             "--dangerously-skip-permissions",
-            "--print-timeout", self._PRINT_TIMEOUT,
+            "--print-timeout",
+            self._PRINT_TIMEOUT,
         ]
         if extra_args:
             cmd.extend(extra_args)
@@ -781,7 +855,7 @@ class OpenAIBackend(AgentBackend):
     #: templates created back then still carry it, so remap onto the real
     #: slug instead of failing the run. Skipped when OPENAI_BASE_URL points at
     #: Azure, where the "model" is a user-chosen deployment name.
-    _LEGACY_MODEL_ALIASES = {
+    _LEGACY_MODEL_ALIASES: ClassVar[dict[str, str]] = {
         "gpt-5.5-codex": "gpt-5.5",
     }
 
@@ -790,11 +864,11 @@ class OpenAIBackend(AgentBackend):
         *,
         prompt: str,
         model: str,
-        allowed_tools: str,  # noqa: ARG002 — codex has no equivalent flag
-        session_id: str | None,  # noqa: ARG002 — see module docstring
-        max_turns: int | None,  # noqa: ARG002 — codex has no --max-turns
-        mcp_config_path: str | None = None,  # noqa: ARG002 — see below
-        stream_json: bool = False,  # noqa: ARG002 — codex always emits --json
+        allowed_tools: str,
+        session_id: str | None,
+        max_turns: int | None,
+        mcp_config_path: str | None = None,
+        stream_json: bool = False,
         extra_args: list[str] | None = None,
     ) -> list[str]:
         # mcp_config_path is accepted but unused: codex mounts MCP servers via
@@ -817,10 +891,12 @@ class OpenAIBackend(AgentBackend):
         api_version = getattr(settings, "openai_api_version", "") if settings else ""
 
         cmd: list[str] = [
-            self.bin_argv0(), "exec",
-            "--json",                      # JSONL event stream on stdout
-            "--skip-git-repo-check",       # worktrees are valid repos but already on a branch
-            "--sandbox", "workspace-write",  # explicit, supported automation sandbox
+            self.bin_argv0(),
+            "exec",
+            "--json",  # JSONL event stream on stdout
+            "--skip-git-repo-check",  # worktrees are valid repos but already on a branch
+            "--sandbox",
+            "workspace-write",  # explicit, supported automation sandbox
         ]
         if model:
             resolved = model if base_url else self._LEGACY_MODEL_ALIASES.get(model, model)
@@ -832,18 +908,27 @@ class OpenAIBackend(AgentBackend):
             endpoint = base_url.rstrip("/")
             if not endpoint.endswith("/openai"):
                 endpoint = f"{endpoint}/openai"
-            cmd.extend([
-                "-c", 'model_provider="azure"',
-                "-c", 'model_providers.azure.name="Azure OpenAI"',
-                "-c", f'model_providers.azure.base_url="{endpoint}"',
-                "-c", 'model_providers.azure.env_key="OPENAI_API_KEY"',
-                "-c", 'model_providers.azure.wire_api="responses"',
-            ])
-            if api_version:
-                cmd.extend([
+            cmd.extend(
+                [
                     "-c",
-                    f'model_providers.azure.query_params={{api-version="{api_version}"}}',
-                ])
+                    'model_provider="azure"',
+                    "-c",
+                    'model_providers.azure.name="Azure OpenAI"',
+                    "-c",
+                    f'model_providers.azure.base_url="{endpoint}"',
+                    "-c",
+                    'model_providers.azure.env_key="OPENAI_API_KEY"',
+                    "-c",
+                    'model_providers.azure.wire_api="responses"',
+                ]
+            )
+            if api_version:
+                cmd.extend(
+                    [
+                        "-c",
+                        f'model_providers.azure.query_params={{api-version="{api_version}"}}',
+                    ]
+                )
 
         # extra_args must go BEFORE the prompt — codex mis-parses if the
         # positional prompt is not last.
@@ -923,10 +1008,8 @@ class OpenAIBackend(AgentBackend):
                 tt = usage.get("total_tokens") or usage.get("total")
                 if tt is None:
                     tt = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     total_tokens = int(tt) or total_tokens
-                except (TypeError, ValueError):
-                    pass
             elif etype in ("task.complete", "task_complete", "thread.completed"):
                 final = payload.get("last_agent_message") or payload.get("message")
                 if isinstance(final, str) and final:
@@ -1036,9 +1119,7 @@ class GLMBackend(ClaudeBackend):
         env = super().build_env("api")
         if env is None:
             env = dict(os.environ)
-        env["ANTHROPIC_BASE_URL"] = os.environ.get(
-            "GLM_BASE_URL", self.default_base_url
-        )
+        env["ANTHROPIC_BASE_URL"] = os.environ.get("GLM_BASE_URL", self.default_base_url)
         token = os.environ.get(self.api_key_env)
         if token:
             env["ANTHROPIC_AUTH_TOKEN"] = token
@@ -1052,10 +1133,27 @@ class GLMBackend(ClaudeBackend):
 
 _BACKENDS: dict[str, AgentBackend] = {
     "anthropic": ClaudeBackend(),
-    "google":    AntigravityBackend(),
-    "openai":    OpenAIBackend(),
-    "glm":       GLMBackend(),
+    "google": AntigravityBackend(),
+    "openai": OpenAIBackend(),
+    "glm": GLMBackend(),
 }
+
+
+def register_backend(backend: AgentBackend) -> AgentBackend | None:
+    """Register ``backend`` under its ``vendor`` id; return what it replaced.
+
+    The built-in vendors are registered at import time. This hook exists so
+    tests (and future vendors) can plug in a backend without editing the
+    registry dict directly. Pass the returned value back to restore it.
+    """
+    previous = _BACKENDS.get(backend.vendor)
+    _BACKENDS[backend.vendor] = backend
+    return previous
+
+
+def unregister_backend(vendor: str) -> None:
+    """Remove a backend previously added with :func:`register_backend`."""
+    _BACKENDS.pop(vendor, None)
 
 
 def get_backend(vendor: str | None) -> AgentBackend:
@@ -1073,16 +1171,12 @@ def get_backend(vendor: str | None) -> AgentBackend:
 
 
 def list_vendors() -> list[dict]:
-    """Return a UI-ready list of vendor entries with their model lists.
-
-    Shape mirrors what the Next.js combobox endpoint exposes so the worker
-    can serve the same data without a separate schema.
-    """
+    """UI-ready vendor entries with their picker models."""
     return [
         {
             "id": vendor_id,
             "label": VENDOR_LABELS[vendor_id],
-            "models": list(VENDOR_MODELS[vendor_id]),
+            "models": [{"id": m.id, "label": m.label} for m in picker_models(vendor_id)],
         }
         for vendor_id in VENDOR_MODELS
     ]

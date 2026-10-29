@@ -6,9 +6,8 @@ import { WORKER_URL } from '@/lib/worker-url';
  * GET /api/tasks/<id>/prediction
  *
  * Outcome forecast for a task. Proxies the worker's
- * /internal/tasks/<key>/prediction endpoint, which returns a repo-level
- * baseline (free) or a similar-task forecast (Pro). Available in both
- * editions — the `basis` field distinguishes the source.
+ * /internal/tasks/<key>/prediction endpoint. The `basis` field says where
+ * the number comes from (e.g. the repo's recent success rate).
  */
 
 interface RouteContext {

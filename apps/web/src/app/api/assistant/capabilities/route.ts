@@ -5,10 +5,10 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * What the assistant can do on this deployment — edition, system LLM, and
- * whether tools/actions are available. The panel renders its badge from this.
+ * Which system LLM answers the Ask Agent panel, and which of that vendor's
+ * models the panel's picker may offer. The panel renders its badge from this.
  *
- * Degrades to a free-tier answer rather than an error: a dead worker should
+ * Degrades to a minimal answer rather than an error: a dead worker should
  * make the panel say "the worker is unreachable", not make it fail to open.
  */
 export async function GET() {
@@ -20,11 +20,8 @@ export async function GET() {
     return NextResponse.json(await res.json());
   } catch {
     return NextResponse.json({
-      edition: 'free',
       vendor: null,
       model: null,
-      tools: false,
-      actions: false,
       workerUnreachable: true,
     });
   }

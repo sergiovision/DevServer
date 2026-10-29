@@ -29,9 +29,8 @@ interface Props {
   taskId: number;
 }
 
-// The Pro predictor embeds the task text on the worker's CPU, which can take
-// a second or more — cache the answer per task so revisiting a task page
-// within the TTL paints the card instantly with zero worker roundtrips.
+// Cache the answer per task so revisiting a task page within the TTL paints
+// the card instantly with zero worker roundtrips.
 const PREDICTION_TTL_MS = 5 * 60 * 1000;
 
 function readPredictionCache(taskId: number): Prediction | null {
@@ -59,9 +58,9 @@ function writePredictionCache(taskId: number, data: Prediction | null): void {
 
 /**
  * Outcome prediction card (migration 010). Forecasts a task's success
- * probability + expected duration/turns. Free tier shows a repo-level
- * baseline (basis='repo'); Pro shows a similar-task forecast with a sample
- * list (basis='similar'). Renders nothing when there's no history, and
+ * probability + expected duration/turns, either from a repo-level baseline
+ * (basis='repo') or from similar past tasks (basis='similar', with a sample
+ * list). Renders nothing when there's no history, and
  * nothing while loading — the forecast is auxiliary, so it pops in when
  * ready instead of holding a spinner slot in the layout.
  */

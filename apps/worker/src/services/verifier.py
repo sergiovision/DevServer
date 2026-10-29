@@ -1,10 +1,18 @@
 """Verification runner — executes pre/build/test/lint commands in the worktree."""
 
-import asyncio
 import logging
-from typing import IO
+from typing import Protocol
 
 from services import proc as proc_util
+
+
+class TextSink(Protocol):
+    """Anything verify output can be streamed into (a file, the task log)."""
+
+    def write(self, text: str, /) -> object: ...
+
+    def flush(self) -> None: ...
+
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +24,7 @@ async def _run_step(
     cmd: str,
     cwd: str,
     timeout: int = DEFAULT_TIMEOUT,
-    log_file: IO | None = None,
+    log_file: TextSink | None = None,
 ) -> tuple[bool, str]:
     """Run a single verification step, streaming output to log_file in real-time."""
     if not cmd or not cmd.strip():
@@ -40,7 +48,7 @@ async def _run_step(
             returncode = await proc_util.run_shell_streamed(
                 cmd, cwd=cwd, timeout=timeout, on_line=_on_line
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("Verify [%s] TIMEOUT after %ds", name, timeout)
             if log_file:
                 log_file.write(f"\n[TIMEOUT after {timeout}s]\n")
@@ -58,7 +66,7 @@ async def _run_step(
             return False, output
         logger.info("Verify [%s] PASSED", name)
         if log_file:
-            log_file.write(f"[PASSED]\n")
+            log_file.write("[PASSED]\n")
             log_file.flush()
         return True, output
 
@@ -77,7 +85,7 @@ async def run_verify(
     test_cmd: str = "",
     lint_cmd: str = "",
     timeout: int = DEFAULT_TIMEOUT,
-    log_file: IO | None = None,
+    log_file: TextSink | None = None,
 ) -> tuple[bool, str]:
     """Run all verification steps in sequence, streaming output to log_file.
 
@@ -91,7 +99,7 @@ async def run_verify(
     ]
 
     if log_file:
-        log_file.write(f"\n{'─'*60}\nVERIFICATION\n{'─'*60}\n")
+        log_file.write(f"\n{'─' * 60}\nVERIFICATION\n{'─' * 60}\n")
         log_file.flush()
 
     for name, cmd in steps:

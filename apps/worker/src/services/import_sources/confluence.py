@@ -48,7 +48,7 @@ class _StorageToMarkdown(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.out: list[str] = []
-        self._list_stack: list[str] = []      # 'ul' | 'ol' nesting
+        self._list_stack: list[str] = []  # 'ul' | 'ol' nesting
         self._href: str | None = None
         self._in_pre = False
         self._in_code = False
@@ -194,7 +194,11 @@ class _StorageToMarkdown(HTMLParser):
     def handle_data(self, data: str) -> None:
         if self._param_name is not None:
             # ac:parameter payload — capture the code macro's language
-            if self._param_name == "language" and self._macro_stack and self._macro_stack[-1] == "code":
+            if (
+                self._param_name == "language"
+                and self._macro_stack
+                and self._macro_stack[-1] == "code"
+            ):
                 self._code_macro_lang = data.strip()
             return
         if self._in_pre or self._macro_stack:
@@ -205,7 +209,7 @@ class _StorageToMarkdown(HTMLParser):
     def unknown_decl(self, data: str) -> None:
         # CDATA sections (code macro bodies): data == "CDATA[...literal..."
         if data.startswith("CDATA["):
-            self._text(data[len("CDATA["):])
+            self._text(data[len("CDATA[") :])
 
     def result(self) -> str:
         text = "".join(self.out)
@@ -223,12 +227,15 @@ def storage_to_markdown(xhtml: str) -> str:
         parser.feed(xhtml)
         parser.close()
         return parser.result()
-    except Exception:  # noqa: BLE001 — never let a weird page kill an import
-        logger.warning("storage→markdown conversion failed; falling back to tag-strip", exc_info=True)
+    except Exception:
+        logger.warning(
+            "storage→markdown conversion failed; falling back to tag-strip", exc_info=True
+        )
         return re.sub(r"<[^>]+>", " ", xhtml).strip()
 
 
 # ─── The source adapter ──────────────────────────────────────────────────────
+
 
 class ConfluenceSource(ImportSource):
     name = "confluence"
@@ -293,8 +300,7 @@ class ConfluenceSource(ImportSource):
             res.raise_for_status()
             data = res.json()
         return [
-            {"key": s.get("key", ""), "name": s.get("name", "")}
-            for s in data.get("results", [])
+            {"key": s.get("key", ""), "name": s.get("name", "")} for s in data.get("results", [])
         ]
 
     async def search(
@@ -310,9 +316,9 @@ class ConfluenceSource(ImportSource):
         else:
             clauses = ["type=page"]
             if q:
-                clauses.append('text ~ "%s"' % q.replace('"', '\\"'))
+                clauses.append('text ~ "{}"'.format(q.replace('"', '\\"')))
             if scope:
-                clauses.append('space="%s"' % scope.replace('"', ""))
+                clauses.append('space="{}"'.format(scope.replace('"', "")))
             cql = " AND ".join(clauses)
 
         client, base = self._client(repo)
@@ -328,14 +334,16 @@ class ConfluenceSource(ImportSource):
         for row in data.get("results", []):
             links = row.get("_links", {}) or {}
             web_base = links.get("base") or base
-            items.append({
-                "id": str(row.get("id", "")),
-                "title": row.get("title", ""),
-                "scope": (row.get("space") or {}).get("key", ""),
-                "version": str((row.get("version") or {}).get("number", "")),
-                "updated": ((row.get("version") or {}).get("when") or ""),
-                "url": web_base + (links.get("webui") or ""),
-            })
+            items.append(
+                {
+                    "id": str(row.get("id", "")),
+                    "title": row.get("title", ""),
+                    "scope": (row.get("space") or {}).get("key", ""),
+                    "version": str((row.get("version") or {}).get("number", "")),
+                    "updated": ((row.get("version") or {}).get("when") or ""),
+                    "url": web_base + (links.get("webui") or ""),
+                }
+            )
         return items
 
     async def get(self, external_id: str, repo: Any | None = None) -> dict:
@@ -382,9 +390,9 @@ class ConfluenceSource(ImportSource):
             return {
                 "ok": False,
                 "error": f"Confluence returned HTTP {exc.response.status_code} "
-                         f"({'auth' if exc.response.status_code in (401, 403) else 'request'} problem)",
+                f"({'auth' if exc.response.status_code in (401, 403) else 'request'} problem)",
             }
-        except Exception as exc:  # noqa: BLE001 — verdict, not crash
+        except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
 

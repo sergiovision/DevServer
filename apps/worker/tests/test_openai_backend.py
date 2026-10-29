@@ -18,8 +18,9 @@ def _command(backend: OpenAIBackend) -> list[str]:
 
 def test_codex_command_uses_supported_workspace_sandbox():
     backend = OpenAIBackend()
-    with patch("services.agent_backends.settings.openai_base_url", ""), patch(
-        "services.agent_backends.settings.openai_api_version", ""
+    with (
+        patch("services.agent_backends.settings.openai_base_url", ""),
+        patch("services.agent_backends.settings.openai_api_version", ""),
     ):
         command = _command(backend)
 
@@ -78,9 +79,7 @@ def test_codex_parser_handles_documented_jsonl_events():
 
 
 def test_codex_parser_surfaces_structured_turn_failure():
-    output = json.dumps(
-        {"type": "turn.failed", "error": {"message": "rate limit exceeded"}}
-    )
+    output = json.dumps({"type": "turn.failed", "error": {"message": "rate limit exceeded"}})
 
     result = OpenAIBackend().parse_output(output, None)
 

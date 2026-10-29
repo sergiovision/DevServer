@@ -1,16 +1,14 @@
 """Tests for the PgQueuer queue consumer (services/queue_consumer.py)."""
 
 import asyncio
-import json
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from services.queue_consumer import (
-    start_consumer,
-    stop_consumer,
     get_consumer,
     is_consumer_running,
+    start_consumer,
+    stop_consumer,
 )
 
 
@@ -21,6 +19,7 @@ class TestStartConsumer:
     async def test_start_consumer_creates_pgqueuer(self, mock_create):
         """start_consumer creates a PgQueuer instance and starts it."""
         import services.queue_consumer as mod
+
         mod._pgq = None
         mod._runner_task = None
 
@@ -36,10 +35,8 @@ class TestStartConsumer:
 
         # Cleanup
         mod._runner_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await mod._runner_task
-        except asyncio.CancelledError:
-            pass
         mod._pgq = None
         mod._runner_task = None
 
@@ -53,9 +50,11 @@ class TestStopConsumer:
         import services.queue_consumer as mod
 
         mock_pgq = MagicMock()
+
         # Make run() block forever until cancelled
         async def mock_run():
             await asyncio.sleep(3600)
+
         mock_pgq.run = mock_run
         mock_create.return_value = mock_pgq
 
@@ -71,6 +70,7 @@ class TestStopConsumer:
     async def test_stop_consumer_noop_when_not_running(self):
         """stop_consumer is safe to call when nothing is running."""
         import services.queue_consumer as mod
+
         mod._pgq = None
         mod._runner_task = None
 
@@ -86,6 +86,7 @@ class TestGetConsumer:
     def test_get_consumer_returns_instance(self, mock_pgqueuer):
         """get_consumer returns the current PgQueuer when one exists."""
         import services.queue_consumer as mod
+
         mod._pgq = mock_pgqueuer
 
         assert get_consumer() is mock_pgqueuer
@@ -94,6 +95,7 @@ class TestGetConsumer:
     def test_get_consumer_returns_none(self):
         """get_consumer returns None when no consumer is running."""
         import services.queue_consumer as mod
+
         mod._pgq = None
 
         assert get_consumer() is None
@@ -105,6 +107,7 @@ class TestIsConsumerRunning:
     def test_returns_false_when_no_task(self):
         """Returns False when no runner task exists."""
         import services.queue_consumer as mod
+
         mod._runner_task = None
 
         assert is_consumer_running() is False
@@ -112,6 +115,7 @@ class TestIsConsumerRunning:
     def test_returns_true_when_task_running(self):
         """Returns True when runner task is active."""
         import services.queue_consumer as mod
+
         mock_task = MagicMock()
         mock_task.done.return_value = False
         mod._runner_task = mock_task
@@ -122,6 +126,7 @@ class TestIsConsumerRunning:
     def test_returns_false_when_task_done(self):
         """Returns False when runner task has completed."""
         import services.queue_consumer as mod
+
         mock_task = MagicMock()
         mock_task.done.return_value = True
         mod._runner_task = mock_task

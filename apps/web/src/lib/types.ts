@@ -75,11 +75,15 @@ export interface Task {
   created_by: string | null;
   created_at: string;
   updated_at: string;
-  // Migration 010 — strict abstain gate (Pro). reality_score is the last
-  // reality-gate score (0–100); abstain_reason is set when the gate blocked
-  // the task before running an agent.
+  // Strict abstain gate: reality_score is the last reality-gate score
+  // (0–100); abstain_reason is set when the gate blocked the task before
+  // running an agent.
   reality_score?: number | null;
   abstain_reason?: string | null;
+  // Interactive-mode plan gate: at most one of these is set once the
+  // operator has decided on the plan the agent proposed.
+  plan_approved_at?: string | null;
+  plan_rejected_at?: string | null;
   // Joined fields
   repo_name?: string;
   repo_clone_url?: string;
@@ -119,8 +123,18 @@ export interface TaskRun {
   turns: number | null;
   error_log: string | null;
   claude_output: string | null;
+  /** The plan an interactive task proposed (stored on its `attempt = 0` run). */
+  plan_json: TaskPlan | null;
   created_at: string;
   updated_at: string;
+}
+
+/** A plan proposed by an interactive task, awaiting the operator's decision. */
+export interface TaskPlan {
+  summary: string;
+  steps: string[];
+  files_to_touch: string[];
+  risks: string[];
 }
 
 export interface TaskEvent {

@@ -6,27 +6,16 @@
  * and page context. So the stream is consumed with `fetch` +
  * `body.getReader()` and framed here.
  *
- * The event vocabulary is produced identically by both worker engines — the
- * HTTP system-LLM path and the Pro agent-CLI path — so the panel renders one
- * shape regardless of which answered.
+ * The worker answers through the system LLM's streaming HTTP API and
+ * normalises every vendor's wire format into the one event vocabulary below,
+ * so the panel has a single renderer whichever vendor answered.
  */
 
 export type AssistantEvent =
-  | { type: 'session'; session_id: string; engine: 'chat' | 'agent'; vendor: string; model: string }
-  | { type: 'start'; vendor: string; model: string; transport: 'http' | 'cli' }
+  | { type: 'session'; session_id: string; engine: 'chat'; vendor: string; model: string }
+  | { type: 'start'; vendor: string; model: string; transport: 'http' }
   | { type: 'text_delta'; text: string }
   | { type: 'thinking_delta'; text: string }
-  | { type: 'tool_call'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; id: string; name: string; ok: boolean; preview: string }
-  | {
-      type: 'action_proposed';
-      action_id: string;
-      kind: string;
-      summary: string;
-      params: Record<string, unknown>;
-      risk: 'low' | 'medium' | 'high';
-    }
-  | { type: 'action_output'; text: string }
   | { type: 'notice'; text: string }
   | { type: 'usage'; input_tokens: number; output_tokens: number }
   | { type: 'error'; message: string; retryable: boolean }
@@ -57,14 +46,11 @@ export interface VendorModel {
 }
 
 export interface AssistantCapabilities {
-  edition: 'pro' | 'free';
   vendor: string | null;
   /** The Settings → System LLM model: the picker's default. */
   model: string | null;
   /** Models the picker may offer — the configured vendor's only. */
   models?: VendorModel[];
-  tools: boolean;
-  actions: boolean;
   workerUnreachable?: boolean;
 }
 
@@ -163,7 +149,6 @@ export function askAgent(
     message: string;
     session_id?: string | null;
     repo_id?: number | null;
-    mode?: 'auto' | 'chat' | 'agent';
     history: ChatTurn[];
     page?: PageContext | null;
     /** Model override for this turn; the worker falls back to the
@@ -176,21 +161,6 @@ export function askAgent(
   return postStream('/api/assistant/chat', payload, onEvent, signal);
 }
 
-/** Approve or reject a proposed action; the outcome streams back (Pro). */
-export function decideAction(
-  actionId: string,
-  decision: 'approve' | 'reject',
-  onEvent: (event: AssistantEvent) => void,
-  signal: AbortSignal,
-): Promise<void> {
-  return postStream(
-    `/api/assistant/actions/${encodeURIComponent(actionId)}/decide`,
-    { decision, follow_up: true },
-    onEvent,
-    signal,
-  );
-}
-
 export async function fetchCapabilities(): Promise<AssistantCapabilities> {
   try {
     const res = await fetch('/api/assistant/capabilities', { cache: 'no-store' });
@@ -199,11 +169,8 @@ export async function fetchCapabilities(): Promise<AssistantCapabilities> {
     /* fall through to the safe default */
   }
   return {
-    edition: 'free',
     vendor: null,
     model: null,
-    tools: false,
-    actions: false,
     workerUnreachable: true,
   };
 }

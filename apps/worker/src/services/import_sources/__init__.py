@@ -8,7 +8,7 @@ title + Markdown body + revision marker. The worker exposes these through
 enqueueing, and the ``external_imports`` idempotency history.
 """
 
-from services.import_sources.base import ImportDraft, ImportSource, SOURCES, get_source
+from services.import_sources.base import SOURCES, ImportDraft, ImportSource, get_source
 from services.import_sources.confluence import ConfluenceSource
 
-__all__ = ["ImportDraft", "ImportSource", "SOURCES", "get_source", "ConfluenceSource"]
+__all__ = ["SOURCES", "ConfluenceSource", "ImportDraft", "ImportSource", "get_source"]

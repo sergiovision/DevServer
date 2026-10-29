@@ -5,7 +5,6 @@ import type { Settings } from '@/lib/types';
 import { SettingsForm } from '@/components/SettingsForm';
 import { EnvSettingsForm } from '@/components/EnvSettingsForm';
 import { DatabaseSettingsCard } from '@/components/DatabaseConfigFields';
-import { LicensePanel } from '@/components/pro-loader';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,7 +44,6 @@ export default async function SettingsPage() {
           </Link>
         </div>
       </div>
-      <LicensePanel />
       <SettingsForm settings={r.data} />
       <DatabaseSettingsCard deployMode={deployMode} />
       <EnvSettingsForm />

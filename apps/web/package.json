@@ -6,7 +6,8 @@
     "dev": "cross-env NODE_OPTIONS=--disable-warning=DEP0205 tsx server.ts",
     "build": "next build --webpack && tsc -p tsconfig.server.json",
     "start": "cross-env NODE_ENV=production node server.js",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@coreui/coreui-pro": "^5.29.1",

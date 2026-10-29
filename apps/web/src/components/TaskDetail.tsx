@@ -26,12 +26,15 @@ import { AgentLog } from './AgentLog';
 import { TaskLog } from './TaskLog';
 import { MaxTurnsInput } from './MaxTurnsInput';
 import { VendorModelPicker } from './VendorModelPicker';
-import { PatchesPanel, MessagesPanel } from './pro-loader';
+import { PatchesPanel } from './PatchesPanel';
+import { PlanCard } from './PlanCard';
+import { TaskNotesPanel } from './TaskNotesPanel';
 import { PredictionCard } from './PredictionCard';
 import { useAssistantPageContext } from './AssistantProvider';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
-import { fillVendorLabel } from '@/lib/agent-vendors';
+import { vendorLabel } from '@/lib/agent-vendors';
+import { useAgentRegistry } from '@/lib/use-agent-registry';
 import { taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 
 interface TaskDetailProps {
@@ -43,6 +46,7 @@ interface TaskDetailProps {
 
 export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const router = useRouter();
+  const agentRegistry = useAgentRegistry();
 
   // Tell the Ask Agent panel which task is on screen, so "why is this stuck?"
   // is answered about this one rather than in the abstract. The repo id also
@@ -113,7 +117,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     return flow;
   });
   const [backupVendor, setBackupVendor] = useState<AgentVendor>((task.backup_vendor ?? 'anthropic') as AgentVendor);
-  const [backupModel, setBackupModel] = useState<string>(task.backup_model ?? 'claude-sonnet-4-6');
+  const [backupModel, setBackupModel] = useState<string>(task.backup_model ?? '');
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentError, setAgentError] = useState('');
   const [agentSaved, setAgentSaved] = useState(false);
@@ -182,8 +186,20 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     router.refresh();
   }, [task.id, router]);
 
+  const [cancelMsg, setCancelMsg] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
   const handleCancel = useCallback(async () => {
-    await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
+    setCancelMsg(null);
+    const res = await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setCancelMsg({ type: 'danger', text: data.error || 'Cancel failed' });
+    } else if (data.agent_stopped) {
+      setCancelMsg({ type: 'success', text: 'Cancelled — the running agent was stopped.' });
+    } else if (data.worker_reachable === false) {
+      setCancelMsg({ type: 'danger', text: 'Cancelled in the database only — the worker is unreachable.' });
+    } else {
+      setCancelMsg({ type: 'success', text: 'Cancelled.' });
+    }
     router.refresh();
   }, [task.id, router]);
 
@@ -409,7 +425,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
               onClick={handleContinue}
               title={
                 task.status === 'test'
-                  ? 'Resume this task with the existing session & branch to address a follow-up request from the Messages panel'
+                  ? 'Resume this task with the existing session & branch to act on notes left in the Notes panel'
                   : 'Resume this task from where it left off'
               }
             >
@@ -466,11 +482,17 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
           {refreshMsg && (
             <span className={`small text-${refreshMsg.type} align-self-center`}>{refreshMsg.text}</span>
           )}
+          {cancelMsg && (
+            <span className={`small text-${cancelMsg.type} align-self-center`}>{cancelMsg.text}</span>
+          )}
         </div>
       </div>
 
       <CRow>
         <CCol lg={8}>
+          {/* Interactive tasks stop after planning until the operator decides. */}
+          <PlanCard task={task} runs={runs} />
+
           {/* Description + Acceptance — editable */}
           <CCard className="mb-4">
             <CCardHeader><strong>Description &amp; Acceptance Criteria</strong></CCardHeader>
@@ -489,7 +511,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                       disabled={filling || !description.trim()}
                       onClick={handleFillTask}
                     >
-                      {filling ? `Filling with ${fillVendorLabel(systemVendor)}...` : 'Fill Task'}
+                      {filling ? `Filling with ${vendorLabel(agentRegistry, systemVendor)}...` : 'Fill Task'}
                     </CButton>
                   )}
                   {fillError && (
@@ -520,10 +542,9 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
             </CCardBody>
           </CCard>
 
-          {/* Messages — two-way chat between operator and agent via task_messages.
-              Placed above the Event Log so the operator can easily talk to the
-              agent without scrolling the right-hand sidebar. */}
-          <MessagesPanel taskId={task.id} taskKey={task.task_key} />
+          {/* Operator notes, folded into the agent's next attempt. Placed above
+              the Event Log so steering the task needs no scrolling. */}
+          <TaskNotesPanel taskId={task.id} />
 
           {/* Live Log */}
           <CCard className="mb-4">
@@ -619,7 +640,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   onVendorChange={setBackupVendor}
                   onModelChange={setBackupModel}
                   modelLabel="Backup Model"
-                  modelPlaceholder="Auto-fallback model (default: claude-sonnet-4-6)"
+                  modelPlaceholder="Blank = retry with the primary model"
                   vendorName="backup_vendor"
                   modelName="backup_model"
                 />
@@ -675,9 +696,10 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
             </CCardBody>
           </CCard>
 
-          {/* Patches (Option A — downloadable format-patch output for manual
-              application to a production / mirror repo). */}
-          <PatchesPanel taskKey={task.task_key} taskStatus={task.status} />
+          {/* Patch mode never pushes — the exported patches are the deliverable. */}
+          {task.git_flow === 'patch' && (
+            <PatchesPanel taskId={task.id} taskStatus={task.status} />
+          )}
 
           {/* Run History */}
           <CCard className="mb-4">

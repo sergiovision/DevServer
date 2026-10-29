@@ -64,12 +64,28 @@ def _parse_owner_repo(clone_url: str) -> tuple[str, str]:
     return "", (parts[-1] if parts else "")
 
 
-async def _run(cmd: list[str], cwd: str | None = None) -> tuple[int, str, str]:
-    """Run a subprocess, return (returncode, stdout, stderr)."""
+#: Per-operation timeouts. Every git call must pick one, so a hung remote or a
+#: stuck index lock can never stall a task forever.
+LOCAL_GIT_TIMEOUT = 120.0  # status, commit, checkout, reset, ...
+NETWORK_GIT_TIMEOUT = 900.0  # clone, fetch, push — large repos on slow links
+
+
+class GitTimeoutError(RuntimeError):
+    """A git command exceeded its timeout and was killed."""
+
+
+async def _run(cmd: list[str], cwd: str | None = None, *, timeout: float) -> tuple[int, str, str]:
+    """Run a git subprocess, return (returncode, stdout, stderr).
+
+    Raises :class:`GitTimeoutError` when ``timeout`` seconds pass first.
+    """
     env = {**os.environ}
     if settings.git_ssl_no_verify:
         env["GIT_SSL_NO_VERIFY"] = "true"
-    rc, stdout, stderr = await proc_util.run(cmd, cwd=cwd, env=env)
+    try:
+        rc, stdout, stderr = await proc_util.run(cmd, cwd=cwd, env=env, timeout=timeout)
+    except TimeoutError as exc:
+        raise GitTimeoutError(f"{' '.join(cmd[:4])} timed out after {timeout:.0f}s") from exc
     return rc, stdout.decode(), stderr.decode()
 
 
@@ -131,106 +147,175 @@ async def setup_worktree(
     if not os.path.isdir(bare_repo):
         os.makedirs(os.path.dirname(bare_repo), exist_ok=True)
         logger.info("Cloning bare repo %s", repo_name)
-        rc, out, err = await _run(["git", "clone", "--bare", auth_url, bare_repo])
+        rc, out, err = await _run(
+            ["git", "clone", "--bare", auth_url, bare_repo], timeout=NETWORK_GIT_TIMEOUT
+        )
         if rc != 0:
             raise RuntimeError(f"git clone --bare failed: {err}")
 
     # Update remote URL (token may have changed)
-    await _run(["git", "-C", bare_repo, "remote", "set-url", "origin", auth_url])
+    await _run(
+        ["git", "-C", bare_repo, "remote", "set-url", "origin", auth_url], timeout=LOCAL_GIT_TIMEOUT
+    )
 
     # Fetch latest from remote
-    rc, out, err = await _run([
-        "git", "-C", bare_repo, "fetch", "origin",
-        "+refs/heads/*:refs/heads/*", "--prune",
-    ])
+    rc, out, err = await _run(
+        [
+            "git",
+            "-C",
+            bare_repo,
+            "fetch",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+            "--prune",
+        ],
+        timeout=NETWORK_GIT_TIMEOUT,
+    )
     if rc != 0:
         logger.warning("git fetch warning: %s", err)
 
     # --- Ensure worktree exists ---
     if not os.path.isdir(worktree_path):
         logger.info("Creating worktree for %s at %s", repo_name, worktree_path)
-        rc, out, err = await _run([
-            "git", "-C", bare_repo, "worktree", "add",
-            worktree_path, default_branch,
-        ])
+        rc, _out, err = await _run(
+            [
+                "git",
+                "-C",
+                bare_repo,
+                "worktree",
+                "add",
+                worktree_path,
+                default_branch,
+            ],
+            timeout=LOCAL_GIT_TIMEOUT,
+        )
         if rc != 0:
             raise RuntimeError(f"git worktree add failed: {err}")
     else:
         logger.info("Reusing existing worktree for %s", repo_name)
 
     # Configure git identity
-    await _run(["git", "-C", worktree_path, "config", "user.email", settings.git_user_email])
-    await _run(["git", "-C", worktree_path, "config", "user.name", settings.git_user_name])
+    await _run(
+        ["git", "-C", worktree_path, "config", "user.email", settings.git_user_email],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
+    await _run(
+        ["git", "-C", worktree_path, "config", "user.name", settings.git_user_name],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
 
     # --- Continuation mode: preserve existing branch state ---
     if continuation:
         # Just ensure we're on the task branch. Do NOT reset or clean.
         rc_check, _, _ = await _run(
             ["git", "-C", worktree_path, "rev-parse", "--verify", branch_name],
+            timeout=LOCAL_GIT_TIMEOUT,
         )
         if rc_check == 0:
-            await _run(["git", "-C", worktree_path, "checkout", branch_name])
+            await _run(
+                ["git", "-C", worktree_path, "checkout", branch_name], timeout=LOCAL_GIT_TIMEOUT
+            )
             logger.info("Continuation: worktree on branch %s (preserved)", branch_name)
         else:
             # Branch doesn't exist yet — fall through to normal setup
             logger.warning(
-                "Continuation requested but branch %s not found, "
-                "falling back to normal setup", branch_name,
+                "Continuation requested but branch %s not found, falling back to normal setup",
+                branch_name,
             )
             return await setup_worktree(
-                repo_name, clone_url, default_branch, task_key,
-                gitea_token, provider=provider, continuation=False,
+                repo_name,
+                clone_url,
+                default_branch,
+                task_key,
+                gitea_token,
+                provider=provider,
+                continuation=False,
             )
         return worktree_path, branch_name
 
     # --- Reset worktree to a clean default branch state ---
     # Hard reset first to discard any modified tracked files (e.g. packages.lock.json),
     # then checkout. This avoids "please commit or stash" errors.
-    await _run(["git", "-C", worktree_path, "reset", "--hard"])
+    await _run(["git", "-C", worktree_path, "reset", "--hard"], timeout=LOCAL_GIT_TIMEOUT)
     rc, out, err = await _run(
         ["git", "-C", worktree_path, "checkout", default_branch],
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.warning("Checkout %s failed (%s), forcing", default_branch, err.strip())
-        await _run(["git", "-C", worktree_path, "checkout", "--force", default_branch])
+        await _run(
+            ["git", "-C", worktree_path, "checkout", "--force", default_branch],
+            timeout=LOCAL_GIT_TIMEOUT,
+        )
 
     # Hard reset to remote state
-    await _run([
-        "git", "-C", worktree_path, "reset", "--hard", f"origin/{default_branch}",
-    ])
+    await _run(
+        [
+            "git",
+            "-C",
+            worktree_path,
+            "reset",
+            "--hard",
+            f"origin/{default_branch}",
+        ],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
 
     # Mark generated lock files as skip-worktree so dotnet restore doesn't dirty the index
     rc, out, _ = await _run(
-        ["git", "-C", worktree_path, "ls-files", "--", "**/packages.lock.json", "packages.lock.json"],
+        [
+            "git",
+            "-C",
+            worktree_path,
+            "ls-files",
+            "--",
+            "**/packages.lock.json",
+            "packages.lock.json",
+        ],
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     lock_files = [f for f in out.splitlines() if f.strip()]
     if lock_files:
         await _run(
-            ["git", "-C", worktree_path, "update-index", "--skip-worktree"] + lock_files
+            ["git", "-C", worktree_path, "update-index", "--skip-worktree", *lock_files],
+            timeout=LOCAL_GIT_TIMEOUT,
         )
 
     # Remove untracked files
-    await _run(["git", "-C", worktree_path, "clean", "-fdx", "--exclude=.env"])
+    await _run(
+        ["git", "-C", worktree_path, "clean", "-fdx", "--exclude=.env"], timeout=LOCAL_GIT_TIMEOUT
+    )
 
     # Check if task branch already exists with committed work
     rc_check, _, _ = await _run(
         ["git", "-C", worktree_path, "rev-parse", "--verify", branch_name],
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc_check == 0:
         # Branch exists — check if it has commits ahead of default_branch
-        rc_ahead, ahead_out, _ = await _run([
-            "git", "-C", worktree_path, "rev-list", "--count",
-            f"{default_branch}..{branch_name}",
-        ])
+        rc_ahead, ahead_out, _ = await _run(
+            [
+                "git",
+                "-C",
+                worktree_path,
+                "rev-list",
+                "--count",
+                f"{default_branch}..{branch_name}",
+            ],
+            timeout=LOCAL_GIT_TIMEOUT,
+        )
         commits_ahead = int(ahead_out.strip() or "0") if rc_ahead == 0 else 0
         if commits_ahead > 0:
             # Previous run made progress — resume from existing branch
             logger.info(
                 "Resuming task branch %s (%d commits ahead of %s)",
-                branch_name, commits_ahead, default_branch,
+                branch_name,
+                commits_ahead,
+                default_branch,
             )
             rc, out, err = await _run(
                 ["git", "-C", worktree_path, "checkout", branch_name],
+                timeout=LOCAL_GIT_TIMEOUT,
             )
             if rc != 0:
                 raise RuntimeError(f"git checkout {branch_name} failed: {err}")
@@ -238,13 +323,23 @@ async def setup_worktree(
             return worktree_path, branch_name
         else:
             # Branch exists but empty — delete and start fresh
-            await _run(["git", "-C", worktree_path, "branch", "-D", branch_name])
+            await _run(
+                ["git", "-C", worktree_path, "branch", "-D", branch_name], timeout=LOCAL_GIT_TIMEOUT
+            )
     # else: branch doesn't exist, nothing to delete
 
     # Create fresh task branch
-    rc, out, err = await _run([
-        "git", "-C", worktree_path, "checkout", "-b", branch_name,
-    ])
+    rc, out, err = await _run(
+        [
+            "git",
+            "-C",
+            worktree_path,
+            "checkout",
+            "-b",
+            branch_name,
+        ],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
     if rc != 0:
         raise RuntimeError(f"git checkout -b {branch_name} failed: {err}")
 
@@ -276,13 +371,17 @@ async def refresh_repo(
     if not os.path.isdir(bare_repo):
         os.makedirs(os.path.dirname(bare_repo), exist_ok=True)
         logger.info("Cloning bare repo %s", repo_name)
-        rc, out, err = await _run(["git", "clone", "--bare", auth_url, bare_repo])
+        rc, _out, err = await _run(
+            ["git", "clone", "--bare", auth_url, bare_repo], timeout=NETWORK_GIT_TIMEOUT
+        )
         if rc != 0:
             return {"ok": False, "message": f"git clone --bare failed: {err}"}
         cloned = True
 
     # Update remote URL (token may have changed)
-    await _run(["git", "-C", bare_repo, "remote", "set-url", "origin", auth_url])
+    await _run(
+        ["git", "-C", bare_repo, "remote", "set-url", "origin", auth_url], timeout=LOCAL_GIT_TIMEOUT
+    )
 
     # Fetch latest from remote.
     # The refspec +refs/heads/*:refs/heads/* updates local branch refs in-place
@@ -294,29 +393,50 @@ async def refresh_repo(
     if os.path.isdir(worktree_path):
         rc_head, head_out, _ = await _run(
             ["git", "-C", worktree_path, "symbolic-ref", "--short", "HEAD"],
+            timeout=LOCAL_GIT_TIMEOUT,
         )
         if rc_head == 0 and head_out.strip():
             worktree_was_attached = True
-            await _run(["git", "-C", worktree_path, "checkout", "--detach"])
+            await _run(
+                ["git", "-C", worktree_path, "checkout", "--detach"], timeout=LOCAL_GIT_TIMEOUT
+            )
 
-    rc, out, err = await _run([
-        "git", "-C", bare_repo, "fetch", "origin",
-        "+refs/heads/*:refs/heads/*", "--prune",
-    ])
+    rc, _out, err = await _run(
+        [
+            "git",
+            "-C",
+            bare_repo,
+            "fetch",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+            "--prune",
+        ],
+        timeout=NETWORK_GIT_TIMEOUT,
+    )
     if rc != 0:
         # Re-attach before returning the error
         if worktree_was_attached:
-            await _run(["git", "-C", worktree_path, "checkout", default_branch])
+            await _run(
+                ["git", "-C", worktree_path, "checkout", default_branch], timeout=LOCAL_GIT_TIMEOUT
+            )
         return {"ok": False, "message": f"git fetch failed: {err}"}
     fetched = True
 
     # --- Ensure worktree exists ---
     if not os.path.isdir(worktree_path):
         logger.info("Creating worktree for %s at %s", repo_name, worktree_path)
-        rc, out, err = await _run([
-            "git", "-C", bare_repo, "worktree", "add",
-            worktree_path, default_branch,
-        ])
+        rc, _out, err = await _run(
+            [
+                "git",
+                "-C",
+                bare_repo,
+                "worktree",
+                "add",
+                worktree_path,
+                default_branch,
+            ],
+            timeout=LOCAL_GIT_TIMEOUT,
+        )
         if rc != 0:
             return {"ok": False, "message": f"git worktree add failed: {err}"}
         cloned = True
@@ -324,23 +444,46 @@ async def refresh_repo(
         # Re-attach worktree to the (now-updated) default branch.
         # The bare repo has no remote-tracking refs — branches live directly
         # in refs/heads/* — so we reset to the branch name, not origin/*.
-        await _run(["git", "-C", worktree_path, "reset", "--hard"])
-        rc, out, err = await _run(
+        await _run(["git", "-C", worktree_path, "reset", "--hard"], timeout=LOCAL_GIT_TIMEOUT)
+        rc, _out, err = await _run(
             ["git", "-C", worktree_path, "checkout", default_branch],
+            timeout=LOCAL_GIT_TIMEOUT,
         )
         if rc != 0:
-            await _run(["git", "-C", worktree_path, "checkout", "--force", default_branch])
-        await _run([
-            "git", "-C", worktree_path, "reset", "--hard", default_branch,
-        ])
+            await _run(
+                ["git", "-C", worktree_path, "checkout", "--force", default_branch],
+                timeout=LOCAL_GIT_TIMEOUT,
+            )
+        await _run(
+            [
+                "git",
+                "-C",
+                worktree_path,
+                "reset",
+                "--hard",
+                default_branch,
+            ],
+            timeout=LOCAL_GIT_TIMEOUT,
+        )
 
     # Configure git identity
-    await _run(["git", "-C", worktree_path, "config", "user.email", settings.git_user_email])
-    await _run(["git", "-C", worktree_path, "config", "user.name", settings.git_user_name])
+    await _run(
+        ["git", "-C", worktree_path, "config", "user.email", settings.git_user_email],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
+    await _run(
+        ["git", "-C", worktree_path, "config", "user.name", settings.git_user_name],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
 
     action = "cloned" if cloned else "fetched"
     logger.info("Refresh complete for %s (%s)", repo_name, action)
-    return {"ok": True, "message": f"Repository {action} successfully", "cloned": cloned, "fetched": fetched}
+    return {
+        "ok": True,
+        "message": f"Repository {action} successfully",
+        "cloned": cloned,
+        "fetched": fetched,
+    }
 
 
 async def reset_worktree(repo_name: str, default_branch: str) -> None:
@@ -353,10 +496,18 @@ async def reset_worktree(repo_name: str, default_branch: str) -> None:
         return
 
     logger.info("Resetting worktree %s to %s", repo_name, default_branch)
-    await _run(["git", "-C", worktree_path, "reset", "--hard"])
-    await _run(["git", "-C", worktree_path, "checkout", "--force", default_branch])
-    await _run(["git", "-C", worktree_path, "reset", "--hard", f"origin/{default_branch}"])
-    await _run(["git", "-C", worktree_path, "clean", "-fdx", "--exclude=.env"])
+    await _run(["git", "-C", worktree_path, "reset", "--hard"], timeout=LOCAL_GIT_TIMEOUT)
+    await _run(
+        ["git", "-C", worktree_path, "checkout", "--force", default_branch],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
+    await _run(
+        ["git", "-C", worktree_path, "reset", "--hard", f"origin/{default_branch}"],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
+    await _run(
+        ["git", "-C", worktree_path, "clean", "-fdx", "--exclude=.env"], timeout=LOCAL_GIT_TIMEOUT
+    )
 
 
 # ── Local repos (provider='local') ────────────────────────────────────────────
@@ -379,8 +530,7 @@ def resolve_local_root(local_root: str | None) -> str:
     path = os.path.expanduser((local_root or "").strip())
     if not path:
         raise RuntimeError(
-            "Local repo has no Local Root Folder configured "
-            "(set it on the repository form)"
+            "Local repo has no Local Root Folder configured (set it on the repository form)"
         )
     return os.path.abspath(path)
 
@@ -390,6 +540,7 @@ async def _assert_local_git_repo(local_root: str) -> None:
         raise RuntimeError(f"Local Root Folder does not exist: {local_root}")
     rc, out, err = await _run(
         ["git", "-C", local_root, "rev-parse", "--is-inside-work-tree"],
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc != 0 or out.strip() != "true":
         raise RuntimeError(
@@ -402,6 +553,7 @@ async def get_current_branch(repo_path: str) -> str:
     """Name of the currently checked-out branch ('' on detached HEAD/error)."""
     rc, out, _ = await _run(
         ["git", "-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     branch = out.strip() if rc == 0 else ""
     return "" if branch == "HEAD" else branch
@@ -435,7 +587,8 @@ async def setup_local_repo(
     if git_flow == "untracked":
         logger.info(
             "Local repo ready (untracked flow): %s on %s",
-            root, current_branch or "detached HEAD",
+            root,
+            current_branch or "detached HEAD",
         )
         return root, current_branch or "HEAD"
 
@@ -444,6 +597,7 @@ async def setup_local_repo(
 
     rc_branch, _, _ = await _run(
         ["git", "-C", root, "rev-parse", "--verify", branch_name],
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     branch_exists = rc_branch == 0
 
@@ -451,7 +605,9 @@ async def setup_local_repo(
     # otherwise swallow the operator's own work into the agent's commit.
     # Continuation is exempt: leftover changes there are the agent's own.
     if not continuation and not (branch_exists and current_branch == branch_name):
-        rc, status_out, _ = await _run(["git", "-C", root, "status", "--porcelain"])
+        rc, status_out, _ = await _run(
+            ["git", "-C", root, "status", "--porcelain"], timeout=LOCAL_GIT_TIMEOUT
+        )
         if status_out.strip():
             raise RuntimeError(
                 f"Local repo {root} has uncommitted changes. Commit or stash "
@@ -460,19 +616,19 @@ async def setup_local_repo(
 
     if branch_exists:
         if current_branch != branch_name:
-            rc, _, err = await _run(["git", "-C", root, "checkout", branch_name])
+            rc, _, err = await _run(
+                ["git", "-C", root, "checkout", branch_name], timeout=LOCAL_GIT_TIMEOUT
+            )
             if rc != 0:
-                raise RuntimeError(
-                    f"git checkout {branch_name} failed in {root}: {err.strip()}"
-                )
+                raise RuntimeError(f"git checkout {branch_name} failed in {root}: {err.strip()}")
         logger.info("Local repo ready (resumed branch): %s on %s", root, branch_name)
         return root, branch_name
 
-    rc, _, err = await _run(["git", "-C", root, "checkout", "-b", branch_name])
+    rc, _, err = await _run(
+        ["git", "-C", root, "checkout", "-b", branch_name], timeout=LOCAL_GIT_TIMEOUT
+    )
     if rc != 0:
-        raise RuntimeError(
-            f"git checkout -b {branch_name} failed in {root}: {err.strip()}"
-        )
+        raise RuntimeError(f"git checkout -b {branch_name} failed in {root}: {err.strip()}")
     logger.info("Local repo ready: %s on new branch %s", root, branch_name)
     return root, branch_name
 
@@ -493,17 +649,26 @@ async def restore_local_branch(local_root: str, original_branch: str | None) -> 
     current = await get_current_branch(root)
     if not current or current == original_branch:
         return
-    _, status_out, _ = await _run(["git", "-C", root, "status", "--porcelain"])
+    _, status_out, _ = await _run(
+        ["git", "-C", root, "status", "--porcelain"], timeout=LOCAL_GIT_TIMEOUT
+    )
     if status_out.strip():
         logger.info(
             "Local repo %s left on %s (dirty tree, not restoring %s)",
-            root, current, original_branch,
+            root,
+            current,
+            original_branch,
         )
         return
-    rc, _, err = await _run(["git", "-C", root, "checkout", original_branch])
+    rc, _, err = await _run(
+        ["git", "-C", root, "checkout", original_branch], timeout=LOCAL_GIT_TIMEOUT
+    )
     if rc != 0:
         logger.warning(
-            "Could not restore %s to branch %s: %s", root, original_branch, err.strip(),
+            "Could not restore %s to branch %s: %s",
+            root,
+            original_branch,
+            err.strip(),
         )
     else:
         logger.info("Restored local repo %s to branch %s", root, original_branch)
@@ -525,24 +690,62 @@ async def refresh_local_repo(local_root: str) -> dict:
     }
 
 
+async def is_dirty(worktree_path: str) -> bool:
+    """True when the working tree has uncommitted or untracked changes."""
+    _, stdout, _ = await _run(
+        ["git", "status", "--porcelain"], cwd=worktree_path, timeout=LOCAL_GIT_TIMEOUT
+    )
+    return bool(stdout.strip())
+
+
+async def count_commits(repo_path: str, *, base: str, head: str = "HEAD") -> int:
+    """Number of commits in ``base..head`` (0 when the range is invalid)."""
+    rc, stdout, _ = await _run(
+        ["git", "-C", repo_path, "rev-list", "--count", f"{base}..{head}"],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
+    return int(stdout.strip()) if rc == 0 and stdout.strip().isdigit() else 0
+
+
+async def format_patch(repo_path: str, *, base: str, out_dir: str) -> list[str]:
+    """Write ``base..HEAD`` as mailbox patches into ``out_dir``; return the paths."""
+    rc, stdout, stderr = await _run(
+        ["git", "-C", repo_path, "format-patch", f"{base}..HEAD", "-o", out_dir],
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
+    if rc != 0:
+        raise RuntimeError(f"git format-patch failed: {stderr.strip()}")
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+
 async def ensure_committed(worktree_path: str, task_key: str, title: str) -> bool:
     """Commit any uncommitted changes. Returns True if a commit was made."""
-    rc, stdout, _ = await _run(["git", "status", "--porcelain"], cwd=worktree_path)
+    _rc, stdout, _ = await _run(
+        ["git", "status", "--porcelain"], cwd=worktree_path, timeout=LOCAL_GIT_TIMEOUT
+    )
     if not stdout.strip():
         return False
 
     logger.info("Uncommitted changes detected — committing")
-    await _run(["git", "add", "-A"], cwd=worktree_path)
+    await _run(["git", "add", "-A"], cwd=worktree_path, timeout=LOCAL_GIT_TIMEOUT)
     msg = f"[{task_key}] {title}\n\nGenerated by DevServer autonomous agent"
     # Pass the agent identity inline: worktrees already have it in repo
     # config (no-op there), but local-folder repos deliberately keep the
     # operator's own config untouched and still need agent-attributed commits.
-    await _run([
-        "git",
-        "-c", f"user.email={settings.git_user_email}",
-        "-c", f"user.name={settings.git_user_name}",
-        "commit", "-m", msg,
-    ], cwd=worktree_path)
+    await _run(
+        [
+            "git",
+            "-c",
+            f"user.email={settings.git_user_email}",
+            "-c",
+            f"user.name={settings.git_user_name}",
+            "commit",
+            "-m",
+            msg,
+        ],
+        cwd=worktree_path,
+        timeout=LOCAL_GIT_TIMEOUT,
+    )
     return True
 
 
@@ -569,9 +772,9 @@ async def commit_to_default_branch(
     # directly.  Running fetch from the worktree is fine — it shares
     # the same git dir.
     rc, _, err = await _run(
-        ["git", "fetch", "origin",
-         f"+refs/heads/{default_branch}:refs/heads/{default_branch}"],
+        ["git", "fetch", "origin", f"+refs/heads/{default_branch}:refs/heads/{default_branch}"],
         cwd=worktree_path,
+        timeout=NETWORK_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("fetch %s failed: %s", default_branch, err)
@@ -583,17 +786,21 @@ async def commit_to_default_branch(
     # task branch's tree (based on an older default_branch) would
     # clobber concurrent remote changes on push.
     rc, _, err = await _run(
-        ["git", "rebase", default_branch, branch_name], cwd=worktree_path,
+        ["git", "rebase", default_branch, branch_name],
+        cwd=worktree_path,
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("rebase %s onto %s failed: %s", branch_name, default_branch, err)
-        await _run(["git", "rebase", "--abort"], cwd=worktree_path)
+        await _run(["git", "rebase", "--abort"], cwd=worktree_path, timeout=LOCAL_GIT_TIMEOUT)
         return False
 
     # Resolve the tree of the task branch (all file content) and the
     # commit of the default branch (parent for the new commit).
     rc, tree_sha, err = await _run(
-        ["git", "rev-parse", f"{branch_name}^{{tree}}"], cwd=worktree_path,
+        ["git", "rev-parse", f"{branch_name}^{{tree}}"],
+        cwd=worktree_path,
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("rev-parse %s^{tree} failed: %s", branch_name, err)
@@ -601,7 +808,9 @@ async def commit_to_default_branch(
     tree_sha = tree_sha.strip()
 
     rc, parent_sha, err = await _run(
-        ["git", "rev-parse", default_branch], cwd=worktree_path,
+        ["git", "rev-parse", default_branch],
+        cwd=worktree_path,
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("rev-parse %s failed: %s", default_branch, err)
@@ -610,10 +819,14 @@ async def commit_to_default_branch(
 
     # Check if the tree is identical to the parent's tree (nothing changed)
     rc, parent_tree, _ = await _run(
-        ["git", "rev-parse", f"{default_branch}^{{tree}}"], cwd=worktree_path,
+        ["git", "rev-parse", f"{default_branch}^{{tree}}"],
+        cwd=worktree_path,
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc == 0 and parent_tree.strip() == tree_sha:
-        logger.warning("git_flow=commit: task branch tree identical to %s — nothing to commit", default_branch)
+        logger.warning(
+            "git_flow=commit: task branch tree identical to %s — nothing to commit", default_branch
+        )
         return True  # no-op is not an error
 
     # Create a squash commit whose tree is the task branch's snapshot
@@ -622,6 +835,7 @@ async def commit_to_default_branch(
     rc, commit_sha, err = await _run(
         ["git", "commit-tree", tree_sha, "-p", parent_sha, "-m", msg],
         cwd=worktree_path,
+        timeout=LOCAL_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("commit-tree failed: %s", err)
@@ -632,12 +846,15 @@ async def commit_to_default_branch(
     rc, _, err = await _run(
         ["git", "push", "origin", f"{commit_sha}:refs/heads/{default_branch}"],
         cwd=worktree_path,
+        timeout=NETWORK_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("push %s failed: %s", default_branch, err)
         return False
 
-    logger.info("git_flow=commit: squash-merged %s → %s (%s)", branch_name, default_branch, commit_sha[:10])
+    logger.info(
+        "git_flow=commit: squash-merged %s → %s (%s)", branch_name, default_branch, commit_sha[:10]
+    )
     return True
 
 
@@ -671,9 +888,10 @@ async def create_gitea_pr(
         return None
 
     # Push branch (origin already carries provider-correct auth from setup)
-    rc, out, err = await _run(
+    rc, _out, err = await _run(
         ["git", "push", "origin", branch_name, "--force-with-lease"],
         cwd=worktree_path,
+        timeout=NETWORK_GIT_TIMEOUT,
     )
     if rc != 0:
         logger.error("git push failed: %s", err)

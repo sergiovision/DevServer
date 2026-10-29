@@ -21,13 +21,13 @@ live here.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import tempfile
 
 import httpx
 
 from config import settings
+from services import agent_backends
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,7 @@ def _flatten_transcript(messages: list[ChatMessage], system: str | None) -> str:
 
 # ── Builders ──────────────────────────────────────────────────────────────────
 
+
 def _build_anthropic_request(
     api_key: str,
     model: str,
@@ -187,8 +188,8 @@ def _build_glm_request(
         body["stream"] = True
     if tools:
         body["tools"] = tools
-    # Enable thinking for GLM-5.x models (per docs.z.ai/guides/overview/migrate-to-glm-new)
-    if model.startswith("glm-5"):
+    # Enable thinking for GLM-5 models (per docs.z.ai/guides/overview/migrate-to-glm-new)
+    if model.startswith(agent_backends.GLM_THINKING_MODEL_PREFIXES):
         body["thinking"] = {"type": "enabled"}
         # Thinking tokens come out of the same output budget, and GLM-5.1 will
         # happily spend *all* of a small one before writing a single word of the
@@ -202,12 +203,12 @@ def _build_glm_request(
 def _openai_uses_completion_tokens(model: str) -> bool:
     """True when the model rejects ``max_tokens`` in favour of ``max_completion_tokens``.
 
-    OpenAI's reasoning-era models (o-series, gpt-5.x, gpt-6.x) 400 on ``max_tokens``;
+    OpenAI's reasoning-era models (o-series and the current GPT line) 400 on ``max_tokens``;
     older chat models only understand ``max_tokens``. Sniff the model name
     rather than picking one and breaking the other half of the range.
     """
     m = (model or "").lower()
-    return m.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
+    return m.startswith(agent_backends.OPENAI_COMPLETION_TOKENS_PREFIXES)
 
 
 def _build_openai_request(
@@ -252,13 +253,10 @@ def _build_openai_request(
             "developer" if base_url or _openai_uses_completion_tokens(model) else "system"
         )
         chat.append({"role": instruction_role, "content": system})
-    chat.extend(
-        {"role": m.get("role", "user"), "content": m.get("content", "")}
-        for m in messages
-    )
+    chat.extend({"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages)
     # Azure Foundry requires max_completion_tokens for newer models
-    # (gpt-4o, gpt-4.1, gpt-5.x), while older standard OpenAI models use
-    # max_tokens — and gpt-5.x/o-series reject it outright.
+    # (gpt-4o, gpt-4.1 and newer), while older standard OpenAI models use
+    # max_tokens — and the reasoning-era models reject it outright.
     if base_url:
         body = {"messages": chat, "max_completion_tokens": max_tokens}
     elif _openai_uses_completion_tokens(model):
@@ -338,6 +336,7 @@ _BUILDERS = {
 
 # ── Response parsers ──────────────────────────────────────────────────────────
 
+
 def _parse_anthropic(data: dict) -> str:
     """Extract text from Anthropic / GLM Messages API response."""
     content = data.get("content") or []
@@ -416,7 +415,7 @@ async def _complete_via_cli(
     API-key env var is stripped via ``build_env(billing_mode='max')`` so the
     CLI falls back to its OAuth / subscription session.
     """
-    from services import agent_backends, agent_cli_installer
+    from services import agent_cli_installer
     from services import proc as proc_util
 
     backend = agent_backends.get_backend(vendor)
@@ -442,7 +441,9 @@ async def _complete_via_cli(
 
     logger.info(
         "System LLM call (subscription/CLI): vendor=%s model=%s prompt_len=%d",
-        vendor, model, len(prompt),
+        vendor,
+        model,
+        len(prompt),
     )
 
     with tempfile.TemporaryDirectory(prefix="devserver-syscli-") as workdir:
@@ -456,12 +457,11 @@ async def _complete_via_cli(
                 stdin_input=stdin_payload,
             )
         except FileNotFoundError:
-            raise ValueError(backend.not_installed_message())
-        except asyncio.TimeoutError:
+            raise ValueError(backend.not_installed_message()) from None
+        except TimeoutError:
             raise ValueError(
-                f"{backend.label} CLI (subscription mode) timed out "
-                f"after {timeout_seconds}s"
-            )
+                f"{backend.label} CLI (subscription mode) timed out after {timeout_seconds}s"
+            ) from None
 
     stdout_text = stdout_data.decode(errors="replace")
     stderr_text = stderr_data.decode(errors="replace")
@@ -474,9 +474,7 @@ async def _complete_via_cli(
 
     parsed = backend.parse_output(stdout_text, None)
     if parsed.error:
-        raise ValueError(
-            f"{backend.label} CLI (subscription mode) error: {parsed.error}"
-        )
+        raise ValueError(f"{backend.label} CLI (subscription mode) error: {parsed.error}")
     text = parsed.result or ""
     if not text:
         logger.warning(
@@ -487,6 +485,7 @@ async def _complete_via_cli(
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 async def complete(
     *,
@@ -530,7 +529,10 @@ async def complete(
     # deployment working out of the box).
     if mode == "max" and vendor != "glm":
         return await _complete_via_cli(
-            vendor=vendor, model=model, prompt=prompt, timeout=timeout,
+            vendor=vendor,
+            model=model,
+            prompt=prompt,
+            timeout=timeout,
         )
 
     return await _complete_via_http(
@@ -603,21 +605,27 @@ async def _complete_via_http(
 
     builder = _BUILDERS[vendor]
     url, headers, body = builder(
-        api_key, model, messages, max_tokens, json_mode, system=system,
+        api_key,
+        model,
+        messages,
+        max_tokens,
+        json_mode,
+        system=system,
     )
 
     prompt_len = sum(len(m.get("content") or "") for m in messages)
     logger.info(
         "System LLM call: vendor=%s model=%s turns=%d prompt_len=%d",
-        vendor, model, len(messages), prompt_len,
+        vendor,
+        model,
+        len(messages),
+        prompt_len,
     )
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.post(url, headers=headers, json=body)
         if resp.status_code != 200:
-            raise ValueError(
-                f"{vendor} API error {resp.status_code}: {resp.text[:500]}"
-            )
+            raise ValueError(f"{vendor} API error {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
 
     parser = _PARSERS[vendor]
@@ -636,7 +644,6 @@ def resolve_api_key(vendor: str) -> str:
     api_key = getattr(settings, api_key_attr, "") or ""
     if not api_key:
         raise ValueError(
-            f"System LLM vendor is {vendor!r} but {api_key_attr.upper()} "
-            f"is not set in .env"
+            f"System LLM vendor is {vendor!r} but {api_key_attr.upper()} is not set in .env"
         )
     return api_key

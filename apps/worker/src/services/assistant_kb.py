@@ -1,7 +1,7 @@
 """Knowledge retrieval for the Ask Agent panel.
 
 The assistant has to know DevServer itself — what a screen does, how to create
-a task, why one is blocked, what Pro adds. That knowledge lives as curated,
+a task, why one is blocked. That knowledge lives as curated,
 user-facing prose in ``docs/assistant/``, selected here and injected into the
 system prompt.
 
@@ -29,10 +29,10 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "load_manifest",
-    "select_topics",
     "build_system_prompt",
     "docs_root",
+    "load_manifest",
+    "select_topics",
 ]
 
 _MANIFEST_NAME = "00-manifest.json"
@@ -120,7 +120,7 @@ def _score(topic: dict, question: str, route: str) -> tuple[float, float]:
     The two are kept separate and sorted lexicographically rather than summed.
     A route pin guarantees a topic is *considered* — the operator's current
     screen is nearly always relevant — but it must not outrank a question that
-    is plainly about something else ("how do I buy Pro?" asked on /logs).
+    is plainly about something else ("how do I add a repo?" asked on /logs).
     """
     words = set(_WORD.findall(question.lower()))
     lowered = question.lower()
@@ -177,9 +177,7 @@ def select_topics(
             continue
         if used + len(body) > budget_chars and chosen:
             continue  # try the next, smaller topic rather than stopping dead
-        chosen.append(
-            {"id": topic.get("id", ""), "title": topic.get("title", ""), "body": body}
-        )
+        chosen.append({"id": topic.get("id", ""), "title": topic.get("title", ""), "body": body})
         used += len(body)
     return chosen
 
@@ -204,11 +202,7 @@ def render_page_context(page: dict | None, route: str | None = None) -> str:
     entity = page.get("entity") or {}
     if entity:
         kind = entity.get("kind") or "item"
-        bits = [
-            f"{k}={v}"
-            for k, v in entity.items()
-            if k != "kind" and v not in (None, "", [])
-        ]
+        bits = [f"{k}={v}" for k, v in entity.items() if k != "kind" and v not in (None, "", [])]
         lines.append(f"- Viewing {kind}: " + ", ".join(bits) if bits else f"- Viewing {kind}")
     lines.append(
         "A question asked here is usually about this screen — and, when one is "
@@ -231,7 +225,7 @@ correct next step rather than a list of possibilities. Use markdown sparingly:
 short paragraphs, a list only when the content is genuinely a list.\
 """
 
-_FREE_RULES = """\
+_CAPABILITY_RULES = """\
 ## Your capabilities right now
 
 You have NO tools. You cannot read the operator's repositories, query their
@@ -239,28 +233,8 @@ database, inspect their tasks, or run anything. You can only answer from the
 handbook and from what the operator tells you.
 
 When a question needs data you do not have ("why did MY task fail?", "what's in
-MY repo?"), say plainly that you cannot see it in this edition, and tell them
-exactly where to look — which page, which panel, which log.
-
-Tool access, semantic search over the operator's repositories, and one-click
-fixes are DevServer Pro features. Mention that only when it genuinely answers
-their question; do not advertise it unprompted in every reply.\
-"""
-
-_PRO_RULES = """\
-## Your capabilities right now
-
-You have read-only tools: semantic code and doc search across the operator's
-repositories, the per-repo memory knowledge base, prior decisions and
-transcripts, the repo map, and live task state. Use them before answering
-anything about the operator's own code, tasks or history — do not guess when
-you can look.
-
-You cannot change anything directly. When something needs doing — running a
-maintenance script, creating a task — call `propose_action` and STOP. The
-operator approves with one click and you will be told the outcome. Propose one
-concrete action, say in a sentence why it is the right one, and never propose
-anything they did not ask for.\
+MY repo?"), say plainly that you cannot see it, and tell them exactly where
+to look — which page, which panel, which log.\
 """
 
 
@@ -269,11 +243,9 @@ def build_system_prompt(
     page: dict | None = None,
     *,
     route: str | None = None,
-    edition: str = "free",
-    tools_enabled: bool = False,
 ) -> str:
     """Assemble the system prompt: rules + capabilities + page + handbook."""
-    parts = [_BASE_RULES, _PRO_RULES if tools_enabled else _FREE_RULES]
+    parts = [_BASE_RULES, _CAPABILITY_RULES]
     page_block = render_page_context(page, route)
     if page_block:
         parts.append(page_block)
@@ -288,7 +260,6 @@ def build_system_prompt(
             "(The handbook could not be loaded on this deployment. Answer only "
             "what you are confident about and say when you are unsure.)"
         )
-    parts.append(f"(Edition: {edition}.)")
     return "\n\n".join(parts)
 
 

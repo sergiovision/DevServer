@@ -6,6 +6,8 @@ from decimal import Decimal
 from sqlalchemy import ARRAY, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from services.agent_backends import DEFAULT_BACKUP_MODEL
+
 from .base import Base
 
 
@@ -52,8 +54,14 @@ class Task(Base):
     # for local-folder repos (edit files, never branch/commit/push).
     git_flow: Mapped[str] = mapped_column(String(16), default="branch")
     backup_vendor: Mapped[str | None] = mapped_column(String(16), default=None)
-    backup_model: Mapped[str | None] = mapped_column(String(32), default="claude-sonnet-4-6")
+    backup_model: Mapped[str | None] = mapped_column(String(32), default=DEFAULT_BACKUP_MODEL)
     is_continuation: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Distilled summary of earlier attempts (services/compaction.py). When set,
+    # it replaces the evidence blocks in the next run's prompt.
+    compacted_context: Mapped[str | None] = mapped_column(Text, default=None)
+    # Reality gate score and, when the abstain gate stopped the task, why.
+    reality_score: Mapped[int | None] = mapped_column(Integer, default=None)
+    abstain_reason: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

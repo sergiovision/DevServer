@@ -28,8 +28,8 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
     const task = taskResult.rows[0];
 
-    // ``test`` is allowed — operators can send a follow-up via the
-    // Messages panel and continue the same session without reopening.
+    // ``test`` is allowed — operators can leave a note in the Notes panel
+    // and continue the same session without reopening.
     if (['done', 'retired'].includes(task.status)) {
       return NextResponse.json(
         { error: `Cannot continue task with status '${task.status}'` },

@@ -33,7 +33,7 @@ from .telegram_backend import TelegramBackend
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["NotifyBackend", "Dispatcher", "notify"]
+__all__ = ["Dispatcher", "NotifyBackend", "notify"]
 
 
 class Dispatcher:
@@ -67,7 +67,9 @@ class Dispatcher:
                 return backend.channel, bool(result)
             except Exception:
                 logger.exception(
-                    "notify backend=%s method=%s raised", backend.channel, method,
+                    "notify backend=%s method=%s raised",
+                    backend.channel,
+                    method,
                 )
                 return backend.channel, False
 
@@ -92,8 +94,12 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_task_start",
-            task_key=task_key, title=title, repo_name=repo_name,
-            mode=mode, vendor=vendor, model=model,
+            task_key=task_key,
+            title=title,
+            repo_name=repo_name,
+            mode=mode,
+            vendor=vendor,
+            model=model,
         )
 
     async def task_success(
@@ -110,9 +116,14 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_task_success",
-            task_key=task_key, git_flow=git_flow, pr_url=pr_url,
-            attempts=attempts, turns=turns, cost=cost,
-            duration_ms=duration_ms, repo_name=repo_name,
+            task_key=task_key,
+            git_flow=git_flow,
+            pr_url=pr_url,
+            attempts=attempts,
+            turns=turns,
+            cost=cost,
+            duration_ms=duration_ms,
+            repo_name=repo_name,
         )
 
     async def task_failed(
@@ -126,8 +137,11 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_task_failed",
-            task_key=task_key, repo_name=repo_name,
-            error_context=error_context, attempts=attempts, cost=cost,
+            task_key=task_key,
+            repo_name=repo_name,
+            error_context=error_context,
+            attempts=attempts,
+            cost=cost,
         )
 
     async def vendor_failover(
@@ -142,9 +156,12 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_vendor_failover",
-            task_key=task_key, repo_name=repo_name,
-            from_vendor=from_vendor, from_model=from_model,
-            to_vendor=to_vendor, to_model=to_model,
+            task_key=task_key,
+            repo_name=repo_name,
+            from_vendor=from_vendor,
+            from_model=from_model,
+            to_vendor=to_vendor,
+            to_model=to_model,
         )
 
     async def budget_warning(
@@ -160,9 +177,13 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_budget_warning",
-            task_key=task_key, repo_name=repo_name, reason=reason,
-            cum_cost=cum_cost, cum_wall_ms=cum_wall_ms,
-            max_cost=max_cost, max_wall=max_wall,
+            task_key=task_key,
+            repo_name=repo_name,
+            reason=reason,
+            cum_cost=cum_cost,
+            cum_wall_ms=cum_wall_ms,
+            max_cost=max_cost,
+            max_wall=max_wall,
         )
 
     async def budget_exceeded(
@@ -176,8 +197,11 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_budget_exceeded",
-            task_key=task_key, repo_name=repo_name, reason=reason,
-            cum_cost=cum_cost, cum_wall_ms=cum_wall_ms,
+            task_key=task_key,
+            repo_name=repo_name,
+            reason=reason,
+            cum_cost=cum_cost,
+            cum_wall_ms=cum_wall_ms,
         )
 
     async def preflight_blocked(
@@ -188,7 +212,8 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_preflight_blocked",
-            task_key=task_key, violations=violations,
+            task_key=task_key,
+            violations=violations,
         )
 
     async def task_state_changed(
@@ -199,7 +224,9 @@ class Dispatcher:
     ) -> dict[str, bool]:
         """Machine-readable lifecycle signal. No-op for human channels."""
         return await self._fanout(
-            "send_task_state_changed", task_key=task_key, final=final,
+            "send_task_state_changed",
+            task_key=task_key,
+            final=final,
         )
 
     async def operator_message(
@@ -212,8 +239,10 @@ class Dispatcher:
     ) -> dict[str, bool]:
         return await self._fanout(
             "send_operator_message",
-            from_task_key=from_task_key, subject=subject,
-            body=body, kind=kind,
+            from_task_key=from_task_key,
+            subject=subject,
+            body=body,
+            kind=kind,
         )
 
 

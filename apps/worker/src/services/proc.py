@@ -30,13 +30,15 @@ binary raises ``FileNotFoundError`` — identical across platforms — so existi
 import abc
 import asyncio
 import contextlib
+import os
 import queue as _queue
+import signal
 import subprocess
 import sys
 import threading
-from typing import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable
 
-__all__ = ["run", "run_shell_streamed", "run_streamed", "ProcessRunner"]
+__all__ = ["ProcessRunner", "run", "run_shell_streamed", "run_streamed"]
 
 # ── Streaming defaults ──────────────────────────────────────────────────────
 # A single ``--output-format stream-json`` line from an agent CLI carries a
@@ -151,6 +153,24 @@ class ProcessRunner(abc.ABC):
         """
 
 
+async def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill ``proc`` and everything it spawned, then reap it.
+
+    Children are started in their own session (``start_new_session=True``),
+    so the process id doubles as the group id. Killing the group matters for
+    agent CLIs: a shell or an npm shim that forks the real binary would
+    otherwise leave the grandchild running after the parent dies.
+    """
+    if proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            if sys.platform == "win32":
+                proc.kill()  # no process groups; the native runner's best effort
+            else:
+                os.killpg(proc.pid, signal.SIGKILL)
+    with contextlib.suppress(ProcessLookupError):
+        await proc.wait()
+
+
 class PosixProcessRunner(ProcessRunner):
     """Native ``asyncio`` subprocess transport for macOS and Linux.
 
@@ -180,9 +200,7 @@ class PosixProcessRunner(ProcessRunner):
         ``stdin_input`` feeds bytes to the process's stdin (then closes it) and
         takes precedence over ``stdin_devnull``.
         """
-        stderr_pipe = (
-            asyncio.subprocess.DEVNULL if stderr_devnull else asyncio.subprocess.PIPE
-        )
+        stderr_pipe = asyncio.subprocess.DEVNULL if stderr_devnull else asyncio.subprocess.PIPE
         if stdin_input is not None:
             stdin_mode: int | None = asyncio.subprocess.PIPE
         elif stdin_devnull:
@@ -197,14 +215,15 @@ class PosixProcessRunner(ProcessRunner):
             stdin=stdin_mode,
             stdout=asyncio.subprocess.PIPE,
             stderr=stderr_pipe,
+            start_new_session=True,
         )
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=stdin_input), timeout=timeout
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        except TimeoutError, asyncio.CancelledError:
+            # A cancelled task run must not leave its agent CLI behind.
+            await _kill_process_group(proc)
             raise
         return proc.returncode or 0, stdout or b"", stderr or b""
 
@@ -227,6 +246,7 @@ class PosixProcessRunner(ProcessRunner):
             cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
         )
 
         async def _stream() -> None:
@@ -239,12 +259,8 @@ class PosixProcessRunner(ProcessRunner):
 
         try:
             await asyncio.wait_for(_stream(), timeout=timeout)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-                await proc.wait()
-            except ProcessLookupError:
-                pass
+        except TimeoutError, asyncio.CancelledError:
+            await _kill_process_group(proc)
             raise
         await proc.wait()
         return proc.returncode or 0
@@ -265,9 +281,7 @@ class PosixProcessRunner(ProcessRunner):
             cwd=cwd,
             env=env,
             stdin=(
-                asyncio.subprocess.PIPE
-                if stdin_input is not None
-                else asyncio.subprocess.DEVNULL
+                asyncio.subprocess.PIPE if stdin_input is not None else asyncio.subprocess.DEVNULL
             ),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -357,16 +371,14 @@ class WindowsProcessRunner(PosixProcessRunner):
         on_line: Callable[[str], None],
     ) -> int:
         try:
-            return await super().run_shell_streamed(
-                cmd, cwd=cwd, timeout=timeout, on_line=on_line
-            )
+            return await super().run_shell_streamed(cmd, cwd=cwd, timeout=timeout, on_line=on_line)
         except NotImplementedError:
             try:
                 return await asyncio.to_thread(
                     self._shell_streamed_sync, cmd, cwd, timeout, on_line
                 )
             except subprocess.TimeoutExpired:
-                raise asyncio.TimeoutError from None
+                raise TimeoutError from None
 
     async def run_streamed(
         self,
@@ -424,7 +436,9 @@ class WindowsProcessRunner(PosixProcessRunner):
         drains it through the default executor. ``line_limit`` is unused here —
         ``Popen`` pipes iterate by line with no separator cap.
         """
-        proc = subprocess.Popen(
+        # Deliberately blocking: this is the Windows thread fallback, used only
+        # when the event loop cannot spawn subprocesses at all.
+        proc = subprocess.Popen(  # noqa: ASYNC220
             cmd,
             cwd=cwd,
             env=env,
@@ -512,11 +526,17 @@ class WindowsProcessRunner(PosixProcessRunner):
         try:
             cp = await asyncio.to_thread(
                 self._sync_run,
-                cmd, cwd, env, timeout, stdin_devnull, stderr_devnull, stdin_input,
+                cmd,
+                cwd,
+                env,
+                timeout,
+                stdin_devnull,
+                stderr_devnull,
+                stdin_input,
             )
         except subprocess.TimeoutExpired:
             # Mirror the native path so callers' `except asyncio.TimeoutError` works.
-            raise asyncio.TimeoutError from None
+            raise TimeoutError from None
         return cp.returncode or 0, cp.stdout or b"", cp.stderr or b""
 
     @staticmethod
@@ -537,10 +557,8 @@ class WindowsProcessRunner(PosixProcessRunner):
 
         def _kill() -> None:
             timed_out["v"] = True
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 proc.kill()
-            except ProcessLookupError:
-                pass
 
         timer = threading.Timer(timeout, _kill) if timeout else None
         if timer:
@@ -560,9 +578,7 @@ class WindowsProcessRunner(PosixProcessRunner):
 
 
 # ── Platform selection (once, at import) ────────────────────────────────────
-_RUNNER: ProcessRunner = (
-    WindowsProcessRunner() if sys.platform == "win32" else PosixProcessRunner()
-)
+_RUNNER: ProcessRunner = WindowsProcessRunner() if sys.platform == "win32" else PosixProcessRunner()
 
 
 async def run(
@@ -609,9 +625,7 @@ async def run_shell_streamed(
     killed first. On the Windows thread fallback ``on_line`` is invoked from a
     worker thread (plain synchronous I/O only — do not touch the event loop).
     """
-    return await _RUNNER.run_shell_streamed(
-        cmd, cwd=cwd, timeout=timeout, on_line=on_line
-    )
+    return await _RUNNER.run_shell_streamed(cmd, cwd=cwd, timeout=timeout, on_line=on_line)
 
 
 def run_streamed(

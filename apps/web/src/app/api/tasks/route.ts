@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import { insertTask } from '@/lib/tasks';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -105,14 +106,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await query(
-      `INSERT INTO tasks (repo_id, task_key, title, description, acceptance, priority, labels, mode, task_type, claude_mode, agent_vendor, claude_model, max_turns, skip_verify, git_flow, backup_vendor, backup_model, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'pending')
-       RETURNING *`,
-      [repo_id || null, task_key, title, description || null, acceptance || null, priority, labels, mode, task_type, claude_mode, agent_vendor, claude_model || null, max_turns, skip_verify, git_flow, backup_vendor || null, backup_model || null],
-    );
+    const created = await insertTask({
+      repoId: repo_id || null,
+      taskKey: task_key,
+      title,
+      description: description || null,
+      acceptance: acceptance || null,
+      priority,
+      labels,
+      mode,
+      taskType: task_type,
+      claudeMode: claude_mode,
+      agentVendor: agent_vendor,
+      claudeModel: claude_model || null,
+      maxTurns: max_turns,
+      skipVerify: skip_verify,
+      gitFlow: git_flow,
+      backupVendor: backup_vendor || null,
+      backupModel: backup_model || null,
+    });
 
-    return NextResponse.json(result.rows[0], { status: 201 });
+    return NextResponse.json(created, { status: 201 });
   } catch (err) {
     return apiErrorResponse(err, 'POST /api/tasks');
   }

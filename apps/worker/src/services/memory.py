@@ -119,17 +119,23 @@ async def search_memory_hybrid(
             LIMIT :lim
         """)
         try:
-            rows = (await session.execute(
-                vsql, {"repo_id": repo_id, "emb": str(embedding), "lim": cand}
-            )).fetchall()
+            rows = (
+                await session.execute(
+                    vsql, {"repo_id": repo_id, "emb": str(embedding), "lim": cand}
+                )
+            ).fetchall()
         except Exception:
             logger.debug("vector lane failed; using lexical lane only")
             await session.rollback()
             rows = []
         for rank, r in enumerate(rows):
             items[r[0]] = {
-                "id": r[0], "content": r[1], "memory_type": r[2],
-                "metadata": r[3], "created_at": str(r[4]), "similarity": float(r[5]),
+                "id": r[0],
+                "content": r[1],
+                "memory_type": r[2],
+                "metadata": r[3],
+                "created_at": str(r[4]),
+                "similarity": float(r[5]),
             }
             vrank[r[0]] = rank
 
@@ -143,9 +149,9 @@ async def search_memory_hybrid(
         LIMIT :lim
     """)
     try:
-        lrows = (await session.execute(
-            lsql, {"repo_id": repo_id, "q": query, "lim": cand}
-        )).fetchall()
+        lrows = (
+            await session.execute(lsql, {"repo_id": repo_id, "q": query, "lim": cand})
+        ).fetchall()
     except Exception:
         logger.debug("lexical lane failed; using vector lane only")
         await session.rollback()
@@ -153,8 +159,12 @@ async def search_memory_hybrid(
     for rank, r in enumerate(lrows):
         if r[0] not in items:
             items[r[0]] = {
-                "id": r[0], "content": r[1], "memory_type": r[2],
-                "metadata": r[3], "created_at": str(r[4]), "similarity": 0.0,
+                "id": r[0],
+                "content": r[1],
+                "memory_type": r[2],
+                "metadata": r[3],
+                "created_at": str(r[4]),
+                "similarity": 0.0,
             }
         lrank[r[0]] = rank
 

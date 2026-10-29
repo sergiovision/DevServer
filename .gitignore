@@ -59,5 +59,4 @@ apps/web/tsconfig.tsbuildinfo
 .claude/projects/
 .gemini/
 
-# NOTE: apps/web/package-lock.json is deliberately NOT ignored — it is tracked
-# and `docker/Dockerfile` COPYs it for a reproducible `npm ci`.
+docs/skill-work/

@@ -2,16 +2,18 @@
 
 import asyncio
 import time
-from typing import Dict, List, Any
+from typing import Any
+
+import asyncpg
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-import asyncpg
+
 from config import settings
 
 router = APIRouter()
 
 
-async def check_database() -> Dict[str, Any]:
+async def check_database() -> dict[str, Any]:
     """Check PostgreSQL database connectivity."""
     start_time = time.time()
     try:
@@ -26,19 +28,21 @@ async def check_database() -> Dict[str, Any]:
             "status": "degraded" if response_time > 5000 else "healthy",
             "response_time": round(response_time, 2),
             "details": {
-                "database_url": settings.database_url.split("@")[1] if "@" in settings.database_url else "configured"
-            }
+                "database_url": settings.database_url.split("@")[1]
+                if "@" in settings.database_url
+                else "configured"
+            },
         }
     except Exception as e:
         return {
             "name": "database",
             "status": "unhealthy",
             "response_time": round((time.time() - start_time) * 1000, 2),
-            "error": str(e)
+            "error": str(e),
         }
 
 
-async def check_queue_system() -> Dict[str, Any]:
+async def check_queue_system() -> dict[str, Any]:
     """Check PgQueuer system status."""
     start_time = time.time()
     try:
@@ -62,8 +66,8 @@ async def check_queue_system() -> Dict[str, Any]:
 
         response_time = (time.time() - start_time) * 1000
 
-        total_jobs = stats['total_jobs'] if stats else 0
-        failed_jobs = stats['failed_jobs'] if stats else 0
+        total_jobs = stats["total_jobs"] if stats else 0
+        failed_jobs = stats["failed_jobs"] if stats else 0
         failure_rate = failed_jobs / max(total_jobs, 1)
 
         status = "degraded" if failure_rate > 0.5 else "healthy"
@@ -74,43 +78,39 @@ async def check_queue_system() -> Dict[str, Any]:
             "response_time": round(response_time, 2),
             "details": {
                 "total_jobs": total_jobs,
-                "queued_jobs": stats['queued_jobs'] if stats else 0,
-                "running_jobs": stats['running_jobs'] if stats else 0,
+                "queued_jobs": stats["queued_jobs"] if stats else 0,
+                "running_jobs": stats["running_jobs"] if stats else 0,
                 "failed_jobs": failed_jobs,
-                "failure_rate": round(failure_rate, 2)
-            }
+                "failure_rate": round(failure_rate, 2),
+            },
         }
     except Exception as e:
         return {
             "name": "queue_system",
             "status": "unhealthy",
             "response_time": round((time.time() - start_time) * 1000, 2),
-            "error": str(e)
+            "error": str(e),
         }
 
 
-async def check_file_system() -> Dict[str, Any]:
+async def check_file_system() -> dict[str, Any]:
     """Check file system access for critical directories."""
     start_time = time.time()
     try:
         import os
-        import tempfile
 
         # Test write access to worktree and log directories
-        directories_to_check = [
-            settings.worktree_dir,
-            settings.log_dir
-        ]
+        directories_to_check = [settings.worktree_dir, settings.log_dir]
 
         details = {}
         for directory in directories_to_check:
             if directory:
                 os.makedirs(directory, exist_ok=True)
                 test_file = os.path.join(directory, f"health_check_{time.time()}.tmp")
-                with open(test_file, 'w') as f:
+                with open(test_file, "w") as f:
                     f.write("health check")
-                with open(test_file, 'r') as f:
-                    content = f.read()
+                with open(test_file) as f:
+                    f.read()
                 os.unlink(test_file)
                 details[directory] = "writable"
 
@@ -120,18 +120,18 @@ async def check_file_system() -> Dict[str, Any]:
             "name": "file_system",
             "status": "degraded" if response_time > 1000 else "healthy",
             "response_time": round(response_time, 2),
-            "details": details
+            "details": details,
         }
     except Exception as e:
         return {
             "name": "file_system",
             "status": "unhealthy",
             "response_time": round((time.time() - start_time) * 1000, 2),
-            "error": str(e)
+            "error": str(e),
         }
 
 
-def calculate_overall_status(checks: List[Dict[str, Any]]) -> str:
+def calculate_overall_status(checks: list[dict[str, Any]]) -> str:
     """Calculate overall health status from individual checks."""
     if any(check["status"] == "unhealthy" for check in checks):
         return "unhealthy"
@@ -140,17 +140,17 @@ def calculate_overall_status(checks: List[Dict[str, Any]]) -> str:
     return "healthy"
 
 
-def create_summary(checks: List[Dict[str, Any]]) -> Dict[str, int]:
+def create_summary(checks: list[dict[str, Any]]) -> dict[str, int]:
     """Create health check summary."""
     return {
         "total": len(checks),
         "healthy": sum(1 for check in checks if check["status"] == "healthy"),
         "unhealthy": sum(1 for check in checks if check["status"] == "unhealthy"),
-        "degraded": sum(1 for check in checks if check["status"] == "degraded")
+        "degraded": sum(1 for check in checks if check["status"] == "degraded"),
     }
 
 
-async def check_agent_clis() -> Dict[str, Any]:
+async def check_agent_clis() -> dict[str, Any]:
     """Report which vendor CLIs are present.
 
     A CLI that is simply not installed yet is NOT a problem: the image ships
@@ -204,18 +204,16 @@ async def detailed_health():
             check_queue_system(),
             check_file_system(),
             check_agent_clis(),
-            return_exceptions=True
+            return_exceptions=True,
         )
 
         # Handle any exceptions from the checks
         valid_checks = []
         for i, check in enumerate(checks):
             if isinstance(check, Exception):
-                valid_checks.append({
-                    "name": f"check_{i}",
-                    "status": "unhealthy",
-                    "error": str(check)
-                })
+                valid_checks.append(
+                    {"name": f"check_{i}", "status": "unhealthy", "error": str(check)}
+                )
             else:
                 valid_checks.append(check)
 
@@ -227,19 +225,21 @@ async def detailed_health():
             "service": "devserver-worker",
             "timestamp": iso_timestamp,
             "checks": valid_checks,
-            "summary": summary
+            "summary": summary,
         }
 
         # Return appropriate HTTP status
-        status_code = 200 if overall_status == "healthy" else 206 if overall_status == "degraded" else 503
+        status_code = (
+            200 if overall_status == "healthy" else 206 if overall_status == "degraded" else 503
+        )
 
         return JSONResponse(
             content=response,
             status_code=status_code,
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
-                "X-Health-Status": overall_status
-            }
+                "X-Health-Status": overall_status,
+            },
         )
 
     except Exception as e:
@@ -248,17 +248,8 @@ async def detailed_health():
             "status": "unhealthy",
             "service": "devserver-worker",
             "timestamp": iso_timestamp,
-            "checks": [{
-                "name": "health_system",
-                "status": "unhealthy",
-                "error": str(e)
-            }],
-            "summary": {
-                "total": 1,
-                "healthy": 0,
-                "unhealthy": 1,
-                "degraded": 0
-            }
+            "checks": [{"name": "health_system", "status": "unhealthy", "error": str(e)}],
+            "summary": {"total": 1, "healthy": 0, "unhealthy": 1, "degraded": 0},
         }
 
         return JSONResponse(
@@ -266,8 +257,8 @@ async def detailed_health():
             status_code=503,
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
-                "X-Health-Status": "unhealthy"
-            }
+                "X-Health-Status": "unhealthy",
+            },
         )
 
 
@@ -280,19 +271,15 @@ async def readiness():
     try:
         # Check only critical dependencies for readiness
         checks = await asyncio.gather(
-            check_database(),
-            check_queue_system(),
-            return_exceptions=True
+            check_database(), check_queue_system(), return_exceptions=True
         )
 
         valid_checks = []
         for i, check in enumerate(checks):
             if isinstance(check, Exception):
-                valid_checks.append({
-                    "name": f"critical_check_{i}",
-                    "status": "unhealthy",
-                    "error": str(check)
-                })
+                valid_checks.append(
+                    {"name": f"critical_check_{i}", "status": "unhealthy", "error": str(check)}
+                )
             else:
                 valid_checks.append(check)
 
@@ -309,9 +296,8 @@ async def readiness():
             "checks": valid_checks,
             "summary": summary,
             "critical_issues": [
-                {"service": check["name"], "error": check.get("error")}
-                for check in critical_issues
-            ]
+                {"service": check["name"], "error": check.get("error")} for check in critical_issues
+            ],
         }
 
         status_code = 200 if is_ready else 503
@@ -321,8 +307,8 @@ async def readiness():
             status_code=status_code,
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
-                "X-Ready-Status": "ready" if is_ready else "not-ready"
-            }
+                "X-Ready-Status": "ready" if is_ready else "not-ready",
+            },
         )
 
     except Exception as e:
@@ -331,13 +317,9 @@ async def readiness():
             "ready": False,
             "service": "devserver-worker",
             "timestamp": iso_timestamp,
-            "checks": [{
-                "name": "readiness_system",
-                "status": "unhealthy",
-                "error": str(e)
-            }],
+            "checks": [{"name": "readiness_system", "status": "unhealthy", "error": str(e)}],
             "summary": {"total": 1, "healthy": 0, "unhealthy": 1, "degraded": 0},
-            "critical_issues": [{"service": "readiness_system", "error": str(e)}]
+            "critical_issues": [{"service": "readiness_system", "error": str(e)}],
         }
 
         return JSONResponse(
@@ -345,6 +327,6 @@ async def readiness():
             status_code=503,
             headers={
                 "Cache-Control": "no-cache, no-store, must-revalidate",
-                "X-Ready-Status": "not-ready"
-            }
+                "X-Ready-Status": "not-ready",
+            },
         )

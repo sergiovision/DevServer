@@ -40,12 +40,12 @@ def init_telemetry() -> None:
         return
     try:
         from opentelemetry import trace
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter,
         )
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
     except Exception:
         logger.warning(
             "OTEL_EXPORTER_OTLP_ENDPOINT is set but the opentelemetry packages "
@@ -135,8 +135,11 @@ def _map_governance(span, event_type: str, payload: dict) -> None:
         _set(span, "gen_ai.usage.turns", payload.get("turns"))
     elif event_type in ("pr_preflight_pass", "pr_preflight_fail"):
         # Pro preflight summary key names vary; surface the common ones.
-        _set(span, "devserver.preflight.secret_hits",
-             payload.get("secret_hits") or payload.get("secrets"))
+        _set(
+            span,
+            "devserver.preflight.secret_hits",
+            payload.get("secret_hits") or payload.get("secrets"),
+        )
         _set(span, "devserver.preflight.files_changed", payload.get("files_changed"))
         _set(span, "devserver.preflight.passed", event_type == "pr_preflight_pass")
     elif event_type == "vendor_failover":

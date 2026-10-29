@@ -22,21 +22,22 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class ErrorClass:
-    key: str                  # e.g. "python.import_error"
-    hint: str                 # short structured remediation hint
+    key: str  # e.g. "python.import_error"
+    hint: str  # short structured remediation hint
     evidence: list[str] = field(default_factory=list)  # matched lines (for log)
     severity: str = "recoverable"  # "recoverable" | "hard"
 
 
 # ── Rule definition helpers ───────────────────────────────────────────────────
+
 
 @dataclass
 class _Rule:
@@ -58,27 +59,35 @@ RULES: list[_Rule] = [
     # ─── Python ───
     _Rule(
         key="python.syntax_error",
-        pattern=re.compile(r"^\s*File \"([^\"]+)\", line (\d+)\s*\n.*?\n\s*SyntaxError: (.+)$", re.M),
+        pattern=re.compile(
+            r"^\s*File \"([^\"]+)\", line (\d+)\s*\n.*?\n\s*SyntaxError: (.+)$", re.M
+        ),
         hint_template="Python SyntaxError in {g0} line {g1}: {g2}. Fix the exact line; do not rewrite the file.",
     ),
     _Rule(
         key="python.import_error",
-        pattern=re.compile(r"(?:ModuleNotFoundError|ImportError): (?:No module named )?['\"]?([^'\"\n]+?)['\"]?$", re.M),
+        pattern=re.compile(
+            r"(?:ModuleNotFoundError|ImportError): (?:No module named )?['\"]?([^'\"\n]+?)['\"]?$",
+            re.M,
+        ),
         hint_template="Python cannot import '{g0}'. Either the module name is wrong, "
-                      "or the dependency is missing from pyproject.toml/requirements. "
-                      "Verify the exact module path by reading imports in related files.",
+        "or the dependency is missing from pyproject.toml/requirements. "
+        "Verify the exact module path by reading imports in related files.",
     ),
     _Rule(
         key="python.name_error",
         pattern=re.compile(r"NameError: name ['\"]([^'\"]+)['\"] is not defined", re.M),
         hint_template="Python NameError: '{g0}' is not defined. Likely a missing import or a typo. "
-                      "Read the file and find where {g0} should come from.",
+        "Read the file and find where {g0} should come from.",
     ),
     _Rule(
         key="python.attribute_error",
-        pattern=re.compile(r"AttributeError: (?:module ['\"][^'\"]+['\"] has no attribute|['\"][^'\"]+['\"] object has no attribute) ['\"]([^'\"]+)['\"]", re.M),
+        pattern=re.compile(
+            r"AttributeError: (?:module ['\"][^'\"]+['\"] has no attribute|['\"][^'\"]+['\"] object has no attribute) ['\"]([^'\"]+)['\"]",
+            re.M,
+        ),
         hint_template="Python AttributeError on '{g0}'. The attribute does not exist — "
-                      "inspect the actual class/module definition before using it.",
+        "inspect the actual class/module definition before using it.",
     ),
     _Rule(
         key="python.type_error",
@@ -90,7 +99,6 @@ RULES: list[_Rule] = [
         pattern=re.compile(r"FAILED (\S+::\S+) - (.+)$", re.M),
         hint_template="pytest failure in {g0}: {g1}. Read the failing test first, then fix the code — do not edit the test unless the task explicitly says so.",
     ),
-
     # ─── Node / TypeScript ───
     _Rule(
         key="ts.compile_error",
@@ -101,7 +109,7 @@ RULES: list[_Rule] = [
         key="ts.cannot_find_module",
         pattern=re.compile(r"Cannot find module ['\"]([^'\"]+)['\"]", re.M),
         hint_template="TypeScript cannot resolve module '{g0}'. "
-                      "Check tsconfig paths, verify the import specifier, or add the dep in package.json.",
+        "Check tsconfig paths, verify the import specifier, or add the dep in package.json.",
     ),
     _Rule(
         key="node.module_not_found",
@@ -118,7 +126,6 @@ RULES: list[_Rule] = [
         pattern=re.compile(r"^\s*\d+:\d+\s+error\s+(.+?)\s{2,}([\w/-]+)$", re.M),
         hint_template="ESLint error: {g0} [{g1}]. Fix the rule violation at the reported location.",
     ),
-
     # ─── .NET / C# ───
     _Rule(
         key="dotnet.build_error",
@@ -127,7 +134,9 @@ RULES: list[_Rule] = [
     ),
     _Rule(
         key="dotnet.missing_type",
-        pattern=re.compile(r"error CS0246: The type or namespace name '([^']+)' could not be found", re.M),
+        pattern=re.compile(
+            r"error CS0246: The type or namespace name '([^']+)' could not be found", re.M
+        ),
         hint_template="C# cannot find type/namespace '{g0}'. Verify the using directive and project references.",
     ),
     _Rule(
@@ -135,21 +144,18 @@ RULES: list[_Rule] = [
         pattern=re.compile(r"^\s*Failed\s+(.+?)\s+\[", re.M),
         hint_template="Test failure in {g0}. Read the assertion message before modifying the tested code.",
     ),
-
     # ─── Rust ───
     _Rule(
         key="rust.compile_error",
         pattern=re.compile(r"^error\[E(\d+)\]: (.+)$", re.M),
         hint_template="Rust compile error E{g0}: {g1}. Fix the exact diagnostic — rustc spans are precise.",
     ),
-
     # ─── Go ───
     _Rule(
         key="go.undefined",
         pattern=re.compile(r"^([^:]+):(\d+):(\d+): undefined: (\w+)", re.M),
         hint_template="Go: undefined symbol '{g3}' at {g0}:{g1}. Add the missing import or declaration.",
     ),
-
     # ─── Anthropic API ───
     _Rule(
         key="api.rate_limit",
@@ -157,7 +163,6 @@ RULES: list[_Rule] = [
         hint_template="Anthropic API rate limit hit. The task will pause and retry automatically.",
         severity="recoverable",
     ),
-
     # ─── Git ───
     _Rule(
         key="git.merge_conflict",
@@ -169,10 +174,9 @@ RULES: list[_Rule] = [
         key="git.nothing_to_commit",
         pattern=re.compile(r"nothing to commit", re.I),
         hint_template="Git reports 'nothing to commit' — you produced no file changes in the previous attempt. "
-                      "Re-read the task and make the actual code edits.",
+        "Re-read the task and make the actual code edits.",
         severity="hard",
     ),
-
     # ─── Shell / generic ───
     _Rule(
         key="shell.command_not_found",
@@ -210,7 +214,7 @@ def classify(raw: str) -> ErrorClass | None:
         extras = _simple_extract(match) if rule.extract is None else rule.extract(match)
         try:
             hint = rule.hint_template.format(**extras)
-        except (KeyError, IndexError):
+        except KeyError, IndexError:
             hint = rule.hint_template
 
         # Evidence = the matched line plus one line of surrounding context.
@@ -252,6 +256,8 @@ def build_remediation_block(cls: ErrorClass | None, raw_tail: str) -> str:
         for line in cls.evidence:
             parts.append(f"  > {line}")
     parts.append("")
-    parts.append("Apply the targeted hint above. Do not rewrite unrelated files. "
-                 "Do not re-run the same approach that failed.")
+    parts.append(
+        "Apply the targeted hint above. Do not rewrite unrelated files. "
+        "Do not re-run the same approach that failed."
+    )
     return "\n".join(parts)

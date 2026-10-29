@@ -15,7 +15,7 @@ const port = parseInt(process.env.WEB_PORT || process.env.PORT || '3200', 10);
 // own generated entrypoint inlines the resolved config instead. We replace that
 // entrypoint (we need the /api/ws upgrade handler), so we have to reproduce the
 // same bootstrap or `next()` silently falls back to framework defaults and
-// drops serverActions.bodySizeLimit, the A2A agent-card rewrite, etc.
+// drops serverActions.bodySizeLimit and the rest of next.config.ts.
 //
 // `.next/required-server-files.json` is the file Next itself builds that inline
 // config from, and it ships inside the standalone output. Read it, hand it to

@@ -14,28 +14,23 @@ import logging
 import os
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Awaitable, Callable, Optional
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import text
 
 from config import settings
 from models.base import async_session
-from models.task import Task
+from services import repo_lock
+from services.queue_bridge import enqueue_via_web
 from services.telegram import tg_send
-
-# Pro features: memory archive when available.
-try:
-    from services.pro import hooks as pro
-    _has_pro = True
-except ImportError:
-    _has_pro = False
 
 logger = logging.getLogger(__name__)
 
 
 # ─── Job registry ───────────────────────────────────────────────────────────
+
 
 @dataclass
 class Job:
@@ -43,21 +38,21 @@ class Job:
     group: str
     schedule: str
     next_time: float  # epoch seconds
-    interval_seconds: Optional[int] = None
-    daily_hour_utc: Optional[int] = None
-    prev_time: Optional[float] = None
+    interval_seconds: int | None = None
+    daily_hour_utc: int | None = None
+    prev_time: float | None = None
     is_running: bool = False
     log: str = ""
-    handler: Optional[Callable[[], Awaitable[str]]] = None
-    loop_task: Optional[asyncio.Task] = None
-    handler_task: Optional[asyncio.Task] = None
+    handler: Callable[[], Awaitable[str]] | None = None
+    loop_task: asyncio.Task | None = None
+    handler_task: asyncio.Task | None = None
 
 
 _JOBS: dict[str, Job] = {}
 
 
 def _compute_next_daily(hour: int) -> float:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     next_run = now.replace(hour=hour, minute=0, second=0, microsecond=0)
     if now >= next_run:
         next_run += timedelta(days=1)
@@ -113,66 +108,75 @@ def _register(job: Job, handler: Callable[[], Awaitable[str]]):
 
 # ─── Job handlers (single-run) ──────────────────────────────────────────────
 
+
 async def _run_stale_task_recovery() -> str:
-    recovered: list[str] = []
+    """Re-queue tasks whose runner died, and free only their own repo locks.
+
+    A live runner renews its repo lock every minute (``services.repo_lock``),
+    so a task is stale only when it has been active past its repo timeout
+    *and* holds no live lock. Tasks of other workers are therefore never
+    touched, and a lock belonging to another task is never deleted.
+    """
     async with async_session() as session:
-        result = await session.execute(text("""
-            SELECT t.id, t.task_key, t.queue_job_id, r.name AS repo_name
-            FROM tasks t
-            JOIN repos r ON t.repo_id = r.id
-            WHERE t.status IN ('running', 'verifying')
-              AND t.updated_at < NOW() - (r.timeout_minutes || ' minutes')::interval
-        """))
-        stale_rows = result.mappings().all()
+        stale_rows = (
+            (
+                await session.execute(
+                    text(
+                        """
+                        SELECT t.id, t.task_key, r.name AS repo_name
+                        FROM tasks t
+                        JOIN repos r ON t.repo_id = r.id
+                        WHERE t.status IN ('running', 'verifying')
+                          AND t.updated_at < NOW() - (r.timeout_minutes || ' minutes')::interval
+                          AND NOT EXISTS (
+                              SELECT 1 FROM repo_locks l
+                              WHERE l.task_key = t.task_key AND l.expires_at > NOW()
+                          )
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
         for row in stale_rows:
-            await session.execute(text("""
-                UPDATE tasks SET status = 'pending', queue_job_id = NULL, updated_at = NOW()
-                WHERE id = :id
-            """), {"id": row["id"]})
-            await session.execute(text("""
-                DELETE FROM repo_locks WHERE repo_name = :repo_name
-            """), {"repo_name": row["repo_name"]})
-            recovered.append(f"{row['task_key']} ({row['repo_name']})")
-            logger.info("Recovered stale task: %s", row["task_key"])
+            await session.execute(
+                text(
+                    "UPDATE tasks SET status = 'pending', queue_job_id = NULL, updated_at = NOW() "
+                    "WHERE id = :id"
+                ),
+                {"id": row["id"]},
+            )
+            await repo_lock.release(session, repo_name=row["repo_name"], owner=row["task_key"])
         await session.commit()
 
-    if recovered:
-        message = (
-            "\U0001f504 *Stale Task Recovery*\n\n"
-            f"Recovered {len(recovered)} stale tasks:\n"
-            + "\n".join(f"\u2022 {task}" for task in recovered)
+    recovered = []
+    for row in stale_rows:
+        requeued = await enqueue_via_web(row["id"])
+        recovered.append(
+            f"{row['task_key']} ({row['repo_name']}){'' if requeued else ' — enqueue failed'}"
         )
-        await tg_send(message)
-        return f"Recovered {len(recovered)} stale tasks"
-    return "No stale tasks"
+        logger.info("Recovered stale task %s (re-enqueued=%s)", row["task_key"], requeued)
 
-
-
-async def _run_memory_archive() -> str:
-    """Archive never-recalled stale agent memories (Pro, migration 010).
-
-    Opt-in via the ``memory_archive_days`` setting — 0 (default) is a no-op,
-    so this job is cheap and harmless until an operator turns it on.
-    """
-    if not _has_pro:
-        return "Pro not installed"
-    async with async_session() as session:
-        archived = await pro.archive_stale_memories(session=session)
-    return f"Archived {archived} stale memories" if archived else "No stale memories"
+    if not recovered:
+        return "No stale tasks"
+    await tg_send(
+        "\U0001f504 *Stale Task Recovery*\n\n"
+        f"Recovered {len(recovered)} stale tasks:\n" + "\n".join(f"\u2022 {t}" for t in recovered)
+    )
+    return f"Recovered {len(recovered)} stale tasks"
 
 
 async def _cleanup_old_logs() -> int:
     if not os.path.exists(settings.log_dir):
         return 0
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    cutoff = datetime.now(UTC) - timedelta(days=7)
     deleted_count = 0
     try:
         for filename in os.listdir(settings.log_dir):
             file_path = os.path.join(settings.log_dir, filename)
             if os.path.isfile(file_path):
-                file_mtime = datetime.fromtimestamp(
-                    os.path.getmtime(file_path), tz=timezone.utc
-                )
+                file_mtime = datetime.fromtimestamp(os.path.getmtime(file_path), tz=UTC)
                 if file_mtime < cutoff:
                     os.remove(file_path)
                     deleted_count += 1
@@ -186,7 +190,7 @@ async def _cleanup_old_logs() -> int:
 _SCHEDULE_GROUP = "schedule"
 
 
-def _parse_cron(expr: str) -> tuple[Optional[int], Optional[int], str]:
+def _parse_cron(expr: str) -> tuple[int | None, int | None, str]:
     """Map a small cron subset → (interval_seconds, daily_hour_utc, label).
 
     Supported: '@hourly', '@daily'/'@midnight', 'every <N>m', 'every <N>h',
@@ -219,27 +223,39 @@ async def _fire_schedule(schedule_id: int) -> str:
     the fire is skipped, only the next-run bookkeeping advances.
     """
     async with async_session() as db:
-        row = (await db.execute(text(
-            """
+        row = (
+            (
+                await db.execute(
+                    text(
+                        """
             SELECT s.id, s.name, s.cron_expr, s.task_id,
                    t.task_key, t.status AS task_status
             FROM schedules s
             LEFT JOIN tasks t ON t.id = s.task_id
             WHERE s.id = :id AND s.enabled
             """
-        ), {"id": schedule_id})).mappings().fetchone()
+                    ),
+                    {"id": schedule_id},
+                )
+            )
+            .mappings()
+            .fetchone()
+        )
         if not row:
             return f"schedule {schedule_id} gone or disabled"
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         interval, daily_hour, _label = _parse_cron(row["cron_expr"])
         if interval is not None:
             next_run = now + timedelta(seconds=interval)
         else:
-            next_run = datetime.fromtimestamp(_compute_next_daily(daily_hour or 0), tz=timezone.utc)
-        await db.execute(text(
-            "UPDATE schedules SET last_run_at = :now, next_run_at = :nx, updated_at = :now WHERE id = :id"
-        ), {"now": now, "nx": next_run, "id": schedule_id})
+            next_run = datetime.fromtimestamp(_compute_next_daily(daily_hour or 0), tz=UTC)
+        await db.execute(
+            text(
+                "UPDATE schedules SET last_run_at = :now, next_run_at = :nx, updated_at = :now WHERE id = :id"
+            ),
+            {"now": now, "nx": next_run, "id": schedule_id},
+        )
 
         task_id = row["task_id"]
         task_key = row["task_key"]
@@ -249,24 +265,37 @@ async def _fire_schedule(schedule_id: int) -> str:
 
         if row["task_status"] in ("queued", "running", "verifying"):
             await db.commit()
-            return (f"schedule {schedule_id}: task {task_key} is "
-                    f"{row['task_status']} — skipped this fire")
+            return (
+                f"schedule {schedule_id}: task {task_key} is "
+                f"{row['task_status']} — skipped this fire"
+            )
 
-        await db.execute(text(
-            "UPDATE tasks SET status = 'pending', updated_at = NOW() WHERE id = :t"
-        ), {"t": task_id})
-        await db.execute(text(
-            "INSERT INTO task_events (task_id, event_type, payload) "
-            "VALUES (:t, 'schedule_fired', CAST(:pl AS JSONB))"
-        ), {"t": task_id, "pl": _json.dumps({
-            "schedule_id": schedule_id, "name": row["name"],
-            "task_key": task_key,
-        })})
+        await db.execute(
+            text("UPDATE tasks SET status = 'pending', updated_at = NOW() WHERE id = :t"),
+            {"t": task_id},
+        )
+        await db.execute(
+            text(
+                "INSERT INTO task_events (task_id, event_type, payload) "
+                "VALUES (:t, 'schedule_fired', CAST(:pl AS JSONB))"
+            ),
+            {
+                "t": task_id,
+                "pl": _json.dumps(
+                    {
+                        "schedule_id": schedule_id,
+                        "name": row["name"],
+                        "task_key": task_key,
+                    }
+                ),
+            },
+        )
         await db.commit()
 
     enqueued = False
     try:
         from services.decomposer import _enqueue_task
+
         enqueued = await _enqueue_task(task_id)
     except Exception:
         logger.exception("schedule %s enqueue failed", schedule_id)
@@ -276,6 +305,7 @@ async def _fire_schedule(schedule_id: int) -> str:
 def _make_schedule_handler(schedule_id: int) -> Callable[[], Awaitable[str]]:
     async def _handler() -> str:
         return await _fire_schedule(schedule_id)
+
     return _handler
 
 
@@ -286,9 +316,17 @@ async def _register_db_schedules(*, start_loops: bool = False) -> int:
     task for each newly-registered schedule job.
     """
     async with async_session() as db:
-        rows = (await db.execute(text(
-            "SELECT id, name, cron_expr, next_run_at FROM schedules WHERE enabled ORDER BY id"
-        ))).mappings().all()
+        rows = (
+            (
+                await db.execute(
+                    text(
+                        "SELECT id, name, cron_expr, next_run_at FROM schedules WHERE enabled ORDER BY id"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
 
     count = 0
     for row in rows:
@@ -327,6 +365,7 @@ async def reload_schedules() -> int:
 
 # ─── Public API ─────────────────────────────────────────────────────────────
 
+
 async def start_scheduler() -> list[asyncio.Task]:
     logger.info("Starting background scheduler...")
     _JOBS.clear()
@@ -341,18 +380,6 @@ async def start_scheduler() -> list[asyncio.Task]:
         ),
         _run_stale_task_recovery,
     )
-    if _has_pro:
-        _register(
-            Job(
-                name="memory_archive",
-                group="devserver",
-                schedule="every 6 hours",
-                interval_seconds=6 * 60 * 60,
-                next_time=time.time() + 6 * 60 * 60,
-            ),
-            _run_memory_archive,
-        )
-
     # DB-backed schedules (Phase 1). Registered here so the loop-creation
     # below starts their outer loops alongside the built-in jobs.
     try:
@@ -383,10 +410,10 @@ async def stop_scheduler():
     logger.info("Scheduler stopped")
 
 
-def _iso_utc(epoch: Optional[float]) -> Optional[str]:
+def _iso_utc(epoch: float | None) -> str | None:
     if epoch is None:
         return None
-    return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
 
 
 def get_all_jobs() -> list[dict]:

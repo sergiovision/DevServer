@@ -17,10 +17,13 @@ import {
 } from '@coreui/react-pro';
 import type { AgentVendor, ClaudeMode } from '@/lib/types';
 import {
-  AGENT_VENDORS,
-  defaultModelForVendor,
-  modelsForVendor,
+  defaultModelFor,
+  modelAfterVendorChange,
+  pickerModels,
+  vendorOptions,
 } from '@/lib/agent-vendors';
+import { useAgentRegistry } from '@/lib/use-agent-registry';
+
 interface SettingsFormProps {
   settings: Record<string, unknown>;
 }
@@ -44,22 +47,24 @@ function buildDraft(raw: Record<string, unknown>) {
     queue_paused: Boolean(raw.queue_paused),
     auto_enqueue: Boolean(raw.auto_enqueue),
     notifications_enabled: raw.notifications_enabled !== false,
+    // Blank until the registry loads; then the vendor's default fills it in.
     system_llm_vendor: (unquote(raw.system_llm_vendor) || 'glm') as AgentVendor,
-    system_llm_model: unquote(raw.system_llm_model) || 'glm-5.1',
+    system_llm_model: unquote(raw.system_llm_model),
     // Billing mode for system LLM calls (Fill Task, DevPlan, decompose, …):
     // 'max' = subscription via vendor CLI, 'api' = direct API key. Default max.
     system_llm_mode: (unquote(raw.system_llm_mode) || 'max') as ClaudeMode,
-    // Migration 010 — memory quality + abstain gate (Pro). 0 / false = off.
+    // Memory quality + reality abstain gate. 0 / false = off.
     reality_abstain_threshold: Number(raw.reality_abstain_threshold || 0),
     memory_decay_half_life_days: Number(raw.memory_decay_half_life_days || 0),
     memory_archive_days: Number(raw.memory_archive_days || 0),
     memory_iterative_recall: Boolean(raw.memory_iterative_recall),
-    // Auto-refresh the code/doc corpus on task success (Pro). Defaults on.
+    // Auto-refresh the code/doc corpus on task success. Defaults on.
     corpus_auto_index: raw.corpus_auto_index !== false,
   };
 }
 
 export function SettingsForm({ settings: initial }: SettingsFormProps) {
+  const agentRegistry = useAgentRegistry();
   const [draft, setDraft] = useState(() => buildDraft(initial));
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -74,21 +79,29 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
     [],
   );
 
+  // No model stored yet: show the vendor's default once the registry is in,
+  // so what is saved always names a model of the selected vendor.
+  useEffect(() => {
+    if (!agentRegistry) return;
+    setDraft((prev) =>
+      prev.system_llm_model
+        ? prev
+        : { ...prev, system_llm_model: defaultModelFor(agentRegistry, prev.system_llm_vendor) },
+    );
+  }, [agentRegistry]);
+
   // Vendor change auto-resets model if the current model doesn't belong
   // to the new vendor's suggested list.
   const handleVendorChange = useCallback(
     (next: AgentVendor) => {
-      setDraft((prev) => {
-        const belongs = modelsForVendor(next).some((m) => m.id === prev.system_llm_model);
-        return {
-          ...prev,
-          system_llm_vendor: next,
-          system_llm_model: belongs ? prev.system_llm_model : defaultModelForVendor(next),
-        };
-      });
+      setDraft((prev) => ({
+        ...prev,
+        system_llm_vendor: next,
+        system_llm_model: modelAfterVendorChange(agentRegistry, next, prev.system_llm_model),
+      }));
       setSaved(false);
     },
-    [],
+    [agentRegistry],
   );
 
   // ── Save all settings at once ──────────────────────────────────────
@@ -130,7 +143,7 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
   }, [draft]);
 
   // Model datalist for the selected system LLM vendor
-  const sysModelList = modelsForVendor(draft.system_llm_vendor);
+  const sysModelList = pickerModels(agentRegistry, draft.system_llm_vendor);
 
   return (
     <>
@@ -193,7 +206,7 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
                   value={draft.system_llm_vendor}
                   onChange={(e) => handleVendorChange(e.target.value as AgentVendor)}
                 >
-                  {AGENT_VENDORS.map((v) => (
+                  {vendorOptions(agentRegistry, draft.system_llm_vendor).map((v) => (
                     <option key={v.id} value={v.id}>
                       {v.label}
                     </option>
@@ -229,12 +242,12 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
               </CCol>
             </CRow>
 
-            {/* Memory & Reality Gate (Pro). All values 0 / off = disabled. */}
+            {/* Memory & Reality Gate. All values 0 / off = disabled. */}
             <hr className="my-3" />
             <CFormLabel className="fw-semibold">
               Memory &amp; Reality Gate{' '}
               <small className="fw-normal text-body-secondary">
-                — Pro features. 0 / off keeps prior behaviour.
+                — 0 / off keeps prior behaviour.
               </small>
             </CFormLabel>
             <CRow className="mb-3">

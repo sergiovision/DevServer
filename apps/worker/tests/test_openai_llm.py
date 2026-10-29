@@ -82,11 +82,14 @@ def test_openai_legacy_chat_request_keeps_legacy_fields():
 
 
 def test_openai_azure_request_contract():
-    with patch.object(
-        llm_client.settings,
-        "openai_base_url",
-        "https://example.openai.azure.com/",
-    ), patch.object(llm_client.settings, "openai_api_version", "2026-01-01-preview"):
+    with (
+        patch.object(
+            llm_client.settings,
+            "openai_base_url",
+            "https://example.openai.azure.com/",
+        ),
+        patch.object(llm_client.settings, "openai_api_version", "2026-01-01-preview"),
+    ):
         url, headers, body = llm_client._build_openai_request(
             "azure-key",
             "deployment-name",
@@ -106,16 +109,19 @@ def test_openai_azure_request_contract():
 
 
 def test_openai_response_parser_handles_content_and_empty_choices():
-    assert llm_client._parse_openai(
-        {"choices": [{"message": {"content": "Completed"}}]}
-    ) == "Completed"
+    assert (
+        llm_client._parse_openai({"choices": [{"message": {"content": "Completed"}}]})
+        == "Completed"
+    )
     assert llm_client._parse_openai({"choices": []}) == ""
 
 
 def test_openai_api_key_resolution_is_actionable():
-    with patch.object(llm_client.settings, "openai_api_key", ""):
-        with pytest.raises(ValueError, match="OPENAI_API_KEY is not set"):
-            llm_client.resolve_api_key("openai")
+    with (
+        patch.object(llm_client.settings, "openai_api_key", ""),
+        pytest.raises(ValueError, match="OPENAI_API_KEY is not set"),
+    ):
+        llm_client.resolve_api_key("openai")
 
 
 @pytest.mark.asyncio
@@ -194,9 +200,7 @@ async def test_openai_stream_translation_text_tools_and_usage():
                     {
                         "delta": {
                             "content": "world",
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": "42}"}}
-                            ],
+                            "tool_calls": [{"index": 0, "function": {"arguments": "42}"}}],
                         },
                         "finish_reason": "tool_calls",
                     }

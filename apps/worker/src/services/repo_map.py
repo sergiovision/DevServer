@@ -24,24 +24,50 @@ logger = logging.getLogger(__name__)
 
 # Directories to skip entirely. Matched against the directory *name*, not path.
 SKIP_DIRS = {
-    ".git", ".hg", ".svn",
-    "node_modules", ".next", ".nuxt", ".turbo", ".cache",
-    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    ".venv", "venv", "env", ".env",
-    "dist", "build", "out", "target", "bin", "obj",
-    ".idea", ".vscode",
-    "coverage", ".nyc_output",
-    "vendor", "third_party",
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    ".cache",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "env",
+    ".env",
+    "dist",
+    "build",
+    "out",
+    "target",
+    "bin",
+    "obj",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".nyc_output",
+    "vendor",
+    "third_party",
     ".devserver",  # our own cache directory
-    "worktrees",   # DevServer's per-task sub-worktrees (avoid re-indexing)
+    "worktrees",  # DevServer's per-task sub-worktrees (avoid re-indexing)
 }
 
 # File extensions → language key. Keep this list tight; anything not in here
 # gets a filename-only entry with no symbols.
 EXT_LANG = {
     ".py": "python",
-    ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".cts": "ts",
-    ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
+    ".ts": "ts",
+    ".tsx": "ts",
+    ".mts": "ts",
+    ".cts": "ts",
+    ".js": "js",
+    ".jsx": "js",
+    ".mjs": "js",
+    ".cjs": "js",
     ".cs": "csharp",
     ".go": "go",
     ".rs": "rust",
@@ -50,14 +76,23 @@ EXT_LANG = {
     ".rb": "ruby",
     ".php": "php",
     ".sql": "sql",
-    ".sh": "bash", ".bash": "bash",
+    ".sh": "bash",
+    ".bash": "bash",
 }
 
 # Files that should always show up in the map regardless of extension.
 IMPORTANT_FILENAMES = {
-    "CLAUDE.md", "README.md", "README", "AGENTS.md",
-    "package.json", "pyproject.toml", "Cargo.toml", "go.mod",
-    "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "CLAUDE.md",
+    "README.md",
+    "README",
+    "AGENTS.md",
+    "package.json",
+    "pyproject.toml",
+    "Cargo.toml",
+    "go.mod",
+    "Dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
     "Makefile",
 }
 
@@ -80,63 +115,189 @@ DEFAULT_MAX_CHARS = 4_000
 PATTERNS: dict[str, list[tuple[str, re.Pattern[str]]]] = {
     "python": [
         ("class", re.compile(r"^class\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("def",   re.compile(r"^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        ("def", re.compile(r"^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
     ],
     "ts": [
-        ("class",     re.compile(r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)", re.M)),
+        (
+            "class",
+            re.compile(
+                r"^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)", re.M
+            ),
+        ),
         ("interface", re.compile(r"^(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)", re.M)),
-        ("type",      re.compile(r"^(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=", re.M)),
-        ("enum",      re.compile(r"^(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)", re.M)),
-        ("function",  re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)", re.M)),
-        ("const",     re.compile(r"^(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?\(", re.M)),
+        ("type", re.compile(r"^(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=", re.M)),
+        ("enum", re.compile(r"^(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)", re.M)),
+        (
+            "function",
+            re.compile(
+                r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)",
+                re.M,
+            ),
+        ),
+        (
+            "const",
+            re.compile(
+                r"^(?:export\s+)?(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?\(",
+                re.M,
+            ),
+        ),
     ],
     "js": [
-        ("class",    re.compile(r"^(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][\w$]*)", re.M)),
-        ("function", re.compile(r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)", re.M)),
-        ("const",    re.compile(r"^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(", re.M)),
+        ("class", re.compile(r"^(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][\w$]*)", re.M)),
+        (
+            "function",
+            re.compile(
+                r"^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)",
+                re.M,
+            ),
+        ),
+        (
+            "const",
+            re.compile(
+                r"^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(", re.M
+            ),
+        ),
     ],
     "csharp": [
-        ("class",     re.compile(r"^\s*(?:public|internal|private|protected)?\s*(?:static\s+|sealed\s+|abstract\s+|partial\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("interface", re.compile(r"^\s*(?:public|internal|private|protected)?\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("record",    re.compile(r"^\s*(?:public|internal|private|protected)?\s*(?:sealed\s+)?record\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("struct",    re.compile(r"^\s*(?:public|internal|private|protected)?\s*(?:readonly\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("enum",      re.compile(r"^\s*(?:public|internal|private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "class",
+            re.compile(
+                r"^\s*(?:public|internal|private|protected)?\s*(?:static\s+|sealed\s+|abstract\s+|partial\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
+        (
+            "interface",
+            re.compile(
+                r"^\s*(?:public|internal|private|protected)?\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
+        (
+            "record",
+            re.compile(
+                r"^\s*(?:public|internal|private|protected)?\s*(?:sealed\s+)?record\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
+        (
+            "struct",
+            re.compile(
+                r"^\s*(?:public|internal|private|protected)?\s*(?:readonly\s+)?struct\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
+        (
+            "enum",
+            re.compile(
+                r"^\s*(?:public|internal|private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
     ],
     "go": [
         ("func", re.compile(r"^func\s+(?:\([^)]+\)\s*)?([A-Za-z_][A-Za-z0-9_]*)", re.M)),
         ("type", re.compile(r"^type\s+([A-Za-z_][A-Za-z0-9_]*)\s+(?:struct|interface)", re.M)),
     ],
     "rust": [
-        ("fn",     re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("struct", re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("enum",   re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("trait",  re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?trait\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("impl",   re.compile(r"^impl(?:<[^>]+>)?\s+(?:[A-Za-z_][\w:]*\s+for\s+)?([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "fn",
+            re.compile(
+                r"^(?:pub\s+(?:\([^)]*\)\s*)?)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)", re.M
+            ),
+        ),
+        (
+            "struct",
+            re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?struct\s+([A-Za-z_][A-Za-z0-9_]*)", re.M),
+        ),
+        ("enum", re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?enum\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "trait",
+            re.compile(r"^(?:pub\s+(?:\([^)]*\)\s*)?)?trait\s+([A-Za-z_][A-Za-z0-9_]*)", re.M),
+        ),
+        (
+            "impl",
+            re.compile(
+                r"^impl(?:<[^>]+>)?\s+(?:[A-Za-z_][\w:]*\s+for\s+)?([A-Za-z_][A-Za-z0-9_]*)", re.M
+            ),
+        ),
     ],
     "java": [
-        ("class",     re.compile(r"^\s*(?:public|private|protected)?\s*(?:static\s+|final\s+|abstract\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("interface", re.compile(r"^\s*(?:public|private|protected)?\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("enum",      re.compile(r"^\s*(?:public|private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "class",
+            re.compile(
+                r"^\s*(?:public|private|protected)?\s*(?:static\s+|final\s+|abstract\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
+        (
+            "interface",
+            re.compile(
+                r"^\s*(?:public|private|protected)?\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", re.M
+            ),
+        ),
+        (
+            "enum",
+            re.compile(
+                r"^\s*(?:public|private|protected)?\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)", re.M
+            ),
+        ),
     ],
     "kotlin": [
-        ("class",   re.compile(r"^\s*(?:open\s+|sealed\s+|abstract\s+|data\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("object",  re.compile(r"^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("fun",     re.compile(r"^\s*(?:suspend\s+)?fun\s+(?:<[^>]+>\s+)?([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "class",
+            re.compile(
+                r"^\s*(?:open\s+|sealed\s+|abstract\s+|data\s+)*class\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
+        ("object", re.compile(r"^\s*object\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "fun",
+            re.compile(r"^\s*(?:suspend\s+)?fun\s+(?:<[^>]+>\s+)?([A-Za-z_][A-Za-z0-9_]*)", re.M),
+        ),
     ],
     "ruby": [
-        ("class",  re.compile(r"^\s*class\s+([A-Z][A-Za-z0-9_]*)", re.M)),
+        ("class", re.compile(r"^\s*class\s+([A-Z][A-Za-z0-9_]*)", re.M)),
         ("module", re.compile(r"^\s*module\s+([A-Z][A-Za-z0-9_]*)", re.M)),
-        ("def",    re.compile(r"^\s*def\s+(?:self\.)?([a-z_][A-Za-z0-9_?!=]*)", re.M)),
+        ("def", re.compile(r"^\s*def\s+(?:self\.)?([a-z_][A-Za-z0-9_?!=]*)", re.M)),
     ],
     "php": [
-        ("class",     re.compile(r"^\s*(?:abstract\s+|final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
-        ("function",  re.compile(r"^\s*(?:public\s+|private\s+|protected\s+|static\s+)*function\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
+        (
+            "class",
+            re.compile(r"^\s*(?:abstract\s+|final\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)", re.M),
+        ),
+        (
+            "function",
+            re.compile(
+                r"^\s*(?:public\s+|private\s+|protected\s+|static\s+)*function\s+([A-Za-z_][A-Za-z0-9_]*)",
+                re.M,
+            ),
+        ),
         ("interface", re.compile(r"^\s*interface\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)),
     ],
     "sql": [
-        ("table",    re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\"?([A-Za-z_][A-Za-z0-9_.]*)\"?", re.M | re.I)),
-        ("function", re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+\"?([A-Za-z_][A-Za-z0-9_.]*)\"?", re.M | re.I)),
-        ("view",     re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+\"?([A-Za-z_][A-Za-z0-9_.]*)\"?", re.M | re.I)),
+        (
+            "table",
+            re.compile(
+                r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?\"?([A-Za-z_][A-Za-z0-9_.]*)\"?",
+                re.M | re.I,
+            ),
+        ),
+        (
+            "function",
+            re.compile(
+                r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+\"?([A-Za-z_][A-Za-z0-9_.]*)\"?",
+                re.M | re.I,
+            ),
+        ),
+        (
+            "view",
+            re.compile(
+                r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+\"?([A-Za-z_][A-Za-z0-9_.]*)\"?",
+                re.M | re.I,
+            ),
+        ),
     ],
     "bash": [
         ("func", re.compile(r"^(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{", re.M)),
@@ -161,7 +322,7 @@ class FileEntry:
 
 
 def _should_skip_dir(name: str) -> bool:
-    return name in SKIP_DIRS or name.startswith(".") and name not in {".github", ".claude"}
+    return name in SKIP_DIRS or (name.startswith(".") and name not in {".github", ".claude"})
 
 
 def _extract_symbols(text: str, lang: str) -> list[tuple[str, str]]:
@@ -180,7 +341,9 @@ def _extract_symbols(text: str, lang: str) -> list[tuple[str, str]]:
     return out
 
 
-def _scan_worktree(worktree_path: str, max_files: int, subdir: str | None = None) -> list[FileEntry]:
+def _scan_worktree(
+    worktree_path: str, max_files: int, subdir: str | None = None
+) -> list[FileEntry]:
     entries: list[FileEntry] = []
     # Scan a sub-tree when requested (RLM E4 drill-down) but keep rel_path
     # relative to the repo root so rendered paths stay meaningful.
@@ -217,7 +380,7 @@ def _scan_worktree(worktree_path: str, max_files: int, subdir: str | None = None
 
             if lang and size <= MAX_FILE_BYTES:
                 try:
-                    with open(full_path, "r", encoding="utf-8", errors="replace") as fh:
+                    with open(full_path, encoding="utf-8", errors="replace") as fh:
                         text = fh.read()
                     entry.symbols = _extract_symbols(text, lang)
                 except OSError:
@@ -304,8 +467,7 @@ def build_mermaid(
     Returns (mermaid_text, stats_dict).
     """
     if not root_path or not os.path.isdir(root_path):
-        return ('flowchart TD\n  n0["(repo not available)"]',
-                {"nodes": 0, "error": True})
+        return ('flowchart TD\n  n0["(repo not available)"]', {"nodes": 0, "error": True})
     try:
         base = os.path.realpath(root_path)
         # rel dir ("" = root) → count of direct code/important files
@@ -321,9 +483,9 @@ def build_mermaid(
                 dirnames[:] = []  # stop descending past the depth budget
                 continue
             dirs[rel] = sum(
-                1 for f in filenames
-                if os.path.splitext(f)[1].lower() in EXT_LANG
-                or f in IMPORTANT_FILENAMES
+                1
+                for f in filenames
+                if os.path.splitext(f)[1].lower() in EXT_LANG or f in IMPORTANT_FILENAMES
             )
 
         # Cap node count. Sorting by path keeps every parent ahead of its
@@ -361,8 +523,7 @@ def build_mermaid(
         }
     except Exception:
         logger.exception("build_mermaid failed for %s", root_path)
-        return ('flowchart TD\n  n0["(diagram unavailable)"]',
-                {"nodes": 0, "error": True})
+        return ('flowchart TD\n  n0["(diagram unavailable)"]', {"nodes": 0, "error": True})
 
 
 def build_repo_map(
@@ -397,6 +558,9 @@ def build_repo_map(
     }
     logger.info(
         "repo_map built for %s: %d files, %d symbols, %d chars",
-        worktree_path, len(entries), total_symbols, len(rendered),
+        worktree_path,
+        len(entries),
+        total_symbols,
+        len(rendered),
     )
     return rendered, stats

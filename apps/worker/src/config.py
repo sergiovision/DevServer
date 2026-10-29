@@ -1,6 +1,7 @@
 """Application configuration loaded from environment variables."""
 
 import os
+
 from pydantic_settings import BaseSettings
 
 # Resolve .env from project root (3 levels up from this file: src/ -> apps/worker/ -> apps/ -> project root)

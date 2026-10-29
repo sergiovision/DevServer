@@ -30,9 +30,10 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     # GitHub OAuth / App tokens
     ("github_token", re.compile(r"\b(?:gho_|ghu_|ghs_|ghr_)[A-Za-z0-9]{36}\b")),
     # Gitea token (40 hex chars — narrow pattern requiring surrounding context)
-    ("gitea_token", re.compile(
-        r"(?i)(?:gitea[_-]?token|GITEA_TOKEN)[\"'\s]*[:=][\"'\s]*([a-f0-9]{40})"
-    )),
+    (
+        "gitea_token",
+        re.compile(r"(?i)(?:gitea[_-]?token|GITEA_TOKEN)[\"'\s]*[:=][\"'\s]*([a-f0-9]{40})"),
+    ),
     # Slack bot tokens
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,48}\b")),
     # Google API key
@@ -46,9 +47,12 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
     # Generic "password = <something>" for common source-file conventions.
     # Deliberately narrow: only matches password assignments that look like
     # real secrets (non-empty, not a placeholder). Skips "password=''" etc.
-    ("hardcoded_password", re.compile(
-        r"(?i)(?:password|passwd|pwd)\s*[:=]\s*['\"]([^'\"\s]{8,})['\"]",
-    )),
+    (
+        "hardcoded_password",
+        re.compile(
+            r"(?i)(?:password|passwd|pwd)\s*[:=]\s*['\"]([^'\"\s]{8,})['\"]",
+        ),
+    ),
 ]
 
 # Placeholders we should not flag even if they match a password rule.
@@ -58,12 +62,24 @@ SECRET_RULES: list[tuple[str, re.Pattern[str]]] = [
 # either set — they are extremely common in real passwords and caused false
 # negatives during testing.
 _PASSWORD_EXACT_PLACEHOLDERS = {
-    "changeme", "password", "secret", "your_password", "yourpassword",
-    "placeholder", "example", "none", "todo", "fixme",
-    "your-password-here", "<password>", "<your-password>",
+    "changeme",
+    "password",
+    "secret",
+    "your_password",
+    "yourpassword",
+    "placeholder",
+    "example",
+    "none",
+    "todo",
+    "fixme",
+    "your-password-here",
+    "<password>",
+    "<your-password>",
 }
 _PASSWORD_SUBSTRING_PLACEHOLDERS = {
-    "xxxxxx", "######", "******",
+    "xxxxxx",
+    "######",
+    "******",
 }
 
 
@@ -102,7 +118,8 @@ def redact_secrets(content: str) -> tuple[str, list[str]]:
     redacted = content
     found: list[str] = []
     for key, pattern in SECRET_RULES:
-        def _sub(m: re.Match[str]) -> str:
+
+        def _sub(m: re.Match[str], key: str = key) -> str:
             if key == "hardcoded_password":
                 val = (m.group(1) or "").lower()
                 if val in _PASSWORD_EXACT_PLACEHOLDERS or any(

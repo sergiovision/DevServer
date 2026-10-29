@@ -23,9 +23,7 @@ logger = logging.getLogger(__name__)
 async def get_setting(session: AsyncSession, key: str, default=None):
     """Return the parsed value for ``key``, or ``default`` if unset."""
     try:
-        row = await session.execute(
-            text("SELECT value FROM settings WHERE key = :k"), {"k": key}
-        )
+        row = await session.execute(text("SELECT value FROM settings WHERE key = :k"), {"k": key})
         v = row.scalar_one_or_none()
     except Exception:
         logger.debug("settings read failed for %r", key)
@@ -45,7 +43,7 @@ async def get_int_setting(session: AsyncSession, key: str, default: int) -> int:
     v = await get_setting(session, key, default)
     try:
         return int(v)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -54,7 +52,7 @@ async def get_float_setting(session: AsyncSession, key: str, default: float) -> 
     v = await get_setting(session, key, default)
     try:
         return float(v)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 

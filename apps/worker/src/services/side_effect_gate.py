@@ -34,13 +34,13 @@ from __future__ import annotations
 import json as _json
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services import app_settings, gate_classifier
-from services.decomposer import _enqueue_task, _read_system_llm
+from services import app_settings, gate_classifier, repo_lock, system_llm
+from services.decomposer import _enqueue_task
 
 logger = logging.getLogger(__name__)
 
@@ -65,12 +65,14 @@ async def _emit(session: AsyncSession, task_id: int | None, event_type: str, pay
 async def _notify_text(message: str) -> None:
     try:
         from services.notify import notify
+
         await notify.text(message)
     except Exception:
         logger.exception("gate notify failed")
 
 
 # ─── raise (called by the agent via the /gate endpoint) ──────────────────────
+
 
 async def raise_gate(
     session: AsyncSession,
@@ -90,25 +92,29 @@ async def raise_gate(
     """
     if not await is_enabled(session):
         # Feature off → allow everything (behaviour unchanged).
-        return {"decision": "allow", "kind": "disabled",
-                "hint": "side_effect_gate is disabled"}
+        return {"decision": "allow", "kind": "disabled", "hint": "side_effect_gate is disabled"}
 
     if use_llm:
-        vendor, model = await _read_system_llm(session)
-        gc = await gate_classifier.classify_with_llm(action, vendor=vendor, model=model)
+        llm = await system_llm.read(session)
+        gc = await gate_classifier.classify_with_llm(action, vendor=llm.vendor, model=llm.model)
     else:
         gc = gate_classifier.classify(action)
 
     if gc.severity != "blocking":
-        await _emit(session, task_id, "gate_resolved",
-                    {"auto_allow": True, "kind": gc.kind, "action": action[:500]})
+        await _emit(
+            session,
+            task_id,
+            "gate_resolved",
+            {"auto_allow": True, "kind": gc.kind, "action": action[:500]},
+        )
         await session.commit()
         return {"decision": "allow", "kind": gc.kind, "hint": gc.hint}
 
     resume_token = secrets.token_urlsafe(16)
-    row = (await session.execute(
-        text(
-            """
+    row = (
+        await session.execute(
+            text(
+                """
             INSERT INTO decision_points
                 (task_id, node_id, kind, severity, payload, proposed_action,
                  status, resume_token)
@@ -117,10 +123,17 @@ async def raise_gate(
                  :action, 'open', :rt)
             RETURNING id
             """
-        ),
-        {"task_id": task_id, "node_id": node_id, "kind": gc.kind,
-         "pl": _json.dumps(payload or {}), "action": action[:4000], "rt": resume_token},
-    )).fetchone()
+            ),
+            {
+                "task_id": task_id,
+                "node_id": node_id,
+                "kind": gc.kind,
+                "pl": _json.dumps(payload or {}),
+                "action": action[:4000],
+                "rt": resume_token,
+            },
+        )
+    ).fetchone()
     decision_id = row[0]
 
     # Companion operator message — reuses the existing inbox + notify fan-out.
@@ -134,17 +147,22 @@ async def raise_gate(
             """
         ),
         {
-            "tid": task_id, "tkey": task_key,
+            "tid": task_id,
+            "tkey": task_key,
             "subject": f"Approval needed: {gc.kind}",
             "body": f"Task {task_key} wants to perform a **{gc.kind}** action:\n\n{action}\n\n"
-                    f"{gc.hint}\n\nApprove or reject in the inbox (decision #{decision_id}).",
-            "pl": _json.dumps({"decision_id": decision_id, "kind": gc.kind,
-                               "resume_token": resume_token}),
+            f"{gc.hint}\n\nApprove or reject in the inbox (decision #{decision_id}).",
+            "pl": _json.dumps(
+                {"decision_id": decision_id, "kind": gc.kind, "resume_token": resume_token}
+            ),
         },
     )
-    await _emit(session, task_id, "gate_raised",
-                {"decision_id": decision_id, "kind": gc.kind, "hint": gc.hint,
-                 "action": action[:500]})
+    await _emit(
+        session,
+        task_id,
+        "gate_raised",
+        {"decision_id": decision_id, "kind": gc.kind, "hint": gc.hint, "action": action[:500]},
+    )
     await session.commit()
     await _notify_text(
         f"\U0001f6d1 *{task_key}* needs approval — {gc.kind}\n{action[:300]}\n"
@@ -168,6 +186,7 @@ async def raise_gate(
 
 # ─── observe + suspend (called by agent_runner after the agent run) ──────────
 
+
 async def check_open_gate(session: AsyncSession, task_id: int) -> dict | None:
     """Return the open blocking decision for a task, or None.
 
@@ -176,14 +195,20 @@ async def check_open_gate(session: AsyncSession, task_id: int) -> dict | None:
     """
     if not await is_enabled(session):
         return None
-    row = (await session.execute(
-        text(
-            "SELECT id, kind, proposed_action, resume_token FROM decision_points "
-            "WHERE task_id = :tid AND status = 'open' AND severity = 'blocking' "
-            "ORDER BY id DESC LIMIT 1"
-        ),
-        {"tid": task_id},
-    )).mappings().fetchone()
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT id, kind, proposed_action, resume_token FROM decision_points "
+                    "WHERE task_id = :tid AND status = 'open' AND severity = 'blocking' "
+                    "ORDER BY id DESC LIMIT 1"
+                ),
+                {"tid": task_id},
+            )
+        )
+        .mappings()
+        .fetchone()
+    )
     return dict(row) if row else None
 
 
@@ -201,7 +226,7 @@ async def suspend_for_gate(
     running. Resume is via :func:`resolve_decision`.
     """
     reason = f"awaiting approval: {gate.get('kind')} — {gate.get('proposed_action', '')[:200]}"
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await session.execute(
         text(
             "UPDATE tasks SET status = 'blocked', suspended_reason = :r, "
@@ -219,19 +244,16 @@ async def suspend_for_gate(
         )
     await session.commit()
     if task_log is not None:
-        try:
-            task_log.write(f"\n[gate] {reason} — task suspended (decision #{gate.get('id')})\n")
-            task_log.flush()
-        except Exception:
-            pass
+        task_log.write(f"\n[gate] {reason} — task suspended (decision #{gate.get('id')})\n")
 
 
 # ─── resolve (called from the inbox / endpoint) ──────────────────────────────
 
+
 async def _prepare_continuation(session: AsyncSession, task_id: int) -> None:
     """Replicate the essentials of /continue: fail in-flight runs (preserving
     session_id), drop the repo lock, set is_continuation, status→pending."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await session.execute(
         text(
             "UPDATE task_runs SET status = 'failed', finished_at = :ts "
@@ -240,13 +262,10 @@ async def _prepare_continuation(session: AsyncSession, task_id: int) -> None:
         {"ts": now, "tid": task_id},
     )
     # Release any repo lock this task holds (lock keyed by task_key).
-    await session.execute(
-        text(
-            "DELETE FROM repo_locks WHERE task_key = "
-            "(SELECT task_key FROM tasks WHERE id = :tid)"
-        ),
-        {"tid": task_id},
-    )
+    task_key = (
+        await session.execute(text("SELECT task_key FROM tasks WHERE id = :tid"), {"tid": task_id})
+    ).scalar_one()
+    await repo_lock.release_all_owned_by(session, owner=task_key)
     await session.execute(
         text(
             "UPDATE tasks SET is_continuation = TRUE, status = 'pending', "
@@ -260,7 +279,7 @@ async def resolve_decision(
     session: AsyncSession,
     *,
     decision_id: int,
-    decision: str,                     # 'approve' | 'reject' | 'edit'
+    decision: str,  # 'approve' | 'reject' | 'edit'
     comment: str = "",
     edited_payload: dict | None = None,
     resolved_by: str = "operator",
@@ -271,14 +290,20 @@ async def resolve_decision(
     reject       → re-enqueue with a "do not perform that action" nudge.
     Returns ``{"ok", "decision_id", "status", "task_key"}``.
     """
-    row = (await session.execute(
-        text(
-            "SELECT dp.id, dp.task_id, dp.kind, dp.proposed_action, dp.status, "
-            "t.task_key FROM decision_points dp JOIN tasks t ON t.id = dp.task_id "
-            "WHERE dp.id = :id"
-        ),
-        {"id": decision_id},
-    )).mappings().fetchone()
+    row = (
+        (
+            await session.execute(
+                text(
+                    "SELECT dp.id, dp.task_id, dp.kind, dp.proposed_action, dp.status, "
+                    "t.task_key FROM decision_points dp JOIN tasks t ON t.id = dp.task_id "
+                    "WHERE dp.id = :id"
+                ),
+                {"id": decision_id},
+            )
+        )
+        .mappings()
+        .fetchone()
+    )
     if not row:
         return {"ok": False, "reason": f"decision {decision_id} not found"}
     if row["status"] != "open":
@@ -291,7 +316,7 @@ async def resolve_decision(
     if not new_status:
         return {"ok": False, "reason": f"unknown decision '{decision}'"}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     await session.execute(
         text(
             "UPDATE decision_points SET status = :st, resolved_at = :ts, "
@@ -307,14 +332,17 @@ async def resolve_decision(
 
     # Tell the agent the outcome via its inbox (it reads this on resume).
     if decision == "reject":
-        body = (f"Your gated **{row['kind']}** action was REJECTED by the operator. "
-                f"Do NOT perform it. {comment}\nFind an alternative or stop and report why.")
+        body = (
+            f"Your gated **{row['kind']}** action was REJECTED by the operator. "
+            f"Do NOT perform it. {comment}\nFind an alternative or stop and report why."
+        )
     elif decision == "edit":
-        body = (f"Your gated **{row['kind']}** action was APPROVED WITH EDITS. "
-                f"Use the edited parameters in the decision payload. {comment}\nProceed.")
+        body = (
+            f"Your gated **{row['kind']}** action was APPROVED WITH EDITS. "
+            f"Use the edited parameters in the decision payload. {comment}\nProceed."
+        )
     else:
-        body = (f"Your gated **{row['kind']}** action was APPROVED. {comment}\n"
-                f"Proceed with it now.")
+        body = f"Your gated **{row['kind']}** action was APPROVED. {comment}\nProceed with it now."
     await session.execute(
         text(
             """
@@ -324,25 +352,46 @@ async def resolve_decision(
                 (NULL, 'operator', :tid, :tkey, 'response', :subject, :body, CAST(:pl AS JSONB))
             """
         ),
-        {"tid": task_id, "tkey": task_key, "subject": f"Decision #{decision_id}: {new_status}",
-         "body": body, "pl": _json.dumps({"decision_id": decision_id, "decision": new_status,
-                                          "edited_payload": edited_payload or {}})},
+        {
+            "tid": task_id,
+            "tkey": task_key,
+            "subject": f"Decision #{decision_id}: {new_status}",
+            "body": body,
+            "pl": _json.dumps(
+                {
+                    "decision_id": decision_id,
+                    "decision": new_status,
+                    "edited_payload": edited_payload or {},
+                }
+            ),
+        },
     )
 
     await _prepare_continuation(session, task_id)
-    await _emit(session, task_id, "gate_resolved",
-                {"decision_id": decision_id, "status": new_status, "by": resolved_by})
+    await _emit(
+        session,
+        task_id,
+        "gate_resolved",
+        {"decision_id": decision_id, "status": new_status, "by": resolved_by},
+    )
     await session.commit()
 
     enqueued = await _enqueue_task(task_id)
-    return {"ok": True, "decision_id": decision_id, "status": new_status,
-            "task_key": task_key, "enqueued": enqueued}
+    return {
+        "ok": True,
+        "decision_id": decision_id,
+        "status": new_status,
+        "task_key": task_key,
+        "enqueued": enqueued,
+    }
 
 
 async def list_open_decisions(session: AsyncSession, *, limit: int = 50) -> list[dict]:
-    rows = (await session.execute(
-        text(
-            """
+    rows = (
+        (
+            await session.execute(
+                text(
+                    """
             SELECT dp.id, dp.task_id, t.task_key, t.title, dp.kind, dp.severity,
                    dp.proposed_action, dp.payload, dp.status, dp.created_at
             FROM decision_points dp
@@ -351,13 +400,18 @@ async def list_open_decisions(session: AsyncSession, *, limit: int = 50) -> list
             ORDER BY dp.created_at DESC
             LIMIT :lim
             """
-        ),
-        {"lim": limit},
-    )).mappings().fetchall()
+                ),
+                {"lim": limit},
+            )
+        )
+        .mappings()
+        .fetchall()
+    )
     return [dict(r) for r in rows]
 
 
 # ─── prompt block (taught to the agent, settings-gated by the caller) ────────
+
 
 def render_gate_prompt_block() -> list[str]:
     """Lines teaching the agent to gate side-effecting actions. Injected into
@@ -370,11 +424,11 @@ def render_gate_prompt_block() -> list[str]:
         "or is irreversible (deletes data, transfers a deed), you MUST first ask",
         "for approval via the gate endpoint and then STOP if it blocks:",
         "    curl -s -X POST \\",
-        "      \"$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/gate\" \\",
+        '      "$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/gate" \\',
         "      -H 'content-type: application/json' \\",
-        "      -d '{\"action\":\"<concise description incl. recipient/amount/url>\"}'",
-        "If the response is {\"decision\":\"blocked\"}: do NOT perform the action.",
+        '      -d \'{"action":"<concise description incl. recipient/amount/url>"}\'',
+        'If the response is {"decision":"blocked"}: do NOT perform the action.',
         "End your turn — you will be resumed automatically once a human approves,",
-        "with the decision delivered to your inbox. If {\"decision\":\"allow\"},",
+        'with the decision delivered to your inbox. If {"decision":"allow"},',
         "proceed normally. Gathering, drafting, and analysis never need a gate.",
     ]

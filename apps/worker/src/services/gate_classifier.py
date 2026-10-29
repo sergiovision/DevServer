@@ -35,15 +35,15 @@ BLOCKING_KINDS = frozenset(
 
 @dataclass
 class GateClass:
-    kind: str        # one of the decision_points.kind values
-    severity: str    # 'blocking' | 'non_blocking'
-    hint: str        # short human-readable explanation of why
+    kind: str  # one of the decision_points.kind values
+    severity: str  # 'blocking' | 'non_blocking'
+    hint: str  # short human-readable explanation of why
     matched: str = ""  # the rule key that matched (for logging/telemetry)
 
 
 @dataclass
 class _Rule:
-    key: str          # decision_points.kind to assign
+    key: str  # decision_points.kind to assign
     pattern: re.Pattern[str]
     hint: str
 
@@ -56,53 +56,88 @@ class _Rule:
 
 _BLOCKING_RULES: list[_Rule] = [
     # ─── spend money ───
-    _Rule("spend_money",
-          re.compile(r"\b(pay|payment|purchase|buy|checkout|charge|wire|"
-                     r"transfer\s+(?:money|funds)|invoice|subscribe|"
-                     r"ad\s*spend|budget|deposit|refund|payout)\b", re.I),
-          "Spends money or moves funds."),
-    _Rule("spend_money",
-          re.compile(r"\b(stripe|paypal|credit\s*card|bank\s*account|crypto|"
-                     r"\$\d|usd\s*\d|wire\s*transfer)\b", re.I),
-          "Touches a payment instrument or amount."),
-
+    _Rule(
+        "spend_money",
+        re.compile(
+            r"\b(pay|payment|purchase|buy|checkout|charge|wire|"
+            r"transfer\s+(?:money|funds)|invoice|subscribe|"
+            r"ad\s*spend|budget|deposit|refund|payout)\b",
+            re.I,
+        ),
+        "Spends money or moves funds.",
+    ),
+    _Rule(
+        "spend_money",
+        re.compile(
+            r"\b(stripe|paypal|credit\s*card|bank\s*account|crypto|"
+            r"\$\d|usd\s*\d|wire\s*transfer)\b",
+            re.I,
+        ),
+        "Touches a payment instrument or amount.",
+    ),
     # ─── send a message externally ───
-    _Rule("send_message",
-          re.compile(r"\b(send|submit|post|dm|reply|respond)\b.{0,40}\b"
-                     r"(email|e-mail|message|application|cover\s*letter|"
-                     r"outreach|connection\s*request|sms|text|dm)\b", re.I),
-          "Sends an external message / submits an application."),
-    _Rule("send_message",
-          re.compile(r"\b(smtp|sendgrid|mailgun|twilio|gmail\s*api|"
-                     r"slack\s*webhook|telegram\s*send|linkedin\s*(?:message|connect))\b", re.I),
-          "Uses an external messaging/outreach channel."),
-
+    _Rule(
+        "send_message",
+        re.compile(
+            r"\b(send|submit|post|dm|reply|respond)\b.{0,40}\b"
+            r"(email|e-mail|message|application|cover\s*letter|"
+            r"outreach|connection\s*request|sms|text|dm)\b",
+            re.I,
+        ),
+        "Sends an external message / submits an application.",
+    ),
+    _Rule(
+        "send_message",
+        re.compile(
+            r"\b(smtp|sendgrid|mailgun|twilio|gmail\s*api|"
+            r"slack\s*webhook|telegram\s*send|linkedin\s*(?:message|connect))\b",
+            re.I,
+        ),
+        "Uses an external messaging/outreach channel.",
+    ),
     # ─── publish ───
-    _Rule("publish",
-          re.compile(r"\b(publish|go\s*live|deploy\s*to\s*prod|release|"
-                     r"merge\s+(?:the\s+)?pr|launch\s+campaign|schedule\s+post|"
-                     r"make\s+public)\b", re.I),
-          "Publishes or makes content/changes public."),
-
+    _Rule(
+        "publish",
+        re.compile(
+            r"\b(publish|go\s*live|deploy\s*to\s*prod|release|"
+            r"merge\s+(?:the\s+)?pr|launch\s+campaign|schedule\s+post|"
+            r"make\s+public)\b",
+            re.I,
+        ),
+        "Publishes or makes content/changes public.",
+    ),
     # ─── clinical ───
-    _Rule("clinical",
-          re.compile(r"\b(dose|dosage|prescri|diagnos|treatment\s+plan|"
-                     r"medication|supplement\s+regimen|mg\b|titrat)\b", re.I),
-          "Makes a medical/clinical decision — must defer to a clinician."),
-
+    _Rule(
+        "clinical",
+        re.compile(
+            r"\b(dose|dosage|prescri|diagnos|treatment\s+plan|"
+            r"medication|supplement\s+regimen|mg\b|titrat)\b",
+            re.I,
+        ),
+        "Makes a medical/clinical decision — must defer to a clinician.",
+    ),
     # ─── legal ───
-    _Rule("legal",
-          re.compile(r"\b(sign\b|signature|contract|power\s*of\s*attorney|"
-                     r"legal\s*filing|notarize|deed|settlement\s+agreement|"
-                     r"e-?sign)\b", re.I),
-          "Signs or commits to a legal instrument."),
-
+    _Rule(
+        "legal",
+        re.compile(
+            r"\b(sign\b|signature|contract|power\s*of\s*attorney|"
+            r"legal\s*filing|notarize|deed|settlement\s+agreement|"
+            r"e-?sign)\b",
+            re.I,
+        ),
+        "Signs or commits to a legal instrument.",
+    ),
     # ─── irreversible ───
-    _Rule("irreversible",
-          re.compile(r"\b(rm\s+-rf|drop\s+(?:table|database)|delete\s+"
-                     r"(?:all|production|the\s+repo|account)|force\s*push|"
-                     r"truncate\b|deed\s*transfer|wipe|destroy)\b", re.I),
-          "Irreversible deletion / destructive action."),
+    _Rule(
+        "irreversible",
+        re.compile(
+            r"\b(rm\s+-rf|drop\s+(?:table|database)|delete\s+"
+            r"(?:all|production|the\s+repo|account)|force\s*push|"
+            r"truncate\b|deed\s*transfer|wipe|destroy)\b",
+            re.I,
+        ),
+        "Irreversible deletion / destructive action.",
+    ),
 ]
 
 # Clearly safe, non-blocking actions. If one of these matches AND no blocking
@@ -124,24 +159,32 @@ def classify(action: str) -> GateClass:
     text = (action or "").strip()
     if not text:
         # No description ⇒ we cannot reason about it ⇒ fail safe.
-        return GateClass("ambiguous", "blocking",
-                         "Empty action description — blocking as a fail-safe.",
-                         matched="empty")
+        return GateClass(
+            "ambiguous",
+            "blocking",
+            "Empty action description — blocking as a fail-safe.",
+            matched="empty",
+        )
 
     for rule in _BLOCKING_RULES:
         if rule.pattern.search(text):
             return GateClass(rule.key, "blocking", rule.hint, matched=rule.key)
 
     if _NON_BLOCKING.search(text):
-        return GateClass("ambiguous", "non_blocking",
-                         "Recognised as a read/draft/analysis action.",
-                         matched="allow_list")
+        return GateClass(
+            "ambiguous",
+            "non_blocking",
+            "Recognised as a read/draft/analysis action.",
+            matched="allow_list",
+        )
 
     # Matched nothing → ambiguous → blocking (fail-safe).
-    return GateClass("ambiguous", "blocking",
-                     "Unrecognised action — blocking as a fail-safe; "
-                     "approve if it is a safe read/draft action.",
-                     matched="default")
+    return GateClass(
+        "ambiguous",
+        "blocking",
+        "Unrecognised action — blocking as a fail-safe; approve if it is a safe read/draft action.",
+        matched="default",
+    )
 
 
 _LLM_PROMPT = """You are a safety gate for an autonomous agent. Decide whether \
@@ -178,8 +221,12 @@ async def classify_with_llm(action: str, *, vendor: str, model: str) -> GateClas
 
     try:
         raw = await llm_client.complete(
-            vendor=vendor, model=model, prompt=_LLM_PROMPT.format(action=action[:2000]),
-            max_tokens=256, timeout=45, json_mode=True,
+            vendor=vendor,
+            model=model,
+            prompt=_LLM_PROMPT.format(action=action[:2000]),
+            max_tokens=256,
+            timeout=45,
+            json_mode=True,
         )
         cleaned = raw.strip()
         m = re.search(r"\{.*\}", cleaned, re.DOTALL)

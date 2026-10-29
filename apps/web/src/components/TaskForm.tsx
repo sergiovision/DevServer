@@ -19,11 +19,13 @@ import {
 } from '@coreui/react-pro';
 import type { Repo, Task, TaskTemplate, GitFlow, AgentVendor, TaskType } from '@/lib/types';
 import {
-  AGENT_VENDORS,
-  defaultModelForVendor,
-  fillVendorLabel,
-  modelsForVendor,
+  defaultModelFor,
+  modelAfterVendorChange,
+  pickerModels,
+  vendorLabel,
+  vendorOptions,
 } from '@/lib/agent-vendors';
+import { useAgentRegistry } from '@/lib/use-agent-registry';
 import { TASK_TYPES, DEFAULT_TASK_TYPE, taskTypeEntry } from '@/lib/task-types';
 import { MaxTurnsInput } from '@/components/MaxTurnsInput';
 import { VendorModelPicker } from '@/components/VendorModelPicker';
@@ -58,6 +60,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
   const isEdit = !!task;
   const ideaId = !isEdit ? searchParams.get('ideaId') : null;
   const prefillDescription = !isEdit ? searchParams.get('description') : null;
+  const agentRegistry = useAgentRegistry();
 
   const [formData, setFormData] = useState({
     repo_id: task?.repo_id?.toString() || '',
@@ -75,11 +78,11 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     ),
     claude_mode: task?.claude_mode || 'max',
     agent_vendor: (task?.agent_vendor || 'anthropic') as AgentVendor,
-    claude_model:
-      task?.claude_model ||
-      defaultModelForVendor((task?.agent_vendor || 'anthropic') as AgentVendor),
+    // A new task's models are filled with the vendor defaults once the
+    // agent registry has loaded (see the effect below).
+    claude_model: task?.claude_model || '',
     backup_vendor: (task?.backup_vendor || 'anthropic') as AgentVendor,
-    backup_model: task?.backup_model || 'claude-sonnet-4-6',
+    backup_model: task?.backup_model || '',
     max_turns: (task?.max_turns ?? 50) as number | null,
     skip_verify: task?.skip_verify ?? true,
   });
@@ -118,6 +121,18 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // New tasks start on the vendors' default models. The registry arrives
+  // asynchronously, so fill the defaults in once — and only into fields the
+  // user has not typed into yet.
+  useEffect(() => {
+    if (isEdit || !agentRegistry) return;
+    setFormData((prev) => ({
+      ...prev,
+      claude_model: prev.claude_model || defaultModelFor(agentRegistry, prev.agent_vendor),
+      backup_model: prev.backup_model || defaultModelFor(agentRegistry, prev.backup_vendor),
+    }));
+  }, [isEdit, agentRegistry]);
 
   // Fetch the configured System LLM vendor so the Fill Task button can show
   // "Filling with Claude…" / "Filling with Google…" etc. Settings values are
@@ -208,18 +223,11 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
   // default unless the current model string already belongs to the new
   // vendor's suggested list (i.e. the user typed something valid for both).
   const handleVendorChange = (next: AgentVendor) => {
-    setFormData((prev) => {
-      const belongsToNextVendor = modelsForVendor(next).some(
-        (m) => m.id === prev.claude_model,
-      );
-      return {
-        ...prev,
-        agent_vendor: next,
-        claude_model: belongsToNextVendor
-          ? prev.claude_model
-          : defaultModelForVendor(next),
-      };
-    });
+    setFormData((prev) => ({
+      ...prev,
+      agent_vendor: next,
+      claude_model: modelAfterVendorChange(agentRegistry, next, prev.claude_model),
+    }));
   };
 
   const handleFillTask = async () => {
@@ -458,7 +466,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
                 disabled={filling || !formData.description.trim()}
                 onClick={handleFillTask}
               >
-                {filling ? `Filling with ${fillVendorLabel(systemVendor)}...` : 'Fill Task'}
+                {filling ? `Filling with ${vendorLabel(agentRegistry, systemVendor)}...` : 'Fill Task'}
               </CButton>
               {fillError && (
                 <span className="text-danger small">{fillError}</span>
@@ -560,7 +568,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
                 value={formData.agent_vendor}
                 onChange={(e) => handleVendorChange(e.target.value as AgentVendor)}
               >
-                {AGENT_VENDORS.map((v) => (
+                {vendorOptions(agentRegistry, formData.agent_vendor).map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.label}
                   </option>
@@ -589,7 +597,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
                 autoComplete="off"
               />
               <datalist id={`task-model-datalist-${formData.agent_vendor}`}>
-                {modelsForVendor(formData.agent_vendor).map((m) => (
+                {pickerModels(agentRegistry, formData.agent_vendor).map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}
                   </option>
@@ -603,16 +611,11 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
             <VendorModelPicker
               vendor={formData.backup_vendor}
               model={formData.backup_model}
-              onVendorChange={(v) => setFormData((prev) => ({
-                ...prev,
-                backup_vendor: v,
-                backup_model: modelsForVendor(v).some((m) => m.id === prev.backup_model)
-                  ? prev.backup_model
-                  : defaultModelForVendor(v),
-              }))}
+              // The picker itself moves the model to the new vendor's default.
+              onVendorChange={(v) => setFormData((prev) => ({ ...prev, backup_vendor: v }))}
               onModelChange={(m) => setFormData((prev) => ({ ...prev, backup_model: m }))}
               modelLabel="Backup Model"
-              modelPlaceholder="Auto-fallback model (default: claude-sonnet-4-6)"
+              modelPlaceholder="Blank = retry with the primary model"
               vendorName="backup_vendor"
               modelName="backup_model"
             />

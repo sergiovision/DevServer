@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
-import { enqueueTask } from '@/lib/queue';
+import { enqueueStoredTask } from '@/lib/tasks';
 import { apiErrorResponse } from '@/lib/api-errors';
+import type { Task } from '@/lib/types';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -12,7 +13,7 @@ export async function POST(_request: NextRequest, context: RouteContext) {
   const taskId = parseInt(id);
 
   try {
-    const taskResult = await query(
+    const taskResult = await query<Task>(
       `SELECT t.*, r.name as repo_name FROM tasks t
        LEFT JOIN repos r ON r.id = t.repo_id
        WHERE t.id = $1`,
@@ -32,22 +33,7 @@ export async function POST(_request: NextRequest, context: RouteContext) {
       );
     }
 
-    const jobId = await enqueueTask({
-      taskId: task.id,
-      repoId: task.repo_id,
-      taskKey: task.task_key,
-      title: task.title,
-      priority: task.priority,
-      mode: task.mode,
-      claudeMode: task.claude_mode,
-      maxTurns: task.max_turns ?? null,
-      gitFlow: task.git_flow ?? 'branch',
-    });
-
-    await query(
-      `UPDATE tasks SET status = 'queued', queue_job_id = $1, updated_at = NOW() WHERE id = $2`,
-      [jobId, taskId],
-    );
+    const jobId = await enqueueStoredTask(task);
 
     return NextResponse.json({ success: true, jobId });
   } catch (err) {

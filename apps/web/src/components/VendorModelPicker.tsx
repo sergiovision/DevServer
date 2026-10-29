@@ -1,16 +1,17 @@
 /**
- * VendorModelPicker — two linked comboboxes (vendor + model) for the
+ * VendorModelPicker — two linked controls (vendor + model) for the
  * AgentBackend abstraction.
  *
- * Left combobox: hard select of the vendor (Anthropic / Google / OpenAI /
- * Qwen). Right combobox: free-text input with a datalist populated from
- * the selected vendor's models, so users can either pick a suggested
- * model or type a custom one (useful for pinned / dated model names like
- * ``claude-haiku-4-5-20251001``).
+ * Left: a select of the vendors the worker's registry knows. Right: a
+ * free-text input with a datalist of that vendor's current models, so users
+ * can pick a suggestion or type any id (a pinned/dated model, or one that has
+ * since been deprecated and is therefore no longer suggested).
  *
- * Changing the vendor resets the model to the vendor's default model,
- * unless the current model string already belongs to the new vendor's
- * list (in that case we leave it alone).
+ * Changing the vendor resets the model to the new vendor's default, unless
+ * the current model id is also registered under the new vendor.
+ *
+ * While the registry is loading the controls still render the stored values;
+ * the vendor list and suggestions fill in once it arrives.
  */
 'use client';
 
@@ -18,10 +19,11 @@ import React, { useCallback } from 'react';
 import { CFormInput, CFormSelect } from '@coreui/react-pro';
 import type { AgentVendor } from '@/lib/types';
 import {
-  AGENT_VENDORS,
-  defaultModelForVendor,
-  modelsForVendor,
+  modelAfterVendorChange,
+  pickerModels,
+  vendorOptions,
 } from '@/lib/agent-vendors';
+import { useAgentRegistry } from '@/lib/use-agent-registry';
 
 interface VendorModelPickerProps {
   vendor: AgentVendor;
@@ -50,22 +52,20 @@ export function VendorModelPicker({
   modelName = 'claude_model',
   disabled,
 }: VendorModelPickerProps) {
-  const modelList = modelsForVendor(vendor);
+  const registry = useAgentRegistry();
+  const modelList = pickerModels(registry, vendor);
   const datalistId = `${modelName}-${vendor}-datalist`;
 
   const handleVendorChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
       const next = e.target.value as AgentVendor;
       onVendorChange(next);
-      // If the current model string doesn't belong to the new vendor's
-      // suggested list, reset it to the new default. Preserves user input
-      // if they typed a custom string that happens to be valid for both.
-      const belongsToNextVendor = modelsForVendor(next).some((m) => m.id === model);
-      if (!belongsToNextVendor) {
-        onModelChange(defaultModelForVendor(next));
+      const nextModel = modelAfterVendorChange(registry, next, model);
+      if (nextModel !== model) {
+        onModelChange(nextModel);
       }
     },
-    [model, onVendorChange, onModelChange],
+    [registry, model, onVendorChange, onModelChange],
   );
 
   return (
@@ -78,7 +78,7 @@ export function VendorModelPicker({
           onChange={handleVendorChange}
           disabled={disabled}
         >
-          {AGENT_VENDORS.map((v) => (
+          {vendorOptions(registry, vendor).map((v) => (
             <option key={v.id} value={v.id}>
               {v.label}
             </option>

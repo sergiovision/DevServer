@@ -16,9 +16,8 @@ that the Ask Agent panel understands:
     {"type": "error",          "message", "retryable"}
     {"type": "done",           "stop_reason", "text", "session_id", "awaiting"}
 
-The agentic (CLI + MCP) path in ``services.pro.assistant_agent`` emits the
-*same* dicts, so the browser has exactly one ``JSON.parse`` branch and one
-renderer regardless of which engine answered.
+Every vendor emits the *same* dicts, so the browser has exactly one
+``JSON.parse`` branch and one renderer regardless of who answered.
 
 Generators here never raise for a vendor-side failure — they yield an ``error``
 event and stop. A dead stream in a chat panel must still say why.
@@ -28,7 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import httpx
 
@@ -36,7 +35,7 @@ from services.llm_client import _BUILDERS, ChatMessage, resolve_api_key
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["stream_chat", "NormEvent", "AnthropicDeltaTracker"]
+__all__ = ["AnthropicDeltaTracker", "NormEvent", "stream_chat"]
 
 NormEvent = dict
 
@@ -46,6 +45,7 @@ _RETRYABLE = {408, 429, 500, 502, 503, 504, 529}
 
 
 # ── SSE frame reassembly ─────────────────────────────────────────────────────
+
 
 async def _iter_sse(resp: httpx.Response) -> AsyncIterator[tuple[str | None, str]]:
     """Yield ``(event_name, data)`` per blank-line-delimited SSE frame.
@@ -79,7 +79,7 @@ async def _iter_sse(resp: httpx.Response) -> AsyncIterator[tuple[str | None, str
 def _loads(payload: str) -> dict | None:
     try:
         obj = json.loads(payload)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
     return obj if isinstance(obj, dict) else None
 
@@ -90,14 +90,14 @@ def _loads(payload: str) -> dict | None:
 # running copy of the full text, so the terminal ``done`` always carries the
 # complete answer even when the consumer dropped deltas.
 
+
 class AnthropicDeltaTracker:
     """Turns raw Anthropic streaming events into normalised events.
 
     Split out of the HTTP translator because the Claude Code CLI's
     ``stream-json`` output wraps these *exact same* events in
-    ``{"type":"stream_event","event":{…}}`` lines. The agentic path in
-    ``services.pro.assistant_agent`` feeds them through here rather than owning
-    a second, divergent copy of the tool-JSON reassembly logic.
+    ``{"type":"stream_event","event":{…}}`` lines, so a CLI-based caller can
+    reuse this tracker instead of a second copy of the tool-JSON reassembly.
 
     Stateful across a whole response: partial ``input_json_delta`` fragments are
     buffered per block index and emitted as one complete ``tool_call`` when the
@@ -150,16 +150,16 @@ class AnthropicDeltaTracker:
         elif kind == "content_block_stop":
             blk = self.blocks.pop(data.get("index", 0), None)
             if blk and blk.get("type") == "tool_use":
-                out.append({
-                    "type": "tool_call",
-                    "id": blk.get("id", ""),
-                    "name": blk.get("name", ""),
-                    "input": _loads(blk.get("json_buf") or "{}") or {},
-                })
+                out.append(
+                    {
+                        "type": "tool_call",
+                        "id": blk.get("id", ""),
+                        "name": blk.get("name", ""),
+                        "input": _loads(blk.get("json_buf") or "{}") or {},
+                    }
+                )
         elif kind == "message_delta":
-            self.stop_reason = (
-                (data.get("delta") or {}).get("stop_reason") or self.stop_reason
-            )
+            self.stop_reason = (data.get("delta") or {}).get("stop_reason") or self.stop_reason
             u = data.get("usage") or {}
             if u.get("output_tokens"):
                 self.usage["output_tokens"] += u["output_tokens"]
@@ -316,6 +316,7 @@ _TRANSLATORS = {
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
+
 async def stream_chat(
     *,
     vendor: str,
@@ -338,8 +339,11 @@ async def stream_chat(
     """
     translator = _TRANSLATORS.get(vendor)
     if translator is None:
-        yield {"type": "error", "message": f"Unknown system LLM vendor: {vendor!r}",
-               "retryable": False}
+        yield {
+            "type": "error",
+            "message": f"Unknown system LLM vendor: {vendor!r}",
+            "retryable": False,
+        }
         return
     try:
         api_key = resolve_api_key(vendor)
@@ -348,32 +352,36 @@ async def stream_chat(
         return
 
     url, headers, body = _BUILDERS[vendor](
-        api_key, model, messages, max_tokens, False,
-        system=system, stream=True, tools=tools,
+        api_key,
+        model,
+        messages,
+        max_tokens,
+        False,
+        system=system,
+        stream=True,
+        tools=tools,
     )
 
     yield {"type": "start", "vendor": vendor, "model": model, "transport": "http"}
-    logger.info(
-        "Assistant stream: vendor=%s model=%s turns=%d", vendor, model, len(messages)
-    )
+    logger.info("Assistant stream: vendor=%s model=%s turns=%d", vendor, model, len(messages))
 
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout, connect=10.0)
-        ) as client:
-            async with client.stream("POST", url, headers=headers, json=body) as resp:
-                if resp.status_code != 200:
-                    # Inside client.stream(), resp.text raises ResponseNotRead —
-                    # the body has to be pulled explicitly first.
-                    detail = (await resp.aread()).decode(errors="replace")[:500]
-                    yield {
-                        "type": "error",
-                        "message": f"{vendor} API error {resp.status_code}: {detail}",
-                        "retryable": resp.status_code in _RETRYABLE,
-                    }
-                    return
-                async for event in translator(_iter_sse(resp)):
-                    yield event
+        async with (
+            httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client,
+            client.stream("POST", url, headers=headers, json=body) as resp,
+        ):
+            if resp.status_code != 200:
+                # Inside client.stream(), resp.text raises ResponseNotRead —
+                # the body has to be pulled explicitly first.
+                detail = (await resp.aread()).decode(errors="replace")[:500]
+                yield {
+                    "type": "error",
+                    "message": f"{vendor} API error {resp.status_code}: {detail}",
+                    "retryable": resp.status_code in _RETRYABLE,
+                }
+                return
+            async for event in translator(_iter_sse(resp)):
+                yield event
     except httpx.HTTPError as exc:
         logger.warning("Assistant stream transport failure (%s): %s", vendor, exc)
         yield {

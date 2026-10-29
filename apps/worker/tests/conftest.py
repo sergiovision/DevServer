@@ -1,6 +1,5 @@
 """Shared test fixtures for the DevServer worker test suite."""
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 

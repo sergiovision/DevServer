@@ -36,7 +36,9 @@ async def main():
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    logger.info("DevServer standalone worker starting (concurrency=%d)...", settings.worker_concurrency)
+    logger.info(
+        "DevServer standalone worker starting (concurrency=%d)...", settings.worker_concurrency
+    )
     await start_consumer()
     logger.info("Worker ready. Waiting for jobs...")
 

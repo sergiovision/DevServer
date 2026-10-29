@@ -23,13 +23,13 @@ class ImportDraft:
     """A source document normalised for import — what the UI previews and
     what the web layer persists as a Task description / Idea content."""
 
-    source: str                    # source name, e.g. 'confluence'
-    external_id: str               # source-native document id
-    external_rev: str              # revision marker (Confluence version number)
+    source: str  # source name, e.g. 'confluence'
+    external_id: str  # source-native document id
+    external_rev: str  # revision marker (Confluence version number)
     title: str
-    markdown: str                  # body converted to Markdown
-    scope: str = ""                # container the doc lives in (space key)
-    source_url: str = ""           # human-clickable link back to the source
+    markdown: str  # body converted to Markdown
+    scope: str = ""  # container the doc lives in (space key)
+    source_url: str = ""  # human-clickable link back to the source
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -87,7 +87,7 @@ class ImportSource(ABC):
         try:
             await self.list_scopes(repo=repo)
             return {"ok": True}
-        except Exception as exc:  # noqa: BLE001 — verdict, not crash
+        except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
 

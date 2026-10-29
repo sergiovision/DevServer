@@ -25,69 +25,309 @@ _ENV_PATH = Path(config._ENV_PATH).resolve()
 
 ENV_SCHEMA: list[dict] = [
     # Paths
-    {"key": "DEVSERVER_ROOT", "group": "Paths", "label": "DevServer Root", "type": "path", "secret": False},
-    {"key": "WORKTREE_DIR", "group": "Paths", "label": "Worktree Directory", "type": "path", "secret": False},
+    {
+        "key": "DEVSERVER_ROOT",
+        "group": "Paths",
+        "label": "DevServer Root",
+        "type": "path",
+        "secret": False,
+    },
+    {
+        "key": "WORKTREE_DIR",
+        "group": "Paths",
+        "label": "Worktree Directory",
+        "type": "path",
+        "secret": False,
+    },
     {"key": "LOG_DIR", "group": "Paths", "label": "Log Directory", "type": "path", "secret": False},
     # PostgreSQL
-    {"key": "DATABASE_URL", "group": "PostgreSQL", "label": "Database URL", "type": "string", "secret": True, "restart": True},
-    {"key": "PGHOST", "group": "PostgreSQL", "label": "Host", "type": "string", "secret": False, "restart": True},
-    {"key": "PGPORT", "group": "PostgreSQL", "label": "Port", "type": "number", "secret": False, "restart": True},
-    {"key": "PGUSER", "group": "PostgreSQL", "label": "User", "type": "string", "secret": False, "restart": True},
-    {"key": "PGPASSWORD", "group": "PostgreSQL", "label": "Password", "type": "string", "secret": True, "restart": True},
-    {"key": "PGDATABASE", "group": "PostgreSQL", "label": "Database", "type": "string", "secret": False, "restart": True},
+    {
+        "key": "DATABASE_URL",
+        "group": "PostgreSQL",
+        "label": "Database URL",
+        "type": "string",
+        "secret": True,
+        "restart": True,
+    },
+    {
+        "key": "PGHOST",
+        "group": "PostgreSQL",
+        "label": "Host",
+        "type": "string",
+        "secret": False,
+        "restart": True,
+    },
+    {
+        "key": "PGPORT",
+        "group": "PostgreSQL",
+        "label": "Port",
+        "type": "number",
+        "secret": False,
+        "restart": True,
+    },
+    {
+        "key": "PGUSER",
+        "group": "PostgreSQL",
+        "label": "User",
+        "type": "string",
+        "secret": False,
+        "restart": True,
+    },
+    {
+        "key": "PGPASSWORD",
+        "group": "PostgreSQL",
+        "label": "Password",
+        "type": "string",
+        "secret": True,
+        "restart": True,
+    },
+    {
+        "key": "PGDATABASE",
+        "group": "PostgreSQL",
+        "label": "Database",
+        "type": "string",
+        "secret": False,
+        "restart": True,
+    },
     # Docker-only topology hint, consumed by the lifecycle scripts (_lib.sh).
     # "1" = use a PostgreSQL outside the bundled container (host OS / external).
-    {"key": "DEVSERVER_HOST_DB", "group": "PostgreSQL", "label": "Use non-bundled DB (docker)", "type": "boolean", "secret": False, "restart": True},
+    {
+        "key": "DEVSERVER_HOST_DB",
+        "group": "PostgreSQL",
+        "label": "Use non-bundled DB (docker)",
+        "type": "boolean",
+        "secret": False,
+        "restart": True,
+    },
     # Container-perspective DB host/port (docker only). The web/worker CONTAINERS
     # use these to reach Postgres; they differ from the host-side PG* above.
     # Managed automatically by the Database card. Default: postgres:5432 (bundled).
-    {"key": "PGHOST_CONTAINER", "group": "PostgreSQL", "label": "Container DB host (docker)", "type": "string", "secret": False, "restart": True},
-    {"key": "PGPORT_CONTAINER", "group": "PostgreSQL", "label": "Container DB port (docker)", "type": "number", "secret": False, "restart": True},
+    {
+        "key": "PGHOST_CONTAINER",
+        "group": "PostgreSQL",
+        "label": "Container DB host (docker)",
+        "type": "string",
+        "secret": False,
+        "restart": True,
+    },
+    {
+        "key": "PGPORT_CONTAINER",
+        "group": "PostgreSQL",
+        "label": "Container DB port (docker)",
+        "type": "number",
+        "secret": False,
+        "restart": True,
+    },
     # Git
-    {"key": "GIT_SSL_NO_VERIFY", "group": "Git", "label": "SSL No Verify", "type": "boolean", "secret": False},
-    {"key": "GIT_USER_EMAIL", "group": "Git", "label": "User Email", "type": "string", "secret": False},
-    {"key": "GIT_USER_NAME", "group": "Git", "label": "User Name", "type": "string", "secret": False},
+    {
+        "key": "GIT_SSL_NO_VERIFY",
+        "group": "Git",
+        "label": "SSL No Verify",
+        "type": "boolean",
+        "secret": False,
+    },
+    {
+        "key": "GIT_USER_EMAIL",
+        "group": "Git",
+        "label": "User Email",
+        "type": "string",
+        "secret": False,
+    },
+    {
+        "key": "GIT_USER_NAME",
+        "group": "Git",
+        "label": "User Name",
+        "type": "string",
+        "secret": False,
+    },
     # Gitea
     {"key": "GITEA_URL", "group": "Gitea", "label": "URL", "type": "url", "secret": False},
     {"key": "GITEA_OWNER", "group": "Gitea", "label": "Owner", "type": "string", "secret": False},
-    {"key": "GITEA_TOKEN", "group": "Gitea", "label": "Access Token", "type": "string", "secret": True},
+    {
+        "key": "GITEA_TOKEN",
+        "group": "Gitea",
+        "label": "Access Token",
+        "type": "string",
+        "secret": True,
+    },
     # Telegram
-    {"key": "TELEGRAM_BOT_TOKEN", "group": "Telegram", "label": "Bot Token", "type": "string", "secret": True},
-    {"key": "TELEGRAM_CHAT_ID", "group": "Telegram", "label": "Chat ID", "type": "string", "secret": False},
+    {
+        "key": "TELEGRAM_BOT_TOKEN",
+        "group": "Telegram",
+        "label": "Bot Token",
+        "type": "string",
+        "secret": True,
+    },
+    {
+        "key": "TELEGRAM_CHAT_ID",
+        "group": "Telegram",
+        "label": "Chat ID",
+        "type": "string",
+        "secret": False,
+    },
     # Anthropic
-    {"key": "ANTHROPIC_API_KEY", "group": "Anthropic", "label": "API Key", "type": "string", "secret": True},
-    {"key": "CLAUDE_BIN", "group": "Anthropic", "label": "CLI Binary", "type": "string", "secret": False},
-    {"key": "CLAUDE_MAX_TIMEOUT", "group": "Anthropic", "label": "Max Timeout (s)", "type": "number", "secret": False},
-    {"key": "CLAUDE_ACTIVITY_TIMEOUT", "group": "Anthropic", "label": "Activity Timeout (s)", "type": "number", "secret": False},
+    {
+        "key": "ANTHROPIC_API_KEY",
+        "group": "Anthropic",
+        "label": "API Key",
+        "type": "string",
+        "secret": True,
+    },
+    {
+        "key": "CLAUDE_BIN",
+        "group": "Anthropic",
+        "label": "CLI Binary",
+        "type": "string",
+        "secret": False,
+    },
+    {
+        "key": "CLAUDE_MAX_TIMEOUT",
+        "group": "Anthropic",
+        "label": "Max Timeout (s)",
+        "type": "number",
+        "secret": False,
+    },
+    {
+        "key": "CLAUDE_ACTIVITY_TIMEOUT",
+        "group": "Anthropic",
+        "label": "Activity Timeout (s)",
+        "type": "number",
+        "secret": False,
+    },
     # OpenAI
-    {"key": "OPENAI_API_KEY", "group": "OpenAI", "label": "API Key", "type": "string", "secret": True},
-    {"key": "CODEX_BIN", "group": "OpenAI", "label": "Codex Binary", "type": "string", "secret": False},
-    {"key": "OPENAI_BASE_URL", "group": "OpenAI", "label": "Base URL (Azure Foundry / proxy)", "type": "url", "secret": False},
-    {"key": "OPENAI_API_VERSION", "group": "OpenAI", "label": "API Version (Azure only)", "type": "string", "secret": False},
+    {
+        "key": "OPENAI_API_KEY",
+        "group": "OpenAI",
+        "label": "API Key",
+        "type": "string",
+        "secret": True,
+    },
+    {
+        "key": "CODEX_BIN",
+        "group": "OpenAI",
+        "label": "Codex Binary",
+        "type": "string",
+        "secret": False,
+    },
+    {
+        "key": "OPENAI_BASE_URL",
+        "group": "OpenAI",
+        "label": "Base URL (Azure Foundry / proxy)",
+        "type": "url",
+        "secret": False,
+    },
+    {
+        "key": "OPENAI_API_VERSION",
+        "group": "OpenAI",
+        "label": "API Version (Azure only)",
+        "type": "string",
+        "secret": False,
+    },
     # Google (Antigravity CLI — Gemini CLI retired 2026-06-18)
-    {"key": "GEMINI_API_KEY", "group": "Google", "label": "Gemini API Key (also used by Antigravity in API mode)", "type": "string", "secret": True},
-    {"key": "ANTIGRAVITY_API_KEY", "group": "Google", "label": "Antigravity API Key (optional; defaults to Gemini key / OAuth)", "type": "string", "secret": True},
+    {
+        "key": "GEMINI_API_KEY",
+        "group": "Google",
+        "label": "Gemini API Key (also used by Antigravity in API mode)",
+        "type": "string",
+        "secret": True,
+    },
+    {
+        "key": "ANTIGRAVITY_API_KEY",
+        "group": "Google",
+        "label": "Antigravity API Key (optional; defaults to Gemini key / OAuth)",
+        "type": "string",
+        "secret": True,
+    },
     # GLM / Zhipu
-    {"key": "GLM_API_KEY", "group": "GLM / Zhipu", "label": "API Key", "type": "string", "secret": True},
+    {
+        "key": "GLM_API_KEY",
+        "group": "GLM / Zhipu",
+        "label": "API Key",
+        "type": "string",
+        "secret": True,
+    },
     # Confluence (external import source). Cloud: URL + email + API token.
     # Data Center: URL + Personal Access Token, username left blank.
-    {"key": "CONFLUENCE_URL", "group": "Confluence", "label": "Base URL", "type": "url", "secret": False},
-    {"key": "CONFLUENCE_USERNAME", "group": "Confluence", "label": "Username / Email (blank for PAT)", "type": "string", "secret": False},
-    {"key": "CONFLUENCE_API_TOKEN", "group": "Confluence", "label": "API Token / PAT", "type": "string", "secret": True},
+    {
+        "key": "CONFLUENCE_URL",
+        "group": "Confluence",
+        "label": "Base URL",
+        "type": "url",
+        "secret": False,
+    },
+    {
+        "key": "CONFLUENCE_USERNAME",
+        "group": "Confluence",
+        "label": "Username / Email (blank for PAT)",
+        "type": "string",
+        "secret": False,
+    },
+    {
+        "key": "CONFLUENCE_API_TOKEN",
+        "group": "Confluence",
+        "label": "API Token / PAT",
+        "type": "string",
+        "secret": True,
+    },
     # Web UI
-    {"key": "NEXT_PUBLIC_WS_URL", "group": "Web UI", "label": "WebSocket URL", "type": "url", "secret": False},
-    {"key": "NEXT_PUBLIC_API_URL", "group": "Web UI", "label": "API URL", "type": "url", "secret": False},
+    {
+        "key": "NEXT_PUBLIC_WS_URL",
+        "group": "Web UI",
+        "label": "WebSocket URL",
+        "type": "url",
+        "secret": False,
+    },
+    {
+        "key": "NEXT_PUBLIC_API_URL",
+        "group": "Web UI",
+        "label": "API URL",
+        "type": "url",
+        "secret": False,
+    },
     # Worker
-    {"key": "WORKER_HOST", "group": "Worker", "label": "Bind Host", "type": "string", "secret": False, "restart": True},
-    {"key": "WORKER_PORT", "group": "Worker", "label": "Port", "type": "number", "secret": False, "restart": True},
-    {"key": "WORKER_CONCURRENCY", "group": "Worker", "label": "Max Concurrency", "type": "number", "secret": False},
+    {
+        "key": "WORKER_HOST",
+        "group": "Worker",
+        "label": "Bind Host",
+        "type": "string",
+        "secret": False,
+        "restart": True,
+    },
+    {
+        "key": "WORKER_PORT",
+        "group": "Worker",
+        "label": "Port",
+        "type": "number",
+        "secret": False,
+        "restart": True,
+    },
+    {
+        "key": "WORKER_CONCURRENCY",
+        "group": "Worker",
+        "label": "Max Concurrency",
+        "type": "number",
+        "secret": False,
+    },
     # Other
-    {"key": "PREFLIGHT_IGNORE_PATTERNS", "group": "Other", "label": "Preflight Ignore Patterns", "type": "string", "secret": False},
-    {"key": "OBSIDIAN_FOLDER", "group": "Other", "label": "Obsidian Folder", "type": "path", "secret": False},
+    {
+        "key": "PREFLIGHT_IGNORE_PATTERNS",
+        "group": "Other",
+        "label": "Preflight Ignore Patterns",
+        "type": "string",
+        "secret": False,
+    },
+    {
+        "key": "OBSIDIAN_FOLDER",
+        "group": "Other",
+        "label": "Obsidian Folder",
+        "type": "path",
+        "secret": False,
+    },
 ]
 
 
 # ─── File I/O helpers ─────────────────────────────────────────────────────
+
 
 def _parse_env_file() -> dict[str, str]:
     """Parse .env file and return raw key-value pairs."""
@@ -148,6 +388,7 @@ def _write_env_file(updates: dict[str, str]) -> None:
 
 # ─── Endpoints ─────────────────────────────────────────────────────────────
 
+
 class EnvUpdateRequest(BaseModel):
     variables: dict[str, str]
 
@@ -176,11 +417,13 @@ async def get_env():
         env_value = os.environ.get(key, "")
         # An empty file entry is not a value — fall through to the environment.
         value = file_value or env_value
-        variables.append({
-            **schema,
-            "value": value,
-            "source": "file" if file_value else ("env" if env_value else ""),
-        })
+        variables.append(
+            {
+                **schema,
+                "value": value,
+                "source": "file" if file_value else ("env" if env_value else ""),
+            }
+        )
     return {
         "variables": variables,
         "env_path": str(_ENV_PATH),
@@ -239,6 +482,7 @@ class DbTestRequest(BaseModel):
     — it already computes it for ``PGHOST_CONTAINER`` — so it passes it along
     rather than making this endpoint re-derive the topology.
     """
+
     host: str | None = None
     port: int | None = None
     user: str | None = None
@@ -309,9 +553,12 @@ async def test_db(req: DbTestRequest):
             # ``postgresql+asyncpg://`` variant the worker uses internally.
             dsn = req.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
             return {"ok": True, "version": await _connect(dsn=dsn), "target": "DATABASE_URL"}
-        except asyncio.TimeoutError:
-            return {"ok": False, "error": "Connection timed out after 8s — check host/port and firewall."}
-        except Exception as e:  # noqa: BLE001 — surface any driver error verbatim
+        except TimeoutError:
+            return {
+                "ok": False,
+                "error": "Connection timed out after 8s — check host/port and firewall.",
+            }
+        except Exception as e:
             return {"ok": False, "error": str(e)}
 
     targets = _probe_targets(req)
@@ -326,12 +573,15 @@ async def test_db(req: DbTestRequest):
                 database=req.database or "devserver",
             )
             return {"ok": True, "version": version, "target": f"{host}:{port}"}
-        except asyncio.TimeoutError:
-            first_error = first_error or f"Connection to {host}:{port} timed out after 8s — check host/port and firewall."
+        except TimeoutError:
+            first_error = (
+                first_error
+                or f"Connection to {host}:{port} timed out after 8s — check host/port and firewall."
+            )
         except (OSError, asyncpg.CannotConnectNowError) as e:
             # Unreachable — worth trying the next vantage point.
             first_error = first_error or f"{e} (tried {host}:{port})"
-        except Exception as e:  # noqa: BLE001 — reached the server; it said no.
+        except Exception as e:
             # Authentication and "database does not exist" are answers, not
             # routing problems: another target would fail identically, and
             # retrying only buries the real message.
@@ -367,4 +617,4 @@ async def apply_env():
             "message": "Configuration reloaded. Settings marked 'requires restart' need a worker restart.",
         }
     except Exception as e:
-        raise HTTPException(500, f"Failed to reload config: {e}")
+        raise HTTPException(500, f"Failed to reload config: {e}") from e

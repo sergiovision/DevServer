@@ -1,138 +1,155 @@
 /**
- * Vendor + model registry for the AgentBackend abstraction.
+ * Agent vendor + model registry, as published by the worker.
  *
- * Mirrors ``apps/worker/src/services/agent_backends.py`` — whenever the
- * Python VENDOR_MODELS list changes, update this file to match. The UI
- * reads this (via ``VendorModelPicker``) to populate the two-step
- * "vendor → model" combobox on the task form.
+ * The worker's `services/agent_backends.py` is the only place a model id is
+ * written down — it is also what actually launches the vendor CLIs. The web
+ * app reads that registry from `GET /internal/agent-registry` instead of
+ * keeping a hand-copied list that would drift every time a vendor ships a
+ * model.
  *
- * We intentionally duplicate the list client-side instead of fetching it
- * from the worker: the dashboard renders before a WS round-trip and the
- * list is tiny. If the two sides ever drift, the Python side is the
- * authority (that's what actually runs the CLI).
+ * This module holds:
+ *   - the registry types,
+ *   - `fetchAgentRegistry()` for server code (route handlers, server pages),
+ *   - pure helpers that every picker uses to read the registry.
+ *
+ * Client components load the registry through `useAgentRegistry()` in
+ * `use-agent-registry.ts`. Every helper accepts `null` for "not loaded yet"
+ * so components can render immediately and fill in once the fetch resolves.
  */
 
-import type { AgentVendor } from './types';
+import { WORKER_URL } from './worker-url';
 
-export interface VendorModel {
+export interface RegistryModel {
+  id: string;
+  label: string;
+  is_default: boolean;
+  /** Still accepted when stored on a task, but no longer offered in pickers. */
+  deprecated: boolean;
+}
+
+export interface RegistryVendor {
+  label: string;
+  default_model: string;
+  models: RegistryModel[];
+}
+
+export interface AgentRegistry {
+  vendors: Record<string, RegistryVendor>;
+  default_vendor: string;
+  task_types: string[];
+  repo_required_types: string[];
+  git_flows: string[];
+  billing_modes: string[];
+  modes: string[];
+}
+
+/** One entry of a vendor `<select>`. */
+export interface VendorOption {
   id: string;
   label: string;
 }
 
-export interface VendorEntry {
-  id: AgentVendor;
-  label: string;
-  models: VendorModel[];
+// ─── Server-side loading ────────────────────────────────────────────────────
+
+/** The registry only changes when the worker is redeployed; a minute is plenty. */
+const REGISTRY_CACHE_TTL_MS = 60_000;
+const REGISTRY_FETCH_TIMEOUT_MS = 5_000;
+
+let cachedRegistry: { registry: AgentRegistry; fetchedAt: number } | null = null;
+
+/**
+ * Load the registry from the worker, cached in memory for a minute.
+ *
+ * Throws when the worker is unreachable and nothing is cached yet; callers
+ * decide whether that is fatal. A stale copy is preferred over an error so a
+ * worker restart does not blank every model picker in the dashboard.
+ */
+export async function fetchAgentRegistry(): Promise<AgentRegistry> {
+  const now = Date.now();
+  if (cachedRegistry && now - cachedRegistry.fetchedAt < REGISTRY_CACHE_TTL_MS) {
+    return cachedRegistry.registry;
+  }
+
+  try {
+    const res = await fetch(`${WORKER_URL}/internal/agent-registry`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(REGISTRY_FETCH_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      throw new Error(`worker returned ${res.status} for /internal/agent-registry`);
+    }
+    const registry = (await res.json()) as AgentRegistry;
+    cachedRegistry = { registry, fetchedAt: now };
+    return registry;
+  } catch (err) {
+    if (cachedRegistry) return cachedRegistry.registry;
+    throw err;
+  }
 }
 
-export const AGENT_VENDORS: VendorEntry[] = [
-  {
-    id: 'anthropic',
-    // Current Claude line (2026-10-08): Sonnet 5.5, Opus 5.5, Fable 5.1.
-    // `claude-mythos-5` is deliberately absent — Project Glasswing only.
-    label: 'Anthropic',
-    models: [
-      { id: 'claude-sonnet-5-5',            label: 'Claude Sonnet 5.5 (default, Max)' },
-      { id: 'claude-opus-5-5',              label: 'Claude Opus 5.5 (flagship — agentic coding, long-horizon)' },
-      { id: 'claude-fable-5-1',             label: 'Claude Fable 5.1 (most capable, premium)' },
-      { id: 'claude-sonnet-5',              label: 'Claude Sonnet 5' },
-      { id: 'claude-opus-5',                label: 'Claude Opus 5' },
-      { id: 'claude-fable-5',               label: 'Claude Fable 5' },
-      { id: 'claude-opus-4-8',              label: 'Claude Opus 4.8' },
-      { id: 'claude-opus-4-7',              label: 'Claude Opus 4.7' },
-      { id: 'claude-opus-4-6',              label: 'Claude Opus 4.6' },
-      { id: 'claude-sonnet-4-6',            label: 'Claude Sonnet 4.6' },
-      { id: 'claude-haiku-4-5-20251001',    label: 'Claude Haiku 4.5' },
-      { id: 'claude-opus-4-5',              label: 'Claude Opus 4.5' },
-      { id: 'claude-sonnet-4-5',            label: 'Claude Sonnet 4.5' },
-    ],
-  },
-  {
-    id: 'google',
-    label: 'Google (Antigravity)',
-    // Google retired the Gemini CLI (2026-06-18); the worker now drives the
-    // Antigravity CLI (`agy`). As of agy 1.1.2 `--model` is validated strictly
-    // and the reasoning effort is baked into the slug (`<model>-<low|high>`);
-    // the old bare slugs are rejected. Every slug below is listed by
-    // `agy models` on agy 1.2.16 (Gemini 3.5 Flash is gone). Keep in sync with
-    // VENDOR_MODELS in apps/worker/src/services/agent_backends.py.
-    models: [
-      { id: 'gemini-3.1-pro-high',     label: 'Gemini 3.1 Pro (High) — strong coding, default' },
-      { id: 'gemini-3.1-pro-low',      label: 'Gemini 3.1 Pro (Low) — faster' },
-      { id: 'gemini-3.8-flash-high',   label: 'Gemini 3.8 Flash (High) — newest flash, deeper reasoning' },
-      { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium) — newest flash, balanced' },
-      { id: 'gemini-3.8-flash-low',    label: 'Gemini 3.8 Flash (Low) — newest flash, fastest' },
-      { id: 'gemini-3.7-flash-high',   label: 'Gemini 3.7 Flash (High)' },
-      { id: 'gemini-3.7-flash-low',    label: 'Gemini 3.7 Flash (Low) — fast, cheap' },
-      { id: 'gemini-3.6-flash-high',   label: 'Gemini 3.6 Flash (High)' },
-      { id: 'gemini-3.6-flash-medium', label: 'Gemini 3.6 Flash (Medium)' },
-      { id: 'gemini-3.6-flash-low',    label: 'Gemini 3.6 Flash (Low)' },
-    ],
-  },
-  {
-    id: 'openai',
-    label: 'OpenAI',
-    // Slugs from the model catalog bundled in codex-cli 0.155.1. GPT-6 Astra
-    // is the new flagship; the GPT-5.6 trio (Sol / Terra / Luna) remains the
-    // agentic-coding line. `gpt-5.5-codex` was never a real slug.
-    models: [
-      { id: 'gpt-6-astra',   label: 'GPT-6 Astra — most capable, complex demanding work' },
-      { id: 'gpt-5.6-sol',   label: 'GPT-5.6 Sol — frontier agentic coding' },
-      { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra — balanced agentic coding' },
-      { id: 'gpt-5.6-luna',  label: 'GPT-5.6 Luna — fast + affordable agentic coding' },
-      { id: 'gpt-5.5',       label: 'GPT-5.5 (frontier: complex coding + research)' },
-      { id: 'gpt-5.4',       label: 'GPT-5.4 (strong everyday coding)' },
-      { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex (heavy reasoning, agentic)' },
-      { id: 'gpt-5.4-mini',  label: 'GPT-5.4 Mini (small, fast, cost-efficient)' },
-      { id: 'gpt-5.2',       label: 'GPT-5.2 (long-running agents)' },
-    ],
-  },
-  {
-    id: 'glm',
-    label: 'GLM (Zhipu)',
-    // Verified against GET https://open.bigmodel.cn/api/paas/v4/models (2026-08-19).
-    // glm-5.3 (2026-08-14) — same 744B-A40B MoE base as 5.2, far heavier
-    // post-training: ~50% better coding, top open-weights on Terminal Bench 3.0.
-    // Runs through the Claude Code CLI like the rest of GLMBackend.
-    models: [
-      { id: 'glm-5.3',       label: 'GLM-5.3 (thinking, latest flagship — best open-weights coding)' },
-      { id: 'glm-5.2',       label: 'GLM-5.2 (thinking, previous flagship)' },
-      { id: 'glm-5.1',       label: 'GLM-5.1 (thinking, SWE-bench Pro leader, 8x cheaper)' },
-      { id: 'glm-5-turbo',   label: 'GLM-5 Turbo (fast, cheap)' },
-      { id: 'glm-5',         label: 'GLM-5' },
-      { id: 'glm-4.7',       label: 'GLM-4.7 (previous generation)' },
-      { id: 'glm-4.5-air',   label: 'GLM-4.5 Air (budget)' },
-    ],
-  },
-];
+// ─── Pure helpers ───────────────────────────────────────────────────────────
 
-/** Look up the models for a given vendor id. */
-export function modelsForVendor(vendor: AgentVendor): VendorModel[] {
-  const entry = AGENT_VENDORS.find((v) => v.id === vendor);
-  return entry?.models ?? [];
-}
-
-/** Default model suggestion for a vendor (first in the list). */
-export function defaultModelForVendor(vendor: AgentVendor): string {
-  return modelsForVendor(vendor)[0]?.id ?? '';
+function findVendor(registry: AgentRegistry | null, vendor: string): RegistryVendor | null {
+  return registry?.vendors[vendor] ?? null;
 }
 
 /**
- * Friendly vendor name for the "Filling with {Vendor}…" button caption —
- * e.g. "Filling with Claude…" / "Filling with Google…". Reflects which
- * System LLM vendor the Fill Task command runs through.
+ * Vendors for a `<select>`. The currently selected vendor is always included,
+ * so the control shows the stored value while the registry is still loading
+ * (or if the worker no longer knows that vendor).
  */
-export function fillVendorLabel(vendor: AgentVendor): string {
-  switch (vendor) {
-    case 'anthropic':
-      return 'Claude';
-    case 'google':
-      return 'Google';
-    case 'openai':
-      return 'OpenAI';
-    case 'glm':
-      return 'GLM';
-    default:
-      return vendor;
+export function vendorOptions(registry: AgentRegistry | null, selected: string): VendorOption[] {
+  const options = Object.entries(registry?.vendors ?? {}).map(([id, entry]) => ({
+    id,
+    label: entry.label,
+  }));
+  const selectedIsListed = options.some((option) => option.id === selected);
+  if (selected && !selectedIsListed) {
+    options.unshift({ id: selected, label: selected });
   }
+  return options;
+}
+
+/** Models a picker should suggest: current ones only, default first. */
+export function pickerModels(registry: AgentRegistry | null, vendor: string): RegistryModel[] {
+  const models = findVendor(registry, vendor)?.models ?? [];
+  const current = models.filter((model) => !model.deprecated);
+  const defaults = current.filter((model) => model.is_default);
+  const others = current.filter((model) => !model.is_default);
+  return [...defaults, ...others];
+}
+
+/** The vendor's default model id, or '' when unknown / not loaded yet. */
+export function defaultModelFor(registry: AgentRegistry | null, vendor: string): string {
+  return findVendor(registry, vendor)?.default_model ?? '';
+}
+
+/** Human-readable vendor name, falling back to the raw id. */
+export function vendorLabel(registry: AgentRegistry | null, vendor: string): string {
+  return findVendor(registry, vendor)?.label ?? vendor;
+}
+
+/** True when `model` is registered under `vendor` (deprecated ids included). */
+export function isModelOfVendor(
+  registry: AgentRegistry | null,
+  vendor: string,
+  model: string,
+): boolean {
+  const models = findVendor(registry, vendor)?.models ?? [];
+  return models.some((entry) => entry.id === model);
+}
+
+/**
+ * The model to keep after the operator switches vendor: the current one if
+ * the new vendor also offers it, otherwise the new vendor's default.
+ */
+export function modelAfterVendorChange(
+  registry: AgentRegistry | null,
+  nextVendor: string,
+  currentModel: string,
+): string {
+  if (isModelOfVendor(registry, nextVendor, currentModel)) {
+    return currentModel;
+  }
+  return defaultModelFor(registry, nextVendor);
 }

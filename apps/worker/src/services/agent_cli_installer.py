@@ -32,14 +32,15 @@ This module is FREE-level (no ``pro`` dependency) and survives
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import shutil
 import tarfile
 import tempfile
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 
 import httpx
 
@@ -169,7 +170,10 @@ async def _install_npm(spec: InstallSpec) -> None:
     env["npm_config_update_notifier"] = "false"
 
     proc = await asyncio.create_subprocess_exec(
-        "npm", "install", "-g", package,
+        "npm",
+        "install",
+        "-g",
+        package,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=env,
@@ -186,13 +190,16 @@ async def _install_npm(spec: InstallSpec) -> None:
     # rebuilt. Best-effort: a stale cache is wasted disk, not a failed install.
     try:
         cleaner = await asyncio.create_subprocess_exec(
-            "npm", "cache", "clean", "--force",
+            "npm",
+            "cache",
+            "clean",
+            "--force",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             env=env,
         )
         await cleaner.communicate()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.debug("npm cache clean after %s failed: %s", package, exc)
 
 
@@ -202,9 +209,7 @@ async def _install_npm(spec: InstallSpec) -> None:
 # SHA-512, extract the binary. This mirrors the logic the Dockerfile used to
 # carry; keep the two in step if the vendor changes the manifest shape.
 
-_AGY_MANIFEST_BASE = (
-    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app"
-)
+_AGY_MANIFEST_BASE = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app"
 
 
 def _agy_platform() -> str:
@@ -300,7 +305,8 @@ def _cross_process_lock(binary: str):
         return None
     try:
         os.makedirs(install_dir(), exist_ok=True)
-        handle = open(os.path.join(install_dir(), f".{binary}.lock"), "w")
+        # Returned to the caller, who closes it to release the lock.
+        handle = open(os.path.join(install_dir(), f".{binary}.lock"), "w")  # noqa: SIM115
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         return handle
     except OSError as exc:
@@ -338,7 +344,9 @@ async def ensure_cli(
             logger.warning(
                 "%s CLI '%s' is a deployment override and is not on PATH — not "
                 "auto-installing; fix %s or the PATH.",
-                backend.label, configured, backend.bin_setting or "the CLI path",
+                backend.label,
+                configured,
+                backend.bin_setting or "the CLI path",
             )
         return False
 
@@ -346,14 +354,16 @@ async def ensure_cli(
         logger.warning(
             "%s CLI '%s' is missing and auto-install is disabled "
             "(AGENT_CLI_AUTO_INSTALL / AGENT_CLI_DIR).",
-            backend.label, configured,
+            backend.label,
+            configured,
         )
         return False
 
     if configured in _failed:
         logger.warning(
             "%s CLI install already failed this process, not retrying: %s",
-            backend.label, _failed[configured],
+            backend.label,
+            _failed[configured],
         )
         return False
 
@@ -367,18 +377,23 @@ async def ensure_cli(
         version = _pinned_version(spec)
         logger.info(
             "%s CLI not present — installing %s%s (~%d MB) into %s",
-            backend.label, spec.binary,
+            backend.label,
+            spec.binary,
             f"@{version}" if version else " (channel current)",
-            spec.approx_mb, install_dir(),
+            spec.approx_mb,
+            install_dir(),
         )
         if on_event:
-            await on_event("agent_cli_installing", {
-                "vendor": backend.vendor,
-                "binary": spec.binary,
-                "version": version or "channel-current",
-                "approx_mb": spec.approx_mb,
-                "dir": install_dir(),
-            })
+            await on_event(
+                "agent_cli_installing",
+                {
+                    "vendor": backend.vendor,
+                    "binary": spec.binary,
+                    "version": version or "channel-current",
+                    "approx_mb": spec.approx_mb,
+                    "dir": install_dir(),
+                },
+            )
 
         handle = await asyncio.to_thread(_cross_process_lock, configured)
         try:
@@ -390,23 +405,24 @@ async def ensure_cli(
                 await installer(spec)
             else:
                 await _install_npm(spec)
-        except Exception as exc:  # noqa: BLE001 — every failure degrades the same way
+        except Exception as exc:
             reason = str(exc).strip() or exc.__class__.__name__
             _failed[configured] = reason
             logger.error("%s CLI install failed: %s", backend.label, reason)
             if on_event:
-                await on_event("agent_cli_install_failed", {
-                    "vendor": backend.vendor,
-                    "binary": spec.binary,
-                    "error": reason[:2000],
-                })
+                await on_event(
+                    "agent_cli_install_failed",
+                    {
+                        "vendor": backend.vendor,
+                        "binary": spec.binary,
+                        "error": reason[:2000],
+                    },
+                )
             return False
         finally:
             if handle is not None:
-                try:
+                with contextlib.suppress(OSError):
                     handle.close()
-                except OSError:
-                    pass
 
     # shutil.which caches nothing, but PATH must actually contain our bin dir.
     if not backend.is_available():
@@ -417,18 +433,26 @@ async def ensure_cli(
         _failed[configured] = reason
         logger.error(reason)
         if on_event:
-            await on_event("agent_cli_install_failed", {
-                "vendor": backend.vendor, "binary": spec.binary, "error": reason,
-            })
+            await on_event(
+                "agent_cli_install_failed",
+                {
+                    "vendor": backend.vendor,
+                    "binary": spec.binary,
+                    "error": reason,
+                },
+            )
         return False
 
     logger.info("%s CLI installed: %s", backend.label, backend.resolve_bin())
     if on_event:
-        await on_event("agent_cli_installed", {
-            "vendor": backend.vendor,
-            "binary": spec.binary,
-            "path": backend.resolve_bin() or "",
-        })
+        await on_event(
+            "agent_cli_installed",
+            {
+                "vendor": backend.vendor,
+                "binary": spec.binary,
+                "path": backend.resolve_bin() or "",
+            },
+        )
     return True
 
 

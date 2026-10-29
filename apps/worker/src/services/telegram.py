@@ -36,11 +36,14 @@ async def tg_send(message: str, parse_mode: str = "Markdown") -> bool:
     url = f"{TELEGRAM_API.format(token=settings.telegram_bot_token)}/sendMessage"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.post(url, data={
-                "chat_id": settings.telegram_chat_id,
-                "parse_mode": parse_mode,
-                "text": message,
-            })
+            resp = await client.post(
+                url,
+                data={
+                    "chat_id": settings.telegram_chat_id,
+                    "parse_mode": parse_mode,
+                    "text": message,
+                },
+            )
             if resp.status_code != 200:
                 logger.warning("Telegram sendMessage failed: %s", resp.text)
                 return False

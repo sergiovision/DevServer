@@ -29,13 +29,11 @@ from __future__ import annotations
 
 import json as _json
 import logging
-from datetime import datetime, timezone
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.setting import Setting
-from services import app_settings, llm_client
+from services import llm_client, system_llm
 
 logger = logging.getLogger(__name__)
 
@@ -85,45 +83,6 @@ on external state.
 Stay under 1500 words. No preamble, no sign-off."""
 
 
-async def _read_system_llm(session: AsyncSession) -> tuple[str, str, str]:
-    """Fetch (vendor, model, mode) from the settings table.
-
-    Defaults to GLM and ``mode='max'`` (subscription). ``mode`` is the
-    billing/transport path forwarded to ``llm_client.complete``.
-    """
-    vendor_row = await session.execute(
-        text("SELECT value FROM settings WHERE key = 'system_llm_vendor'")
-    )
-    model_row = await session.execute(
-        text("SELECT value FROM settings WHERE key = 'system_llm_model'")
-    )
-    mode_row = await session.execute(
-        text("SELECT value FROM settings WHERE key = 'system_llm_mode'")
-    )
-    v = vendor_row.scalar_one_or_none()
-    m = model_row.scalar_one_or_none()
-    md = mode_row.scalar_one_or_none()
-    vendor = "glm"
-    model = "glm-5.1"
-    mode = "max"
-    if v:
-        try:
-            vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
-        except Exception:
-            pass
-    if m:
-        try:
-            model = _json.loads(m) if isinstance(m, str) and m.startswith('"') else str(m)
-        except Exception:
-            pass
-    if md:
-        try:
-            mode = _json.loads(md) if isinstance(md, str) and md.startswith('"') else str(md)
-        except Exception:
-            pass
-    return vendor, model, mode
-
-
 async def compact_task(
     session: AsyncSession,
     *,
@@ -143,61 +102,55 @@ async def compact_task(
     decides whether the next attempt should resume or start fresh.
     """
     # Load task + repo in one shot
-    row = (await session.execute(
-        text(
-            """
+    row = (
+        await session.execute(
+            text(
+                """
             SELECT t.task_key, t.title, t.status, t.description, t.acceptance,
                    t.compact_count, r.name, t.repo_id
             FROM tasks t
             LEFT JOIN repos r ON r.id = t.repo_id
             WHERE t.id = :tid
             """
-        ),
-        {"tid": task_id},
-    )).fetchone()
+            ),
+            {"tid": task_id},
+        )
+    ).fetchone()
     if not row:
-        return {"ok": False, "summary": "", "chars_in": 0, "chars_out": 0,
-                "error": f"task {task_id} not found"}
+        return {
+            "ok": False,
+            "summary": "",
+            "chars_in": 0,
+            "chars_out": 0,
+            "error": f"task {task_id} not found",
+        }
 
-    task_key, title, status, description, acceptance, compact_count, repo_name, repo_id = row
-
-    # Tier 1.1 — verbatim pre-compaction save. Archive the raw transcript into
-    # the per-repo memory drawers BEFORE it's distilled into a lossy summary,
-    # so the exact prior reasoning stays retrievable. Pro-only + opt-in; a
-    # no-op in the free build. Best-effort — never blocks compaction.
-    if repo_id is not None:
-        try:
-            if await app_settings.get_bool_setting(
-                session, "memory_verbatim_transcripts", True
-            ):
-                try:
-                    from services.pro import hooks as _pro
-                except ImportError:
-                    from services._free_hooks import FreeHooks
-                    _pro = FreeHooks()
-                await _pro.repo_memory(session, repo_id).archive_transcript(
-                    task_id, task_key=task_key
-                )
-        except Exception:
-            logger.debug("pre-compaction transcript archive failed for %s", task_key)
+    task_key, title, status, description, acceptance, compact_count, repo_name, _repo_id = row
 
     # Collect the last N runs and stitch them in chronological order (newest first)
-    run_rows = (await session.execute(
-        text(
-            """
+    run_rows = (
+        await session.execute(
+            text(
+                """
             SELECT attempt, status, claude_output, error_log, duration_ms, turns, finished_at
             FROM task_runs
             WHERE task_id = :tid
             ORDER BY id DESC
             LIMIT :lim
             """
-        ),
-        {"tid": task_id, "lim": _MAX_RUNS_INCLUDED},
-    )).fetchall()
+            ),
+            {"tid": task_id, "lim": _MAX_RUNS_INCLUDED},
+        )
+    ).fetchall()
 
     if not run_rows:
-        return {"ok": False, "summary": "", "chars_in": 0, "chars_out": 0,
-                "error": "no prior runs to compact"}
+        return {
+            "ok": False,
+            "summary": "",
+            "chars_in": 0,
+            "chars_out": 0,
+            "error": "no prior runs to compact",
+        }
 
     run_blocks = []
     for attempt, run_status, claude_output, error_log, duration_ms, turns, finished_at in run_rows:
@@ -213,9 +166,10 @@ async def compact_task(
     runs_block = "\n---\n".join(run_blocks)
 
     # Summarise recurring error classes from recent events
-    ec_rows = (await session.execute(
-        text(
-            """
+    ec_rows = (
+        await session.execute(
+            text(
+                """
             SELECT payload->>'class' AS cls, COUNT(*) AS n
             FROM task_events
             WHERE task_id = :tid AND event_type = 'error_classified'
@@ -223,12 +177,11 @@ async def compact_task(
             ORDER BY n DESC
             LIMIT 10
             """
-        ),
-        {"tid": task_id},
-    )).fetchall()
-    error_class_block = (
-        "\n".join(f"- {c}: {n} hits" for c, n in ec_rows if c) or "(none observed)"
-    )
+            ),
+            {"tid": task_id},
+        )
+    ).fetchall()
+    error_class_block = "\n".join(f"- {c}: {n} hits" for c, n in ec_rows if c) or "(none observed)"
 
     next_attempt = len(run_rows) + 1
     prompt = _COMPACT_PROMPT_TEMPLATE.format(
@@ -245,7 +198,8 @@ async def compact_task(
     )
 
     chars_in = len(prompt)
-    vendor, model, mode = await _read_system_llm(session)
+    llm = await system_llm.read(session)
+    vendor, model, mode = llm.vendor, llm.model, llm.mode
 
     try:
         summary = await llm_client.complete(
@@ -263,19 +217,31 @@ async def compact_task(
                 "INSERT INTO task_events (task_id, event_type, payload) "
                 "VALUES (:tid, 'context_compacted', CAST(:pl AS JSONB))"
             ),
-            {"tid": task_id, "pl": _json.dumps({
-                "ok": False, "reason": reason, "error": str(exc)[:300],
-                "vendor": vendor, "model": model,
-            })},
+            {
+                "tid": task_id,
+                "pl": _json.dumps(
+                    {
+                        "ok": False,
+                        "reason": reason,
+                        "error": str(exc)[:300],
+                        "vendor": vendor,
+                        "model": model,
+                    }
+                ),
+            },
         )
         await session.commit()
-        return {"ok": False, "summary": "", "chars_in": chars_in,
-                "chars_out": 0, "error": str(exc)}
+        return {"ok": False, "summary": "", "chars_in": chars_in, "chars_out": 0, "error": str(exc)}
 
     summary = (summary or "").strip()
     if not summary:
-        return {"ok": False, "summary": "", "chars_in": chars_in,
-                "chars_out": 0, "error": "empty summary from LLM"}
+        return {
+            "ok": False,
+            "summary": "",
+            "chars_in": chars_in,
+            "chars_out": 0,
+            "error": "empty summary from LLM",
+        }
 
     chars_out = len(summary)
 
@@ -298,24 +264,32 @@ async def compact_task(
             "INSERT INTO task_events (task_id, event_type, payload) "
             "VALUES (:tid, 'context_compacted', CAST(:pl AS JSONB))"
         ),
-        {"tid": task_id, "pl": _json.dumps({
-            "ok": True,
-            "reason": reason,
-            "chars_in": chars_in,
-            "chars_out": chars_out,
-            "compression_ratio": round(chars_out / chars_in, 3) if chars_in else None,
-            "vendor": vendor,
-            "model": model,
-            "runs_summarised": len(run_rows),
-            "compact_count": (compact_count or 0) + 1,
-        })},
+        {
+            "tid": task_id,
+            "pl": _json.dumps(
+                {
+                    "ok": True,
+                    "reason": reason,
+                    "chars_in": chars_in,
+                    "chars_out": chars_out,
+                    "compression_ratio": round(chars_out / chars_in, 3) if chars_in else None,
+                    "vendor": vendor,
+                    "model": model,
+                    "runs_summarised": len(run_rows),
+                    "compact_count": (compact_count or 0) + 1,
+                }
+            ),
+        },
     )
     await session.commit()
 
     logger.info(
         "Compacted task %s: %d chars -> %d chars (ratio %.2f, vendor=%s)",
-        task_key, chars_in, chars_out,
-        chars_out / chars_in if chars_in else 0.0, vendor,
+        task_key,
+        chars_in,
+        chars_out,
+        chars_out / chars_in if chars_in else 0.0,
+        vendor,
     )
 
     return {

@@ -19,7 +19,7 @@
 
 <img src="assets/viewtask.png" alt="DevServer task detail view — live event log, run history, and the agent settings sidebar" width="90%" />
 
-[Why](#why-devserver) · [Features](#features) · [What's new](#whats-new-in-1015) · [Architecture](#architecture) · [Design Decisions](#design-decisions) · [Quick Start](#quick-start) · [Project Layout](#project-layout) · [Pro Edition](#pro-edition) · [Roadmap](#roadmap)
+[Why](#why-devserver) · [Engineering](#engineering-highlights) · [Features](#features) · [What's new](#whats-new-in-1018--the-showcase-refactor) · [Architecture](#architecture) · [Design Decisions](#design-decisions) · [Quick Start](#quick-start) · [Project Layout](#project-layout) · [Roadmap](#roadmap)
 
 </div>
 
@@ -47,24 +47,34 @@ One platform. Every model. **Ride your AI at Ferrari style — and Ferrari speed
 
 ## Why DevServer?
 
-Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted orchestration platform** for people who already run their own infrastructure and want agents to work on their terms.
+Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted harness** that runs the coding-agent CLIs you already use (Claude Code, Codex, Antigravity, GLM) as supervised workers — with a queue, a verifier, guardrails, an audit trail and a dashboard around them.
 
-- **Multi-vendor agent backends.** Run tasks on Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI), or GLM (Zhipu AI) — including the models **Claude Sonnet 5.5**, **Claude Opus 5.5**, **Claude Fable 5.1**, **GPT-6 Astra**, and **Gemini 3.8 Flash**. Each vendor has a dedicated backend — switch per task via the dashboard. Auto-failover between vendors when rate limits or errors exhaust retries.
-- **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (flat-rate subscription). Subscription mode works across vendors — Claude **Max**, ChatGPT **Plus** (Codex), and Google **AI Pro / Ultra** (via the Antigravity CLI) — by falling back to the CLI's own OAuth login instead of an API key.
-- **Outcome forecast.** Before a task runs, see a success-probability and expected duration/turns estimate from your repo's history. Free uses a repo-level baseline; Pro upgrades it to similar-task matching via pgvector.
-- **Error-class-aware retries.** Failures are classified by 20+ regex rules (import errors, TS compile errors, test failures, merge conflicts, ...) and the next attempt receives a surgical remediation hint. Recurring hard errors *escalate* instead of burning retries.
-- **Multi-language repo map.** Before any code is written, the worker builds a regex-based symbol index (classes, functions, types) for 11 languages, so the agent starts with an accurate picture of the codebase.
-- **Dashboard with analytics.** Live counts, today's stats, per-vendor cost breakdown, average duration and turns-per-task charts, governance KPIs (**cost per PR**, **abstain savings**), and a period selector for 7–90 days of history.
-- **Pipeline board.** A kanban projection of the task list — lifecycle-native lanes (Queued / Active / Needs You / Shipped / Stalled) with live websocket transitions, evidence chips, and inline actions. Toggle Grid ⇄ Board on the Tasks page; no separate route.
-- **Architecture diagram.** One click renders a Mermaid module-tree diagram of any repo, generated deterministically from the repo map — no LLM call, no cost.
-- **Task templates.** Saved presets for repetitive work ("fix lint errors", "add unit tests", "update deps") with pre-filled descriptions, acceptance criteria, and agent settings.
-- **Full live observability.** PG `NOTIFY` → WebSocket → dashboard. Every agent step is a typed event on a live timeline — no page refresh, no polling.
-- **Governance-grade OpenTelemetry.** Opt-in OTLP export of the whole task pipeline as spans carrying DevServer-only attributes (reality score, budget burn, secret-scan hits, error class, vendor failover) to any collector — Langfuse, Grafana Tempo, Datadog, Jaeger. Zero overhead when unset.
-- **Telegram notifications.** Basic task start/success/fail alerts so you know what happened while you were away.
+- **Multi-vendor agent backends.** Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI) and GLM (Zhipu), behind one `AgentBackend` interface. Switch per task; fail over to a backup vendor or model automatically when retries run out.
+- **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (Claude Max, ChatGPT Plus, Google AI Pro/Ultra through the CLI's own login).
+- **Evidence before action.** A repo map, a 0–100 reality score and hybrid memory recall go into the prompt before the agent writes a line; an opt-in abstain gate blocks tasks the code base cannot support.
+- **Error-class-aware retries.** Failures are classified by 20+ rules and the next attempt gets a targeted hint. The same error twice escalates instead of burning retries.
+- **Guardrails without extra LLM calls.** Budget circuit breaker, deterministic PR preflight (secrets, forbidden and oversize files, author), side-effect approval gate.
+- **Human in the loop where it matters.** Plan approval for interactive tasks, operator notes delivered to a running agent, real cancellation that kills the agent process.
+- **Full live observability.** Every step is a typed event: PostgreSQL `NOTIFY` → WebSocket → dashboard, plus opt-in OpenTelemetry export.
 
-All of the above are real code paths, not marketing bullets. See [`apps/worker/src/services/`](apps/worker/src/services/) for the implementations.
+All of the above are real, tested code paths. The rest of this README shows how they are built.
 
-> **Looking for advanced features?** Reality gate, pgvector memory, interactive plan approval, budget circuit breaker, PR secret scanning, patch export, night cycle, inter-task messaging bus + operator inbox, and webhook triggers are available in the [Pro edition](README.PRO.md).
+## Engineering highlights
+
+DevServer is also a showcase of how to build an **agent harness** that stays readable as it grows. The priorities, in order: **readability → reviewability → correctness → features**. Performance is deliberately not a goal.
+
+| Concern | How it is solved | Where |
+|---|---|---|
+| A 1,600-line `run_task` | A ~30-line `run_task` orchestrating small phase functions sharing one `TaskContext`; primary and backup models go through the *same* `run_attempts()` | [`agent_runner.py`](apps/worker/src/services/agent_runner.py), [`services/runner/`](apps/worker/src/services/runner/) |
+| "Did the refactor change behaviour?" | Characterisation tests drive the real runner against real PostgreSQL, a temp git repo and a scripted fake agent subprocess | [`tests/runner/`](apps/worker/tests/runner/) |
+| Cancel only relabelled the task | A `RunningTasks` registry cancels the `asyncio.Task`; `proc.run` kills the agent's whole process group; the runner always writes a terminal status | [`running_tasks.py`](apps/worker/src/services/running_tasks.py), [`proc.py`](apps/worker/src/services/proc.py), [`task_control.py`](apps/worker/src/services/task_control.py) |
+| Locks that could be stolen or leak | Repo locks are **leases**: an owner, a short TTL and a heartbeat; release deletes only the caller's row; a busy repo re-queues the job instead of failing it | [`repo_lock.py`](apps/worker/src/services/repo_lock.py), [`queue_consumer.py`](apps/worker/src/services/queue_consumer.py) |
+| Model IDs copied across Python and TypeScript | One typed registry (`ModelInfo`) served at `/internal/agent-registry`; the web app renders every picker from it | [`agent_backends.py`](apps/worker/src/services/agent_backends.py), [`agent-vendors.ts`](apps/web/src/lib/agent-vendors.ts) |
+| Four hand-rolled retry loops | One `retry_async(fn, attempts=, backoff=Backoff(...), retry_on=)` | [`retry.py`](apps/worker/src/services/retry.py) |
+| DB sessions pinned for an hour per task | Repository-style functions, one short session per unit of work; nothing holds a session across a subprocess | [`runner/store.py`](apps/worker/src/services/runner/store.py) |
+| Hung git remotes | Every git call takes a required, per-operation timeout | [`git_ops.py`](apps/worker/src/services/git_ops.py) |
+
+Tooling: `ruff` (lint + format, blocking), `pyright` basic (reported), `pytest` with real-database integration tests, Node's test runner for the web's pure modules. See [`docs/architecture.md`](docs/architecture.md) for the design walkthrough and [`docs/decisions.md`](docs/decisions.md) for the decision log.
 
 ## Features
 
@@ -99,7 +109,7 @@ The single most information-dense view in the product. From left:
 - **Live event log** — every agent step (`repo_map_built`, `reality_signal`, `error_classified`, `pr_preflight_pass`, `rate_limit_backoff`, `vendor_failover`) as it streams in over PG `NOTIFY` → WebSocket.
 - **Task log** — real-time tail of the per-task log file with run result, diff stats, and `git am`-ready output.
 - **Agent settings sidebar** — per-task overrides for billing mode (API / Max subscription), vendor + model picker, backup vendor + model for auto-failover, git flow (Branch + PR / Direct commit / Patch only — Local Git repos offer Untracked changes / Patch only instead), verification toggle, and a Save button.
-- **Patches panel** — commit count, diff stats (files changed, lines added/removed), generated-at timestamp, and a prominent **Download combined.mbox** button.
+- **Plan card** (interactive tasks), **Patches panel** (patch-flow tasks) and **Task Notes** — see the sections below.
 
 📂 [`apps/web/src/app/tasks/[id]/page.tsx`](apps/web/src/app/tasks/[id]/page.tsx) · [`apps/web/src/components/TaskDetail.tsx`](apps/web/src/components/TaskDetail.tsx)
 
@@ -169,7 +179,7 @@ Three repository types, selected per repo:
 Why Local Git matters: it makes DevServer **provider-agnostic**. Clone a repo from **GitHub, GitLab, Bitbucket, Azure DevOps, a private bare repo on a NAS — anything** — and point DevServer at the folder. Since all work happens against the local clone, there is no host API to integrate, no token to provision, and nothing ever leaves your machine. Two git flows fit this model:
 
 - **Untracked changes** — the agent only edits files in your working tree. No branch, no commit, no push; you review the diff with your normal tools and commit it yourself.
-- **Patch only** — the agent commits on a local `agent/…` branch (your original branch is restored afterwards) and the changes are exported as a `combined.mbox` you can `git am` anywhere.
+- **Patch only** — the agent commits on a local `agent/…` branch (your original branch is restored afterwards) and the commits are exported as `.patch` files you can `git am` anywhere.
 
 Safety guarantees for your folder: DevServer never hard-resets or cleans it, refuses to start a patch-flow task on a dirty working tree (so your own uncommitted work can never be swept into agent commits), and the agent is explicitly instructed to never touch remotes. Local repos show a turquoise **Local** badge on the Repos page.
 
@@ -201,7 +211,7 @@ It is grounded in a curated handbook shipped in the repo ([`docs/assistant/`](do
 
 A combobox in the drawer's toolbar picks the **model** for the next turn, from whatever your System LLM vendor offers — reach for a bigger model on a hard question, drop back to a cheap one for the rest. The vendor itself stays a Settings decision, since changing it also changes credentials and billing. Your choice is remembered.
 
-In the free edition it answers questions and says plainly when it cannot see something. **In Pro** it gains tools: semantic code and doc search across all your repositories, the per-repo memory knowledge base, prior decisions, and live task state — plus the ability to *propose* a fix, such as running `scripts/dbrestart.sh` when Postgres is down, which runs only after you click **Run**. It never has a shell of its own.
+It answers questions and says plainly when it cannot see something. It has no tools and no shell: it can explain, never act.
 
 📂 [`apps/web/src/components/AskAgentPanel.tsx`](apps/web/src/components/AskAgentPanel.tsx) · [`apps/worker/src/routes/assistant.py`](apps/worker/src/routes/assistant.py) · [`apps/worker/src/services/assistant_kb.py`](apps/worker/src/services/assistant_kb.py)
 
@@ -213,13 +223,37 @@ Every coding task passes through three checks that need no extra LLM call:
 - **Budget circuit breaker.** `max_cost_usd` / `max_wall_seconds` on a task emit a `budget_warning` event at 80% and stop retries at 100%, marking the task `blocked`.
 - **PR preflight.** Before anything is pushed, the diff is scanned for leaked secrets (API keys, tokens, private keys), forbidden files (`.env`, key files), files over 1 MB, and a wrong commit author. A failure marks the task `blocked` instead of opening a PR.
 
-📂 [`reality_gate.py`](apps/worker/src/services/reality_gate.py) · [`pr_preflight.py`](apps/worker/src/services/pr_preflight.py) · [`secret_rules.py`](apps/worker/src/services/secret_rules.py) · [`_free_hooks.py`](apps/worker/src/services/_free_hooks.py)
+📂 [`reality_gate.py`](apps/worker/src/services/reality_gate.py) · [`pr_preflight.py`](apps/worker/src/services/pr_preflight.py) · [`secret_rules.py`](apps/worker/src/services/secret_rules.py) · [`budget.py`](apps/worker/src/services/budget.py)
 
 ### Memory — hybrid recall of past task experience
 
 Every successful task is summarised into `agent_memory` with a local [fastembed](https://github.com/qdrant/fastembed) embedding (no cloud key). The next task on the same repo recalls the most relevant entries through two lanes: pgvector cosine similarity, and Postgres full-text search, which catches exact symbols, error strings and file paths. The two ranked lists are combined with **Reciprocal Rank Fusion** (k=60), and the top hits go into the prompt as "Prior Experience".
 
 📂 [`apps/worker/src/services/memory.py`](apps/worker/src/services/memory.py) · [`apps/worker/src/services/embeddings.py`](apps/worker/src/services/embeddings.py)
+
+### Plan Gate — approve the plan before any code is written
+
+Set a task's mode to **interactive** and the agent first runs read-only with a small turn budget, answering with a structured plan: summary, steps, files to touch, risks. The task stops at a **Plan** card on its detail page. **Approve** and the plan is injected into the implementation prompt — and its `files_to_touch` becomes the PR-preflight allow-list, so the agent cannot quietly widen the scope it was approved for. **Reject**, or leave it unanswered for an hour (`plan_gate_timeout_seconds`), and the task is blocked. A planning run that edits files is refused.
+
+📂 [`plan_gate.py`](apps/worker/src/services/plan_gate.py) · [`PlanCard.tsx`](apps/web/src/components/PlanCard.tsx)
+
+### Task Notes — talk to a running agent
+
+Post a note on a running task ("use the existing retry helper", "skip the docs"). The runner picks up unread notes at the start of the next attempt, adds them to that attempt's prompt and marks them read in the same SQL statement — so each note reaches the agent **exactly once**. Notes on a finished task are kept for the record and never replayed into a later run. Also available from Telegram as `/reply TASK-KEY <note>`.
+
+📂 [`task_notes.py`](apps/worker/src/services/task_notes.py) · [`TaskNotesPanel.tsx`](apps/web/src/components/TaskNotesPanel.tsx)
+
+### Patch Export — reviewable `.patch` files
+
+Tasks using the **patch** git flow never push. When one succeeds, its commits are exported with `git format-patch` and listed in a **Patches** panel for download and `git am`. File names arrive from URLs, so they are validated twice — a strict name pattern, then a resolved-path containment check — and traversal attempts get a `400`.
+
+📂 [`patch_export.py`](apps/worker/src/services/patch_export.py) · [`PatchesPanel.tsx`](apps/web/src/components/PatchesPanel.tsx)
+
+### Webhook Triggers — turn external events into tasks
+
+Create a trigger on the **Webhooks** page: a repo, an opaque URL token, a secret, and `{{json.path}}` templates for the title and description. `POST /api/webhooks/<token>` must carry `X-DevServer-Signature: sha256=<hmac>`; it is verified with HMAC-SHA256 and a constant-time comparison. A valid call creates and enqueues a task; a missing or wrong signature gets `401`, a disabled trigger `404`. A trigger without a secret cannot be created.
+
+📂 [`apps/web/src/lib/webhooks/`](apps/web/src/lib/webhooks/) · [`apps/web/src/app/webhooks/`](apps/web/src/app/webhooks/)
 
 ### MCP server — drive DevServer from Claude Code, Codex or Gemini
 
@@ -229,106 +263,18 @@ A small stdio MCP server lets an interactive coding CLI create a task in the cur
 
 ---
 
-## What's new in 1.0.17
+## What's new in 1.0.18 — the showcase refactor
 
-Since **1.0.15**. Several guardrails that used to be Pro-only now come with the free edition, plus a new MCP server and refreshed model catalogues.
+This release is about the code, not the feature count. Full notes: [`docs/release-notes/1.0.18.md`](docs/release-notes/1.0.18.md).
 
-### Agent guardrails in Free
-
-- **Reality gate (lite).** Before a run, the task gets a 0–100 evidence score from two signals: how many of its identifiers appear in the repo map, and whether the files it touches changed in the last 14 days. The score and warnings go into the prompt. The **strict abstain gate** (`reality_abstain_threshold`) can block low-evidence tasks before any tokens are spent. Pro adds PR-collision and history signals.
-- **PR preflight.** Before anything is pushed, the diff is checked for leaked secrets (API keys, tokens, private keys), forbidden files (`.env`, key files), files over 1 MB, and a wrong commit author. A failure marks the task `blocked` and no PR is opened. The detection rules live in one place, [`secret_rules.py`](apps/worker/src/services/secret_rules.py).
-- **Budget circuit breaker.** `max_cost_usd` / `max_wall_seconds` emit a `budget_warning` event at 80% and stop retries at 100%, marking the task `blocked`.
-
-### Memory: hybrid recall in Free
-
-Each successful task is summarised into `agent_memory` with a local fastembed embedding. The next task on the same repo recalls past experience through pgvector similarity plus Postgres full-text search, merged with Reciprocal Rank Fusion (k=60). LLM rerank and the full knowledge base remain in Pro. See [`memory.py`](apps/worker/src/services/memory.py).
-
-### MCP server for coding CLIs
-
-New stdio MCP server [`apps/mcp-memory/`](apps/mcp-memory/README.md) (`devserver-mcp`). From Claude Code, Codex or Gemini CLI you can create a task in the current repo with a chosen vendor and model, start it, poll its status and read its output (`task_options`, `task_create`, `task_run`, `task_list`, `task_status`, `task_output`, `task_cancel`). Configure it with `DEVSERVER_WORKER_URL`, `DEVSERVER_TOKEN` (optional) and `DEVSERVER_AGENT`.
-
-### Confluence import works in Free
-
-The Import dialog and the Settings **Ping** button called `/api/pro/import/*` routes, which do not exist in the free edition. New free routes under `/api/import/*` (sources, ping, scopes, search, item preview, import) and matching worker endpoints under `/internal/import/*` fix this. Import is idempotent: each page is tracked in the `external_imports` ledger and is created, updated in place when its Confluence version changes, or skipped.
-
-### Models
-
-- **Anthropic:** Claude **Sonnet 5.5** (new default), **Opus 5.5** and **Fable 5.1**. The 5.0 models stay selectable for tasks and repos pinned to them. Generated tasks now default to `claude-opus-5-5`.
-- **OpenAI:** **GPT-6 Astra** added (codex-cli 0.155.1 catalogue). GPT-6 models use `max_completion_tokens`, like GPT-5 and the o-series.
-- **Google (agy 1.2.16):** Gemini **3.8 Flash** (High/Medium/Low) and **3.7 Flash** added. Gemini 3.5 Flash was dropped by agy, so its slugs now map to the matching 3.8 Flash tier and existing tasks keep running.
-
-### Dependencies
-
-- **Web:** Next.js 16.4, React 19.3, Mermaid 12.1, CoreUI Pro 5.29.1, pg 8.23. CoreUI 5.29 types table rows more loosely, so the new [`smart-table.ts`](apps/web/src/lib/smart-table.ts) helpers keep `CSmartTable` call sites typed.
-- **Worker:** FastAPI 0.143, Uvicorn 0.54, asyncpg 0.32, SQLAlchemy 2.1.4, pydantic-settings 2.15, cryptography 50, fastembed 0.9, OpenTelemetry 1.45 (optional `otel` extra).
-
-### Docs
-
-Design notes are now in [`docs/`](docs/): RLM memory lanes, the A2A gateway, and shared-memory MCP.
+- **The runner, decomposed.** `run_task` went from ~1,600 lines with a copy-pasted backup-model loop to a short orchestrator over [`services/runner/`](apps/worker/src/services/runner/): `context`, `store`, `phases`, `attempt`, `failures`, `preflight`, `delivery`, `outcome`, `agent_call`. The terminal status, daily stats and notification are written in exactly one place.
+- **The edition indirection is gone.** The `FreeHooks` layer of kwargs-bag stubs (which, among other things, made `mode=interactive` a silent no-op) was deleted; services are called directly.
+- **Correctness fixes**, each with a regression test: real cancellation, short-lived DB sessions, lock leases with heartbeat, requeue on lock contention, stale recovery that re-enqueues and frees only its own lock, a timeout on every git call, a preflight hard failure that is no longer overwritten by `failed` and sent to the backup model, a system-LLM tuple-unpack crash in the side-effect gate, a task-log path traversal.
+- **Four demo features**: Plan Gate, Task Notes, Patch Export, Webhook Triggers.
+- **Model registry**: typed `ModelInfo` entries, one source for Python and the web. Added **Claude Haiku 5.5** and **Gemini 4 Argon** (High / Medium / Low). Models two or more generations old are hidden from pickers but still accepted.
+- **Tooling**: ruff (E, F, I, B, UP, SIM, RUF, ASYNC), pyright basic, 90+ worker tests including end-to-end runs against PostgreSQL.
 
 ---
-
-## What's new in 1.0.15
-
-Since **1.0.14**. Highlights first; the rest is grouped by area.
-
-### Ask Agent
-
-An in-product assistant on every screen (`⌘/Ctrl + K`), running on your configured System LLM and grounded in a shipped handbook rather than the model's memory of DevServer. It knows which page — and which task or repo — you are looking at. Streams token by token, with a per-turn model picker. Free answers questions; Pro adds cross-repo search, memory recall, and one-click proposed fixes that only run after you click **Run**. Full description [above](#ask-agent--an-assistant-that-knows-the-product-and-the-page-youre-on).
-
-### Docker: one Dockerfile, images that fit
-
-- **All images build from a single [`docker/Dockerfile`](docker/Dockerfile)**, selected with `--target web` / `--target worker` (`pydeps` is a build-time convenience stage). The three old files — `docker/Dockerfile.web`, `docker/Dockerfile.worker`, `apps/worker/Dockerfile` — are gone.
-- **The image no longer bakes in the vendor CLIs.** `claude` (316 MB), `codex` (259 MB) and `agy` (196 MB) were 771 MB of a 1.9 GB image, for four vendors of which a deployment typically uses one. The worker now fetches the CLI a task actually selects, into `AGENT_CLI_DIR` — a named volume, so it downloads once per deployment (~60–90 s), not once per container start. A vendor you never pick is never fetched.
-  - Version pins moved from Dockerfile `ARG`s to `.env`: `CLAUDE_CODE_VERSION`, `CODEX_VERSION`, `AGY_VERSION`.
-  - `AGENT_CLI_AUTO_INSTALL=false` for air-gapped deployments — a missing CLI then fails fast with an actionable message instead of reaching for the network.
-  - Point any `*_BIN` var at an absolute path (e.g. `CLAUDE_BIN=/host-clis/bin/claude`) and the installer stands down for that binary.
-  - `GET /health/detailed` now reports install directory, auto-install state, which CLIs are present, and any install failure.
-- **The web image ships as a Next.js standalone build** (`output: 'standalone'`), keeping only the traced dependency set instead of the full `node_modules` tree (~336 MB image). The custom server is preserved as the entrypoint, since it is what terminates the `/api/ws` upgrade.
-- **First-start bootstrap.** [`docker/devserver-bootstrap.py`](docker/devserver-bootstrap.py) applies the database schema and seeds settings the first time the stack comes up, so a fresh `docker compose up -d --build` needs no separate migrate step. Images are built from this checkout — DevServer publishes nothing to a container registry, and `DEVSERVER_IMAGE` lets you retag for one of your own.
-- **New root [`.dockerignore`](.dockerignore).** The build context was ~2.7 GB and, worse, `COPY apps/web/ .` would have baked `apps/web/.env.local` into an image layer.
-- **Compose hardening.** Services share YAML anchors instead of duplicated blocks; container names and the Postgres user/database are parameterised (`DEVSERVER_STACK`, `PGUSER`, `PGDATABASE`); the worker port is published on `127.0.0.1` by default (`WORKER_BIND=0.0.0.0` opens it deliberately); the Claude credential mount target moved to `/home/devserver/.claude`, matching the unprivileged `devserver` user (uid 10001) the containers now run as.
-
-### Agents and models
-
-- **GLM-5.3 is the new default GLM model** — same 744B-A40B MoE base as 5.2 with a much heavier post-training stage (~50% better coding on Zhipu's evals, top open-weights on Terminal Bench 3.0). 5.2 remains selectable.
-- **The Codex (OpenAI) backend is no longer "command shape known, untested."** `CODEX_API_KEY` is mirrored from `OPENAI_API_KEY` for CLI subprocesses (and both are stripped in `max` mode so the ChatGPT OAuth session is used); `--full-auto` became the explicit `--sandbox workspace-write`; the JSONL parser now handles `item.completed`, `turn.failed`, dict-shaped errors, and derives token totals from `input_tokens`/`output_tokens` when no total is reported. Covered by new regression tests.
-- **Backends can be driven in streaming mode.** `build_command` gained `stream_json`, `mcp_config_path` and `extra_args`, all defaulting to off so task runs are unchanged. Claude runs get `--strict-mcp-config` when an MCP file is mounted, and callers that pass `--permission-mode` no longer get `--dangerously-skip-permissions` bolted on — that is what keeps a browser chat box from inheriting Bash and Write.
-- **Model catalogues re-verified** against the Anthropic and Zhipu model endpoints (2026-08-19).
-
-### System LLM client
-
-- **Multi-turn and streaming across all four vendors.** New `complete_chat()` takes a transcript plus a system prompt; every request builder gained `system`, `stream` and `tools`. `complete()` is unchanged.
-- Vendor-specific traps handled rather than worked around: Anthropic's strict role alternation (consecutive same-role turns are merged, leading assistant turns dropped) and top-level `system` field; OpenAI's `max_completion_tokens` + `developer` role for gpt-5/o-series and `stream_options.include_usage`; Gemini's `:streamGenerateContent` + mandatory `alt=sse` and `model` (not `assistant`) role; a 4096-token floor for GLM-5.x so thinking tokens cannot consume the whole output budget before a word of answer is written.
-
-### Fleet / notifications
-
-- **`INSTANCE_NAME`** tags every Telegram notification with `[name]` so several DevServer boxes can report into one chat and still be told apart. Blank keeps single-instance output byte-identical.
-- **`/status@name` addressing.** Commands can be aimed at one bot *or* one instance; an unaddressed command in a shared chat is no longer executed by every instance against a different database.
-- **`TELEGRAM_POLLING_ENABLED`** plus escalating 409 back-off (15s → 300s). Telegram allows exactly one `getUpdates` consumer per bot token; instances sharing one now hold a cheap election instead of flapping forever. Notifications are unaffected either way.
-
-### Reliability
-
-- **The dashboard no longer dies on a dropped Postgres connection.** `server.ts`'s `LISTEN` client had no `'error'` listener, so an `ECONNRESET` was an uncaught exception that took the whole process down. It now has one, and reconnects — `LISTEN` lives on the connection, so without reconnecting every live task update stops silently even when the process survives.
-- **`WEB_URL`** — in Docker the worker's `localhost` is itself, so every enqueue failed with `ConnectError` and `/internal/tasks/create` returned `enqueued=false`. Compose now points the worker at `http://web:3200`.
-- **`INTERNAL_API_TOKEN`** — shared secret (`X-Internal-Token`) guarding the one worker endpoint that executes something on the host, the Ask Agent approved-action runner. Unset keeps the historical unenforced behaviour and logs a warning.
-- **A missing dependency inside a *present* Pro module is no longer swallowed** as "free edition". The old blanket `except ImportError` could start a superficially healthy worker with every Pro route — including `/internal/license/status` — silently missing.
-- **Process streaming** — new `run_streamed()` keeps stderr on its own channel (a CLI warning must never interleave into an NDJSON stdout stream) and kills the child when the consumer disconnects, so an abandoned browser tab cannot leak an agent process holding a repo directory.
-- **Scheduler** uses timezone-aware datetimes (`datetime.utcnow()` is deprecated).
-
-### UI
-
-- **Collapsible sidebar** — icons-only rail on desktop, drawer on mobile, preference persisted; dense routes collapse it automatically.
-- **Host and user in the header**, so it stays visible on mobile where the footer is a scroll away.
-- Task and agent pages register what they are showing, which is what lets Ask Agent answer about *this* task.
-- Template git-flow options relabelled, defaulting to **Untracked**.
-
-### Platform and tooling
-
-- **Python floor raised to 3.14.** `scripts/setup-local.sh` probes for a versioned interpreter first, so an unmet floor fails with an actionable message (including the deadsnakes hint on Ubuntu/Debian) instead of an opaque `uv pip install` resolver error.
-- `scripts/start.ps1` fails loudly when worker dependency installation or verification fails, instead of starting uvicorn with the Pro router silently unavailable.
-- **New [`scripts/dbrestart.sh`](scripts/dbrestart.sh)** — restarts Postgres across all three deployment shapes (bundled container, host service, raw `pg_ctl` data directory), clears a stale `postmaster.pid`, and verifies the server actually came back.
-- `scripts/bump-version.sh` removed.
 
 ## Architecture
 
@@ -338,54 +284,60 @@ flowchart TB
     Dash["Dashboard · CoreUI"]
   end
 
-  subgraph web["Next.js 15 · apps/web/"]
+  subgraph web["Next.js · apps/web/"]
     API["API routes"]
     WS["WebSocket server"]
     Prod["PgQueuer producer"]
+    Hook["Webhook receiver<br/>(HMAC-verified)"]
   end
 
-  subgraph worker["FastAPI Worker · apps/worker/"]
-    Cons["PgQueuer consumer"]
-    Runner["agent_runner.run_task()"]
-    Emb["embeddings<br/>(local · fastembed 768d)"]
-    subgraph ctx["Pre-execution context"]
+  subgraph worker["FastAPI worker · apps/worker/"]
+    Cons["Queue consumer<br/>+ RunningTasks registry"]
+    Orch["agent_runner.run_task<br/>(orchestrator)"]
+    subgraph runner["services/runner/"]
       direction LR
-      RM["repo_map"]
-      KB["memory recall + wake-up digest<br/>(Pro)"]
+      Prep["prepare_workspace"] --> Ev["gather_evidence<br/>repo map · reality · memory<br/>(plan gate)"] --> Att["run_attempts<br/>primary → backup"] --> Out["outcome"]
     end
-    subgraph loop["Retry loop"]
-      direction LR
-      CLI["Agent CLI<br/>(Claude/Gemini/Codex/GLM)"]
-      VER["verifier<br/>pre·build·test·lint"]
-      EC["error_classifier"]
-      CLI --> VER
-      VER -.fail.-> EC -.hint.-> CLI
-    end
-    Runner --> ctx --> loop
-    CLI -. "pull lanes (Pro)<br/>memory/transcripts·facts·decisions·repo-map" .-> KB
-    KB --- Emb
+    Lock["repo_lock<br/>(lease + heartbeat)"]
+    Orch --> Lock
+    Orch --> runner
   end
 
-  subgraph ext["External services"]
+  subgraph ext["External"]
     direction TB
-    Gitea[("Gitea<br/>(PRs)")]
-    PG2[("PostgreSQL 17<br/>+ pgvector")]
-    TG["Telegram"]
-    Agents["Claude / Gemini<br/>Codex / GLM"]
+    Git[("Gitea / GitHub /<br/>local folder")]
+    PG[("PostgreSQL 17<br/>+ pgvector")]
+    Agents["Claude · Codex · agy · GLM CLIs"]
+    TG["Telegram / Discord"]
   end
 
   Dash <--> API
   Dash <--> WS
-  API --> Prod --> PG2
-  PG2 --> Cons --> Runner
-  PG2 -- NOTIFY --> WS
-  KB <--> PG2
-  Runner --> Gitea
-  Runner --> TG
-  CLI --> Agents
+  Hook --> Prod
+  API --> Prod --> PG
+  PG --> Cons --> Orch
+  PG -- NOTIFY --> WS
+  Att --> Agents
+  Att --> Git
+  Out --> TG
 ```
 
-Three small services, one shared PostgreSQL. No Redis, no RabbitMQ, no Celery — **PgQueuer** uses the same database everything else lives in.
+Three small services, one PostgreSQL. No Redis, no RabbitMQ, no Celery — **PgQueuer** uses the same database everything else lives in.
+
+### One attempt
+
+```mermaid
+flowchart LR
+  B{"budget<br/>check"} -->|ok| N["take operator notes"] --> P["build prompt<br/>(full, or delta on resume)"] --> A["agent CLI"]
+  A -->|exit 0| V["verify<br/>pre · build · test · lint"] -->|pass| F["PR preflight"] -->|pass| H["hand over<br/>PR · commit · patch · untracked"]
+  A -->|failed| C["classify error"] --> R{"retry or<br/>escalate?"}
+  V -->|fail| C
+  F -->|scope creep| R
+  F -->|hard violation| X["blocked"]
+  B -->|exceeded| X
+```
+
+Every exit of an attempt is a `Verdict` (`SUCCEEDED`, `RETRY`, `ESCALATE`, `BLOCKED`, `BUDGET_EXCEEDED`, `SUSPENDED`); the attempt loop and [`outcome.record`](apps/worker/src/services/runner/outcome.py) are a `match` over that enum. A walkthrough of every module is in [`docs/architecture.md`](docs/architecture.md).
 
 ## Design Decisions
 
@@ -393,14 +345,16 @@ Three small services, one shared PostgreSQL. No Redis, no RabbitMQ, no Celery �
 
 DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers four vendors out of the box:
 
-| Vendor | CLI Binary | Latest models | Status |
+| Vendor | CLI Binary | Picker models (default first) | Source of the IDs |
 |---|---|---|---|
-| `anthropic` | `claude` | **Claude Sonnet 5.5** (default), Opus 5.5, Fable 5.1, Sonnet 5, Opus 5, Fable 5, Opus 4.8, Haiku 4.5 | Production-tested |
-| `google` | `agy` | **Gemini 3.1 Pro** (default, High/Low), Gemini 3.8 / 3.7 / 3.6 Flash (via the Antigravity CLI) | Listed by agy 1.2.16 |
-| `openai` | `codex` | **GPT-6 Astra**, GPT-5.6 Sol / Terra / Luna, GPT-5.5, GPT-5.4, GPT-5.3 Codex | Structurally complete |
-| `glm` | `claude` | GLM-5.2 / 5.1 / 5 Turbo — runs the Claude CLI against Zhipu's Anthropic-compatible API | Production-tested |
+| `anthropic` | `claude` | **Claude Sonnet 5.5**, Opus 5.5, Fable 5.1, **Haiku 5.5**, Sonnet 5, Opus 5, Fable 5 | Anthropic models page |
+| `google` | `agy` | **Gemini 3.1 Pro** (High/Low), **Gemini 4 Argon** (High/Medium/Low), Gemini 3.8 Flash | `agy models` (Antigravity CLI 1.4.9) |
+| `openai` | `codex` | **GPT-6 Astra**, GPT-5.6 Sol / Terra / Luna, GPT-5.5 | model catalogue in codex-cli 0.155.1 |
+| `glm` | `claude` | **GLM-5.3**, 5.2, 5.1, 5 Turbo, 5 — the Claude CLI against Zhipu's Anthropic-compatible API | Zhipu `/models` API |
 
-Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is ~30 lines of Python.
+Older models (Claude 4.x, Gemini 3.6/3.7 Flash, GPT-5.2–5.4, GLM-4.x) are marked `deprecated`: hidden from the pickers, still accepted where a task or repo already stores them.
+
+Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is one `AgentBackend` subclass, a `register_backend()` call and its models in `VENDOR_MODELS`.
 
 > **Note — Google migrated to the Antigravity CLI.** Google retired the Gemini CLI on 2026-06-18 (`gemini` commands now return *410 Gone*). The Google backend now drives Google's replacement, the **Antigravity CLI** (`agy`), reusing the same Gemini API key and Google AI Pro/Ultra subscription. Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash`.
 
@@ -439,18 +393,37 @@ Before any agent subprocess starts, the worker builds a regex-based symbol index
 
 Concurrent tasks hitting vendor rate limits are handled at two levels:
 
-1. **Per-subprocess 429 backoff** — a rate-limit failure inside `_run_claude` is retried with exponential backoff (30s, 60s, 120s + jitter) without consuming a task-level retry.
+1. **Per-subprocess 429 backoff** — a vendor 429 is retried by `retry_async` with a `Backoff((30, 60, 120), jitter=10)` policy without consuming a task-level attempt.
 2. **Minimal retry prompts** — resumed sessions receive only the error/remediation block, not the full context again, cutting per-retry token usage by ~50%.
 
-📂 [`apps/worker/src/services/agent_runner.py`](apps/worker/src/services/agent_runner.py)
+📂 [`runner/agent_call.py`](apps/worker/src/services/runner/agent_call.py) · [`runner/prompt.py`](apps/worker/src/services/runner/prompt.py)
 
 ### 6. Governance-grade OpenTelemetry (opt-in)
 
-DevServer can export its entire task pipeline as OpenTelemetry spans to any OTLP collector (Langfuse, Grafana Tempo, Datadog, Jaeger). It's wired at the **single `_emit_event` chokepoint** every task event already flows through, so one wrapper covers all ~16 event types: a per-task root span is opened at task start, each event becomes a span event, and the run closes at the terminal status. Beyond the standard GenAI attributes (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`), spans carry **DevServer-only governance attributes** — `devserver.reality_score`, `devserver.budget.cost_usd` / `.wall_seconds`, `devserver.preflight.secret_hits`, `devserver.error_class`, `devserver.vendor_failover`, `devserver.final_status` — the richest agent telemetry, in your own stack.
+DevServer can export its entire task pipeline as OpenTelemetry spans to any OTLP collector (Langfuse, Grafana Tempo, Datadog, Jaeger). It's wired at the **single `store.emit_event` chokepoint** every task event already flows through, so one wrapper covers all ~16 event types: a per-task root span is opened at task start, each event becomes a span event, and the run closes at the terminal status. Beyond the standard GenAI attributes (`gen_ai.system`, `gen_ai.request.model`, `gen_ai.usage.*`), spans carry **DevServer-only governance attributes** — `devserver.reality_score`, `devserver.budget.cost_usd` / `.wall_seconds`, `devserver.preflight.secret_hits`, `devserver.error_class`, `devserver.vendor_failover`, `devserver.final_status` — the richest agent telemetry, in your own stack.
 
 It is **fully opt-in and zero-overhead**: a no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set *and* the optional `otel` extra is installed (`uv sync --extra otel`), so deployments that don't use it pay nothing.
 
 📂 [`apps/worker/src/services/telemetry.py`](apps/worker/src/services/telemetry.py)
+
+### 7. Patterns, named
+
+The code uses a handful of well-known patterns, each where it removes a real problem rather than for its own sake:
+
+| Pattern | Where | Why it is there |
+|---|---|---|
+| **Strategy** | `AgentBackend` subclasses in [`agent_backends.py`](apps/worker/src/services/agent_backends.py) | Each vendor CLI differs in argv, env, output and 429 shape; the runner never branches on vendor. |
+| **Registry** | `register_backend()`, `VENDOR_MODELS`, `RunningTasks` | One lookup point: tests plug a fake backend in; cancel finds the live run. |
+| **Context object** | `TaskContext` in [`runner/context.py`](apps/worker/src/services/runner/context.py) | Phases share state explicitly instead of through 30 local variables in one function. |
+| **Parameter object** | `AgentInvocation` in [`runner/agent_call.py`](apps/worker/src/services/runner/agent_call.py) | Eleven arguments become one immutable, named value. |
+| **Result type / state machine** | `Verdict` + `AttemptResult` in [`runner/results.py`](apps/worker/src/services/runner/results.py) | Control flow is data: the loop and the outcome are `match` statements, not `break`/`continue` webs. |
+| **Repository functions / unit of work** | [`runner/store.py`](apps/worker/src/services/runner/store.py), [`repo_lock.py`](apps/worker/src/services/repo_lock.py) | SQL stays out of orchestration; every write is one short transaction. |
+| **Lease with heartbeat** | [`repo_lock.hold()`](apps/worker/src/services/repo_lock.py) | A crashed worker's lock expires; a live one is never mistaken for stale. |
+| **Circuit breaker** | [`budget.py`](apps/worker/src/services/budget.py) | A runaway retry loop stops at a cost or wall-clock cap. |
+| **Retry policy object** | `Backoff` + `retry_async` in [`retry.py`](apps/worker/src/services/retry.py) | The schedule is data; the loop is written once. |
+| **Fan-out dispatcher (observer)** | [`notify/`](apps/worker/src/services/notify/) | Telegram, Discord and push backends receive typed events; a failing channel never blocks another. |
+| **Adapter** | [`import_sources/`](apps/worker/src/services/import_sources/) | Confluence is one pluggable source behind a common interface. |
+| **Dependency injection** | webhook firing in [`apps/web/src/lib/webhooks/`](apps/web/src/lib/webhooks/) | The HTTP handler is tested with a fake data-access object, no database. |
 
 ## Tech Stack
 
@@ -462,7 +435,7 @@ It is **fully opt-in and zero-overhead**: a no-op unless `OTEL_EXPORTER_OTLP_END
 | **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
 | **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
 | **AI engines** | Claude, Gemini, Codex, GLM CLIs | DevServer *orchestrates* existing CLIs instead of reimplementing agent logic. |
-| **Embeddings** | `fastembed` (local, ONNX/CPU) | Local semantic embeddings for Pro memory recall — no cloud API, no key. Default `BAAI/bge-base-en-v1.5` (768-dim), override via `EMBEDDING_MODEL`. |
+| **Embeddings** | `fastembed` (local, ONNX/CPU) | Local semantic embeddings for memory recall — no cloud API, no key. Default `BAAI/bge-base-en-v1.5` (768-dim), override via `EMBEDDING_MODEL`. |
 | **Git platform** | Gitea / Forgejo / GitHub / Local Git | Gitea and GitHub get PRs via their REST APIs; Local Git repos work on a plain local clone — any provider, no API, no tokens. |
 | **Notifications** | Telegram Bot API | Basic task lifecycle alerts. |
 | **Charts** | Chart.js + react-chartjs-2 | Lightweight, no-frills analytics visualizations. |
@@ -507,17 +480,15 @@ existing database is just:
 
 This adds the latest memory tables/columns and reshapes the
 `agent_memory.embedding` column to the local-embedding dimension (768).
-**Pro users** then backfill embeddings with the local model (the reshape
-drops the old vectors):
+Backfill embeddings with the local model afterwards (the reshape drops the
+old vectors):
 
 ```bash
 cd apps/worker && uv run python scripts/reembed_memory.py
 ```
 
-`fastembed` is a worker dependency now; the embedding model downloads on
-first use (the Docker image pre-bakes it). No embedding API key is required.
-See [README.PRO.md](README.PRO.md#migrating-an-existing-postgres-database-memory-kb)
-for the full memory-KB upgrade + usage guide.
+`fastembed` is a worker dependency; the embedding model downloads on first
+use (the Docker image pre-bakes it). No embedding API key is required.
 
 ### Docker (recommended for production)
 
@@ -804,141 +775,79 @@ Supports both local and Docker modes automatically.
 
 ```
 apps/
-  web/                                → Next.js 15 frontend, API routes, PgQueuer producer, WebSocket server
-    src/components/
-      Dashboard.tsx                   → Dashboard with stats widgets and queue controls
-      DashboardCharts.tsx             → Analytics charts + governance KPIs (cost/PR, abstain savings)
-      TaskDetail.tsx                  → Task detail — events, logs, agent settings, run history
-      TaskForm.tsx                    → Create/edit task form with template picker
-      TaskTable.tsx                   → Task list with filters
-      PipelineBoard.tsx               → Kanban board view (Grid ⇄ Board on the Tasks page)
-      RepoDiagramModal.tsx            → Mermaid architecture diagram modal
-      TemplateList.tsx                → Template CRUD management
-      IdeasView.tsx                   → Hierarchical idea tree (drag-and-drop reparenting)
-      ImportModal.tsx                 → Import from Confluence dialog (Tasks + Ideas)
-      LogsView.tsx                    → Live log viewer
-      SettingsForm.tsx                → Global settings editor (incl. Confluence connection)
-    src/app/api/
-      tasks/                          → Task CRUD + enqueue
-      templates/                      → Template CRUD
-      analytics/                      → Dashboard analytics data
-      logs/                           → Log file streaming
-      settings/                       → Worker settings read/write
-      import/                         → Confluence import (sources, search, preview, import)
+  web/                                → Next.js frontend, API routes, PgQueuer producer, WebSocket server
+    src/components/                   → Dashboard, TaskDetail (+ PlanCard, PatchesPanel, TaskNotesPanel), forms
+    src/lib/agent-vendors.ts          → Model registry client (fetched from the worker, never hand-copied)
+    src/lib/webhooks/                 → Template rendering, HMAC verification, trigger firing (+ tests)
+    src/app/api/                      → Tasks, templates, analytics, settings, import, webhooks
+    src/app/webhooks/                 → Webhook trigger admin page
   mcp-memory/                         → stdio MCP server — task control for coding CLIs (devserver-mcp)
   worker/                             → Python FastAPI worker + PgQueuer consumer
     src/services/
-      _free_hooks.py                  → Free hook implementations + no-op stubs for pro features (always present)
-      reality_gate.py                 → Reality gate lite (0–100 pre-run evidence score)
-      pr_preflight.py                 → Deterministic pre-push checks (secrets, size, author)
-      secret_rules.py                 → Shared secret-detection regex rules + scanner
-      memory.py                       → Basic agent memory: store + hybrid (vector + lexical RRF) recall
-      agent_runner.py                 → Main task execution loop with retry logic
-      agent_backends.py               → Vendor abstraction (Claude, Gemini, Codex, GLM)
-      repo_map.py                     → Multi-language symbol map + Mermaid diagram (build_mermaid)
-      telemetry.py                    → Governance OpenTelemetry export (opt-in, OTLP)
-      error_classifier.py             → 20 regex rules → targeted retry hints
-      outcome.py                      → Repo-level outcome forecast (free baseline)
-      app_settings.py                 → Typed reader for the key/value settings table
-      llm_client.py                   → Vendor-agnostic system LLM client
-      verifier.py                     → Pre/build/test/lint runner
-      git_ops.py                      → Git worktree management, Gitea/GitHub PRs, local-folder repos
-      queue_bridge.py                 → Worker → Next.js enqueue handoff (single queue producer)
-      import_sources/                 → Pluggable external-import adapters (Confluence)
-    src/routes/
-      internal.py                     → Status, pause, cancel, generate-task, prediction, MCP task control
-docs/                               → Architecture design notes (RLM memory lanes, A2A, shared-memory MCP)
-database/
-  migrations/                         → Versioned SQL migrations (002 adds the external-import ledger)
-config/
-  .env.example                        → Sanitised environment template
-docker/
-  Dockerfile                          → EVERY image; pick one with --target (web|worker|pydeps)
-  docker-compose.yml                  → Full stack deployment (Postgres + web + worker)
-  docker-compose.host-worker.yml      → Postgres + web in Docker, worker on host
-  devserver-bootstrap.py              → First-start schema apply + settings seed
-scripts/
-  build.sh / start.sh / stop.sh / restart.sh  → Dev + prod + docker lifecycle helpers
-  migrate.sh                          → Run database migrations
-  dbrestart.sh                        → Restart and verify PostgreSQL (container, service, or pg_ctl)
-  devserver-backup.sh                 → Full-system backup
-  devserver-restore.sh                → Restore from backup archive
+      agent_runner.py                 → run_task: the orchestrator
+      runner/                         → the run, phase by phase
+        context.py                    →   TaskSpec / RepoSpec snapshots + TaskContext
+        store.py                      →   short-session DB operations (events, runs, stats)
+        phases.py                     →   prepare → evidence → attempts (primary, backup) → finalise
+        attempt.py                    →   one attempt: budget → agent → verify → preflight → handover
+        failures.py, results.py       →   retry / escalate decisions and the Verdict vocabulary
+        evidence.py, prompt.py        →   repo map, reality gate, memory recall; the prompt builder
+        preflight.py, delivery.py     →   PR preflight bookkeeping; branch / commit / patch handover
+        outcome.py                    →   terminal status, daily stats, notification — written once
+        agent_call.py, task_log.py    →   one vendor CLI invocation; the per-task log file
+      agent_backends.py               → Vendor strategies + the typed model registry
+      plan_gate.py                    → Plan Gate (interactive mode)
+      task_notes.py                   → Task Notes (operator → running agent)
+      patch_export.py                 → Patch Export (format-patch + traversal guard)
+      repo_lock.py                    → Repo lock leases with heartbeat
+      running_tasks.py, task_control.py → Cancellation: registry of live runs + cancel/continue
+      queue_consumer.py               → Job execution, requeue on a busy repo
+      retry.py, budget.py             → Retry policy; budget circuit breaker
+      system_llm.py                   → The one reader of the system-LLM settings
+      reality_gate.py, pr_preflight.py, secret_rules.py → Guardrails
+      error_classifier.py, verifier.py, repo_map.py, memory.py, git_ops.py, proc.py
+    src/routes/                       → tasks, task_actions, task_artifacts, repos, system, generation, registry, assistant
+    tests/runner/                     → Characterisation + integration tests (real PostgreSQL, fake agent subprocess)
+    tests/unit/                       → Pure unit tests
+docs/                                 → architecture.md (design walkthrough), decisions.md (decision log)
+database/migrations/                  → Idempotent SQL schema
+config/.env.example                   → Sanitised environment template
+docker/                               → One Dockerfile (--target web|worker|pydeps) + compose files
+scripts/                              → build / start / stop / migrate / backup / restore helpers
 ```
 
-## Pro Edition
+## Development
 
-DevServer ships as two editions:
+```bash
+cd apps/worker
+uv sync
+uv run ruff check . && uv run ruff format --check .   # blocking
+uv run pyright                                         # basic mode, reported
+uv run pytest                                          # needs a local PostgreSQL for tests/runner
+```
 
-| Feature | Free | Pro |
-|---|:---:|:---:|
-| Multi-vendor agent backends (Claude, Gemini, Codex, GLM) | ✅ | ✅ |
-| Error-class-aware retries (20+ regex rules) | ✅ | ✅ |
-| Multi-language repo map | ✅ | ✅ |
-| Auto-failover between vendors | ✅ | ✅ |
-| Rate-limit backoff (per-subprocess 429 handling) | ✅ | ✅ |
-| Dashboard with analytics charts | ✅ | ✅ |
-| Ask Agent panel (product Q&A, page-aware) | ✅ | ✅ |
-| Pipeline board (Grid ⇄ Board task view, live lanes) | ✅ | ✅ |
-| Architecture diagram (Mermaid module tree, no LLM) | ✅ | ✅ |
-| Governance analytics (cost-per-PR, abstain savings) | ✅ | ✅ |
-| Governance OpenTelemetry export (OTLP, opt-in) | ✅ | ✅ |
-| Task templates | ✅ | ✅ |
-| Ideas brainstorm tree | ✅ | ✅ |
-| Live log viewer | ✅ | ✅ |
-| Settings / system LLM configuration | ✅ | ✅ |
-| Basic Telegram notifications | ✅ | ✅ |
-| Backup & restore scripts | ✅ | ✅ |
-| Git worktree isolation + Gitea/GitHub PRs | ✅ | ✅ |
-| Local Git repos (any provider's local clone — no remote, no tokens) | ✅ | ✅ |
-| Cron schedules that re-run tasks | ✅ | ✅ |
-| Import from Confluence (pages → Tasks / Ideas) | ✅ | ✅ |
-| MCP server — task control from Claude Code / Codex / Gemini | ✅ (`task_*` tools, stdio) | ✅ + memory/corpus tools, remote HTTP |
-| Full build/test/lint verifier | ✅ | ✅ |
-| Outcome forecast (success probability + duration) | ✅ repo baseline | ✅ similar-task |
-| Reality gate (0–100 evidence scoring) | ✅ lite (repo map + recent commits) | ✅ + PR collision + history |
-| Session observatory (watch every Claude / Codex agent on the host) | — | ✅ |
-| Ask Agent tools (cross-repo search, memory, one-click fixes) | — | ✅ |
-| Strict abstain gate (block low-evidence tasks before they run) | ✅ | ✅ |
-| Per-repo memory knowledge base (past task recall) | ✅ basic (store + recall) | ✅ full KB |
-| Local embeddings — fastembed, no cloud key (powers memory recall) | ✅ | ✅ |
-| Hybrid recall (vector + lexical RRF) + optional LLM rerank | ✅ (no rerank) | ✅ |
-| Verbatim transcript drawers + pre-compaction save | — | ✅ |
-| Temporal facts + invalidation (knowledge-graph-lite) | — | ✅ |
-| Topic scoping + cross-repo memory tunnels | — | ✅ |
-| Wake-up digest + runtime agent memory diary | — | ✅ |
-| Pull-on-demand memory lanes (transcripts/facts/decisions) + repo-map drill-down | — | ✅ |
-| Memory recency decay + auto-archive | — | ✅ |
-| Decision / causal memory (problem → choice → reasoning) | — | ✅ |
-| Iterative multi-hop memory recall | — | ✅ |
-| Interactive plan approval gate | — | ✅ |
-| Per-task budget circuit breaker | ✅ | ✅ + Telegram alerts |
-| PR preflight (secret scan, allow-list, author check) | ✅ (no plan allow-list) | ✅ |
-| Patch export (`git format-patch` + `combined.mbox`) | — | ✅ |
-| Night cycle (autonomous overnight batch) | — | ✅ |
-| Rich Telegram (inline keyboards) | — | ✅ |
-| Inter-task messaging bus + operator inbox (secret-screened) | — | ✅ |
-| Webhook triggers (Gitea/GitHub/Sentry/Grafana → task) | — | ✅ |
-| Hardened Docker Compose (resource limits, log rotation, security) | — | ✅ |
+The integration tests create and migrate `devserver_test` on first use (override with `DEVSERVER_TEST_DATABASE_URL`); without a reachable server they are skipped and the unit tests still run.
 
-The free edition compiles and runs without errors — the agent runner
-gracefully degrades when pro modules are absent, falling back to
-`_free_hooks.py`, which provides the free implementations above (reality
-gate lite, PR preflight, budget circuit breaker, basic hybrid memory) and
-no-op stubs for everything else.
-
-See [README.PRO.md](README.PRO.md) for full Pro feature documentation.
+```bash
+cd apps/web
+npm test              # webhook template / signature / handler tests
+npx tsc --noEmit
+```
 
 ## Roadmap
 
-**Shipped.** Everything listed above is implemented and in production use.
+**Shipped.** Everything above is implemented and covered by tests.
+
+**Next:**
+
+- Make `pyright` blocking once the remaining basic-mode findings in older modules are fixed.
+- GPT-6.1 Sol / Terra, GPT-6 Luna and GPT-6 Pro in the registry as soon as the Codex CLI catalogue lists them.
 
 **Intentionally deferred:**
 
-- **Parallel sub-agents per task** — git worktrees are already per-task; sub-worktrees add complexity with unclear ROI at current scale.
-- **Learned rules from review reactions** (Cursor Bugbot style) — requires a dashboard review surface DevServer doesn't expose yet.
-- **Sandboxed container per task** (OpenHands style) — overlaps with the existing git worktree + `repo_locks` isolation.
-- **Codebase-as-typed-graph** (Codegen style) — the repo map captures ~80% of the value at a small fraction of the effort.
-- **Automated cross-repo apply** — today patches are generated for manual `git am`; automated second-worktree apply is the planned upgrade path.
+- **Parallel sub-agents per task** — git worktrees are already per-task; sub-worktrees add complexity with unclear value at this scale.
+- **Sandboxed container per task** — overlaps with the existing worktree + repo-lock isolation.
+- **Codebase-as-typed-graph** — the repo map captures most of the value at a small fraction of the effort.
 
 Contributions and issues are welcome.
 

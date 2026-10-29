@@ -46,9 +46,7 @@ async def main(reembed_all: bool) -> None:
     conn = await asyncpg.connect(dsn)
     try:
         where = "" if reembed_all else "WHERE embedding IS NULL"
-        rows = await conn.fetch(
-            f"SELECT id, content FROM agent_memory {where} ORDER BY id"
-        )
+        rows = await conn.fetch(f"SELECT id, content FROM agent_memory {where} ORDER BY id")
         total = len(rows)
         if not total:
             print("Nothing to re-embed.")
@@ -59,7 +57,7 @@ async def main(reembed_all: bool) -> None:
         for start in range(0, total, _BATCH):
             chunk = rows[start : start + _BATCH]
             vecs = await embeddings.embed_batch([r["content"] or "" for r in chunk])
-            for row, vec in zip(chunk, vecs):
+            for row, vec in zip(chunk, vecs, strict=False):
                 if vec is None:
                     continue
                 await conn.execute(

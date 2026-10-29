@@ -54,6 +54,7 @@ MIN_TOKEN_LEN = 4
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 def _tokenize_task(title: str, description: str, acceptance: str) -> set[str]:
     """Extract interesting tokens (symbols, file hints, keywords) from a task.
 
@@ -89,6 +90,7 @@ def _redistribute_weights(active: set[str]) -> dict[str, float]:
 
 # ── Source 1: repo-map hit rate ───────────────────────────────────────────────
 
+
 async def _check_repo_map(
     repo_map_text: str,
     task_tokens: set[str],
@@ -103,7 +105,7 @@ async def _check_repo_map(
         return {
             "source": "repo_map",
             "ok": True,
-            "signal": 0.5,   # neutral — we just don't know
+            "signal": 0.5,  # neutral — we just don't know
             "note": "no meaningful tokens in task text",
         }
 
@@ -135,6 +137,7 @@ async def _check_repo_map(
 
 # ── Source 2: recent-commit scan ──────────────────────────────────────────────
 
+
 async def _check_recent_commits(
     worktree_path: str,
     task_tokens: set[str],
@@ -156,14 +159,20 @@ async def _check_recent_commits(
     try:
         _, stdout, _ = await proc_util.run(
             [
-                "git", "-C", worktree_path, "log",
+                "git",
+                "-C",
+                worktree_path,
+                "log",
                 f"--since={RECENT_COMMIT_WINDOW_DAYS} days ago",
-                "--name-only", "--pretty=format:", "-n", "200",
+                "--name-only",
+                "--pretty=format:",
+                "-n",
+                "200",
             ],
             timeout=10,
             stderr_devnull=True,
         )
-    except (asyncio.TimeoutError, FileNotFoundError, OSError):
+    except TimeoutError, FileNotFoundError, OSError:
         return {
             "source": "recent_commits",
             "ok": False,
@@ -172,8 +181,7 @@ async def _check_recent_commits(
         }
 
     recent_files = {
-        line.strip() for line in stdout.decode(errors="replace").splitlines()
-        if line.strip()
+        line.strip() for line in stdout.decode(errors="replace").splitlines() if line.strip()
     }
 
     if not recent_files:
@@ -219,6 +227,7 @@ async def _check_recent_commits(
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 async def run_reality_gate(
     *,
@@ -277,7 +286,11 @@ async def run_reality_gate(
                 "very few task tokens were found in the repo map — "
                 "the task may be referring to code that doesn't exist"
             )
-        if ev.get("source") == "recent_commits" and ev.get("ok") and float(ev.get("signal", 1)) < 0.5:
+        if (
+            ev.get("source") == "recent_commits"
+            and ev.get("ok")
+            and float(ev.get("signal", 1)) < 0.5
+        ):
             warnings.append(ev.get("note", "task overlaps an actively changing area"))
 
     return {

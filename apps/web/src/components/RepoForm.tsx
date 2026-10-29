@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   CForm,
@@ -18,6 +18,8 @@ import {
 } from '@coreui/react-pro';
 import type { Repo } from '@/lib/types';
 import { ModelCombobox } from '@/components/ModelCombobox';
+import { defaultModelFor } from '@/lib/agent-vendors';
+import { useAgentRegistry } from '@/lib/use-agent-registry';
 
 interface RepoFormProps {
   repo?: Repo;
@@ -26,6 +28,7 @@ interface RepoFormProps {
 export function RepoForm({ repo }: RepoFormProps) {
   const router = useRouter();
   const isEdit = !!repo;
+  const agentRegistry = useAgentRegistry();
 
   const [formData, setFormData] = useState({
     name: repo?.name || '',
@@ -39,7 +42,8 @@ export function RepoForm({ repo }: RepoFormProps) {
     test_cmd: repo?.test_cmd || '',
     lint_cmd: repo?.lint_cmd || '',
     pre_cmd: repo?.pre_cmd || '',
-    claude_model: repo?.claude_model || 'claude-sonnet-5-5',
+    // New repos get the registry's default model once it has loaded.
+    claude_model: repo?.claude_model || '',
     claude_allowed_tools: repo?.claude_allowed_tools || '',
     gitea_token: repo?.gitea_token || '',
     max_retries: repo?.max_retries?.toString() || '3',
@@ -48,6 +52,13 @@ export function RepoForm({ repo }: RepoFormProps) {
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (isEdit || !agentRegistry) return;
+    setFormData((prev) =>
+      prev.claude_model ? prev : { ...prev, claude_model: defaultModelFor(agentRegistry, 'anthropic') },
+    );
+  }, [isEdit, agentRegistry]);
   const [reindexing, setReindexing] = useState(false);
   const [notice, setNotice] = useState('');
 

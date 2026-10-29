@@ -47,9 +47,7 @@ def install_redaction() -> None:
     """
     loggers = [logging.getLogger()]
     loggers += [
-        lg
-        for lg in logging.Logger.manager.loggerDict.values()
-        if isinstance(lg, logging.Logger)
+        lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger)
     ]
     for lg in loggers:
         for handler in lg.handlers:

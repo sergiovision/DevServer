@@ -29,7 +29,6 @@ import {
   CCol,
 } from '@coreui/react-pro';
 import type { TaskTemplate, GitFlow, ClaudeMode, AgentVendor, TaskType } from '@/lib/types';
-import { AGENT_VENDORS, defaultModelForVendor, modelsForVendor } from '@/lib/agent-vendors';
 import { TASK_TYPES, taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 import { VendorModelPicker } from './VendorModelPicker';
 import { MaxTurnsInput } from './MaxTurnsInput';
@@ -48,7 +47,7 @@ const EMPTY_FORM = {
   agent_vendor: 'anthropic' as AgentVendor,
   claude_model: '',
   backup_vendor: 'anthropic' as AgentVendor,
-  backup_model: 'claude-sonnet-4-6',
+  backup_model: '',
   max_turns: 50 as number | null,
   skip_verify: false,
 };
@@ -66,7 +65,7 @@ function templateToForm(t: TaskTemplate): FormData {
     agent_vendor: t.agent_vendor,
     claude_model: t.claude_model ?? '',
     backup_vendor: (t.backup_vendor ?? t.agent_vendor) as AgentVendor,
-    backup_model: t.backup_model ?? 'claude-sonnet-4-6',
+    backup_model: t.backup_model ?? '',
     max_turns: t.max_turns ?? 50,
     skip_verify: t.skip_verify,
   };
@@ -308,14 +307,8 @@ export function TemplateList({ templates }: TemplateListProps) {
             <VendorModelPicker
               vendor={form.agent_vendor}
               model={form.claude_model}
-              onVendorChange={(v) => {
-                const belongsToNext = modelsForVendor(v).some((m) => m.id === form.claude_model);
-                setForm((prev) => ({
-                  ...prev,
-                  agent_vendor: v,
-                  claude_model: belongsToNext ? prev.claude_model : defaultModelForVendor(v),
-                }));
-              }}
+              // The picker itself moves the model to the new vendor's default.
+              onVendorChange={(v) => setForm((prev) => ({ ...prev, agent_vendor: v }))}
               onModelChange={(m) => setForm((prev) => ({ ...prev, claude_model: m }))}
             />
           </div>
@@ -325,17 +318,10 @@ export function TemplateList({ templates }: TemplateListProps) {
             <VendorModelPicker
               vendor={form.backup_vendor}
               model={form.backup_model}
-              onVendorChange={(v) => {
-                const belongsToNext = modelsForVendor(v).some((m) => m.id === form.backup_model);
-                setForm((prev) => ({
-                  ...prev,
-                  backup_vendor: v,
-                  backup_model: belongsToNext ? prev.backup_model : defaultModelForVendor(v),
-                }));
-              }}
+              onVendorChange={(v) => setForm((prev) => ({ ...prev, backup_vendor: v }))}
               onModelChange={(m) => setForm((prev) => ({ ...prev, backup_model: m }))}
               modelLabel="Backup Model"
-              modelPlaceholder="Auto-fallover model"
+              modelPlaceholder="Blank = retry with the primary model"
               vendorName="backup_vendor"
               modelName="backup_model"
             />

@@ -42,13 +42,11 @@ successful task.
 
 from __future__ import annotations
 
-import asyncio
 import fnmatch
 import logging
 import os
-import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from config import settings
 from services import proc as proc_util
@@ -58,20 +56,64 @@ logger = logging.getLogger(__name__)
 
 # Binary file extensions we always skip when scanning for secrets (noise).
 _BINARY_EXT = {
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tiff",
-    ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
-    ".exe", ".dll", ".so", ".dylib", ".class", ".jar", ".wasm",
-    ".woff", ".woff2", ".ttf", ".otf", ".eot",
-    ".mp3", ".mp4", ".mov", ".avi", ".mkv", ".wav", ".flac",
-    ".db", ".sqlite", ".sqlite3",
-    ".parquet", ".arrow", ".pb", ".pkl", ".npy", ".npz",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".bmp",
+    ".tiff",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".rar",
+    ".exe",
+    ".dll",
+    ".so",
+    ".dylib",
+    ".class",
+    ".jar",
+    ".wasm",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".otf",
+    ".eot",
+    ".mp3",
+    ".mp4",
+    ".mov",
+    ".avi",
+    ".mkv",
+    ".wav",
+    ".flac",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".parquet",
+    ".arrow",
+    ".pb",
+    ".pkl",
+    ".npy",
+    ".npz",
 }
 
 # Files that are implicitly always forbidden in a PR.
 _FORBIDDEN_FILENAMES = {
-    ".env", ".env.local", ".env.production", ".env.development",
-    "credentials.json", "credentials.yaml",
-    "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.development",
+    "credentials.json",
+    "credentials.yaml",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
 }
 
 # Secret regex rules + the scanner live in ``services/secret_rules`` so other
@@ -84,10 +126,11 @@ DEFAULT_MAX_FILE_BYTES = 1_000_000  # 1 MB
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
+
 @dataclass
 class Violation:
-    kind: str                   # "scope_creep" | "secret_leak" | "oversize_file" | "bad_author"
-    severity: str               # "recoverable" | "hard"
+    kind: str  # "scope_creep" | "secret_leak" | "oversize_file" | "bad_author"
+    severity: str  # "recoverable" | "hard"
     path: str | None = None
     detail: str = ""
 
@@ -124,12 +167,13 @@ class PreflightResult:
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+
 async def _git(args: list[str], cwd: str, timeout: int = 20) -> tuple[int, str, str]:
     """Run a git subcommand — returns (rc, stdout, stderr)."""
     try:
         rc, stdout, stderr = await proc_util.run(["git", *args], cwd=cwd, timeout=timeout)
         return rc, stdout.decode(errors="replace"), stderr.decode(errors="replace")
-    except (asyncio.TimeoutError, FileNotFoundError, OSError) as exc:
+    except (TimeoutError, FileNotFoundError, OSError) as exc:
         logger.debug("git %s failed: %s", args, exc)
         return -1, "", str(exc)
 
@@ -153,10 +197,7 @@ def _parse_ignore_patterns() -> list[str]:
 
 def _is_ignored(path: str, patterns: list[str]) -> bool:
     """Return True if *path* matches any of the ignore glob patterns."""
-    for pat in patterns:
-        if fnmatch.fnmatch(path, pat):
-            return True
-    return False
+    return any(fnmatch.fnmatch(path, pat) for pat in patterns)
 
 
 def _normalize_allowlist(allowlist: Iterable[str] | None) -> set[str] | None:
@@ -171,6 +212,7 @@ def _normalize_allowlist(allowlist: Iterable[str] | None) -> set[str] | None:
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
 
 async def run_preflight(
     *,
@@ -229,38 +271,45 @@ async def run_preflight(
     if not skip_author_check:
         expected_email = (settings.git_user_email or "").strip().lower()
         rc_a, author_out, _ = await _git(
-            ["log", "-1", "--format=%ae"], cwd=worktree_path,
+            ["log", "-1", "--format=%ae"],
+            cwd=worktree_path,
         )
         if rc_a == 0:
             actual_email = author_out.strip().lower()
             if expected_email and actual_email and actual_email != expected_email:
-                result.violations.append(Violation(
-                    kind="bad_author",
-                    severity="hard",
-                    path=None,
-                    detail=f"HEAD author is {actual_email!r}, expected {expected_email!r}",
-                ))
+                result.violations.append(
+                    Violation(
+                        kind="bad_author",
+                        severity="hard",
+                        path=None,
+                        detail=f"HEAD author is {actual_email!r}, expected {expected_email!r}",
+                    )
+                )
 
     # 3. Per-file checks.
     for rel_path in changed:
         # 3a. Forbidden filename (.env etc) — hard.
         if _is_forbidden_filename(rel_path):
-            result.violations.append(Violation(
-                kind="secret_leak",
-                severity="hard",
-                path=rel_path,
-                detail=f"forbidden filename: {os.path.basename(rel_path)}",
-            ))
+            result.violations.append(
+                Violation(
+                    kind="secret_leak",
+                    severity="hard",
+                    path=rel_path,
+                    detail=f"forbidden filename: {os.path.basename(rel_path)}",
+                )
+            )
             # Still run the allowlist check below so the operator sees both.
 
         # 3b. Allowlist check — recoverable.
         if normalised_allowlist is not None and rel_path not in normalised_allowlist:
-            result.violations.append(Violation(
-                kind="scope_creep",
-                severity="recoverable",
-                path=rel_path,
-                detail="not in approved plan allow-list",
-            ))
+            result.violations.append(
+                Violation(
+                    kind="scope_creep",
+                    severity="recoverable",
+                    path=rel_path,
+                    detail="not in approved plan allow-list",
+                )
+            )
 
         abs_path = os.path.join(worktree_path, rel_path)
 
@@ -279,31 +328,35 @@ async def run_preflight(
         except OSError:
             size = 0
         if size > max_file_bytes:
-            result.violations.append(Violation(
-                kind="oversize_file",
-                severity="hard",
-                path=rel_path,
-                detail=f"{size} bytes exceeds limit {max_file_bytes}",
-            ))
+            result.violations.append(
+                Violation(
+                    kind="oversize_file",
+                    severity="hard",
+                    path=rel_path,
+                    detail=f"{size} bytes exceeds limit {max_file_bytes}",
+                )
+            )
             continue  # no point scanning a huge file for secrets too
 
         # 3d. Secret scan — hard, but skip binaries.
         if _is_binary_path(rel_path):
             continue
         try:
-            with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
+            with open(abs_path, encoding="utf-8", errors="replace") as fh:
                 content = fh.read(2_000_000)  # cap at 2 MB for safety
         except OSError:
             continue
 
         hits = _scan_secrets(content)
         for rule_key, excerpt in hits:
-            result.violations.append(Violation(
-                kind="secret_leak",
-                severity="hard",
-                path=rel_path,
-                detail=f"{rule_key}: {excerpt}",
-            ))
+            result.violations.append(
+                Violation(
+                    kind="secret_leak",
+                    severity="hard",
+                    path=rel_path,
+                    detail=f"{rule_key}: {excerpt}",
+                )
+            )
 
     result.ok = not result.has_hard_failure
     # Even pure scope_creep sets ok=False so the caller knows to retry.

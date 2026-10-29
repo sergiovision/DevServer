@@ -37,8 +37,7 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import settings
-from services import llm_client
+from services import llm_client, system_llm
 
 logger = logging.getLogger(__name__)
 
@@ -64,42 +63,6 @@ def _domain_hint(domain: str | None, config: dict | None) -> str:
 
 
 # ─── shared helpers ──────────────────────────────────────────────────────────
-
-async def _read_system_llm(session: AsyncSession) -> tuple[str, str, str]:
-    """Fetch (vendor, model, mode) from the settings table.
-
-    Defaults to GLM and ``mode='max'`` (subscription). ``mode`` is the
-    billing/transport path forwarded to ``llm_client.complete``.
-    """
-    vendor_row = await session.execute(
-        text("SELECT value FROM settings WHERE key = 'system_llm_vendor'")
-    )
-    model_row = await session.execute(
-        text("SELECT value FROM settings WHERE key = 'system_llm_model'")
-    )
-    mode_row = await session.execute(
-        text("SELECT value FROM settings WHERE key = 'system_llm_mode'")
-    )
-    v = vendor_row.scalar_one_or_none()
-    m = model_row.scalar_one_or_none()
-    md = mode_row.scalar_one_or_none()
-    vendor, model, mode = "glm", "glm-5.1", "max"
-    if v:
-        try:
-            vendor = _json.loads(v) if isinstance(v, str) and v.startswith('"') else str(v)
-        except Exception:
-            pass
-    if m:
-        try:
-            model = _json.loads(m) if isinstance(m, str) and m.startswith('"') else str(m)
-        except Exception:
-            pass
-    if md:
-        try:
-            mode = _json.loads(md) if isinstance(md, str) and md.startswith('"') else str(md)
-        except Exception:
-            pass
-    return vendor, model, mode
 
 
 async def _emit(session: AsyncSession, task_id: int | None, event_type: str, payload: dict) -> None:
@@ -141,21 +104,28 @@ def _parse_json_block(raw: str) -> dict | None:
 
 
 async def _load_node(session: AsyncSession, node_id: int) -> dict | None:
-    row = (await session.execute(
-        text(
-            """
+    row = (
+        (
+            await session.execute(
+                text(
+                    """
             SELECT i.id, i.parent_id, i.kind, i.title, i.content, i.task_id, i.tasked,
                    i.node_type, i.node_status, i.depth, i.sort_order
             FROM ideas i
             WHERE i.id = :nid
             """
-        ),
-        {"nid": node_id},
-    )).mappings().fetchone()
+                ),
+                {"nid": node_id},
+            )
+        )
+        .mappings()
+        .fetchone()
+    )
     return dict(row) if row else None
 
 
 # ─── leaf → task ─────────────────────────────────────────────────────────────
+
 
 async def _create_leaf_task(
     session: AsyncSession,
@@ -172,9 +142,11 @@ async def _create_leaf_task(
     left ``pending`` — enqueue is the operator's call, matching the
     existing convert-to-task UX.
     """
-    repo_row = (await session.execute(
-        text("SELECT id FROM repos WHERE active ORDER BY id LIMIT 1"),
-    )).fetchone()
+    repo_row = (
+        await session.execute(
+            text("SELECT id FROM repos WHERE active ORDER BY id LIMIT 1"),
+        )
+    ).fetchone()
     repo_id = repo_row[0] if repo_row else None
     if not repo_id:
         return None
@@ -182,9 +154,10 @@ async def _create_leaf_task(
     # task_key is unique per (repo_id, task_key); the node id is globally
     # unique in ideas, so GOAL-<node_id> is stable and traceable.
     task_key = f"GOAL-{node['id']}"
-    row = (await session.execute(
-        text(
-            """
+    row = (
+        await session.execute(
+            text(
+                """
             INSERT INTO tasks
                 (repo_id, task_key, title, description, acceptance,
                  priority, status, mode, git_flow, created_by)
@@ -198,15 +171,16 @@ async def _create_leaf_task(
                     updated_at = NOW()
             RETURNING id
             """
-        ),
-        {
-            "repo_id": repo_id,
-            "task_key": task_key,
-            "title": title[:2000],
-            "description": description,
-            "acceptance": acceptance,
-        },
-    )).fetchone()
+            ),
+            {
+                "repo_id": repo_id,
+                "task_key": task_key,
+                "title": title[:2000],
+                "description": description,
+                "acceptance": acceptance,
+            },
+        )
+    ).fetchone()
     task_id = row[0] if row else None
     if task_id:
         await session.execute(
@@ -281,7 +255,8 @@ async def expand_node(
     # Single system-LLM call = atomicity check + plan-sketch.
     plan: dict | None = None
     if depth < max_depth:
-        vendor, model, mode = await _read_system_llm(session)
+        llm = await system_llm.read(session)
+        vendor, model, mode = llm.vendor, llm.model, llm.mode
         prompt = _EXPAND_PROMPT.format(
             domain=domain,
             domain_hint=_domain_hint(domain, None),
@@ -292,8 +267,13 @@ async def expand_node(
         )
         try:
             raw = await llm_client.complete(
-                vendor=vendor, model=model, prompt=prompt, max_tokens=2048,
-                timeout=120, json_mode=True, mode=mode,
+                vendor=vendor,
+                model=model,
+                prompt=prompt,
+                max_tokens=2048,
+                timeout=120,
+                json_mode=True,
+                mode=mode,
             )
             plan = _parse_json_block(raw)
         except Exception:
@@ -309,11 +289,15 @@ async def expand_node(
 
     if is_leaf:
         reason = (
-            "max depth reached" if depth >= max_depth
+            "max depth reached"
+            if depth >= max_depth
             else (plan or {}).get("reason") or "atomic / no decomposition"
         )
         task_id = await _create_leaf_task(
-            session, node=node, title=title, description=content,
+            session,
+            node=node,
+            title=title,
+            description=content,
             acceptance=(plan or {}).get("acceptance", "") or "",
         )
         await session.execute(
@@ -323,14 +307,28 @@ async def expand_node(
             ),
             {"sr": reason, "nid": node_id},
         )
-        await _emit(session, task_id, "node_leafified",
-                    {"node_id": node_id, "task_id": task_id, "reason": reason,
-                     "materialised": task_id is not None})
+        await _emit(
+            session,
+            task_id,
+            "node_leafified",
+            {
+                "node_id": node_id,
+                "task_id": task_id,
+                "reason": reason,
+                "materialised": task_id is not None,
+            },
+        )
         await session.commit()
         if enqueue and task_id:
             await _enqueue_task(task_id)
-        return {"ok": True, "node_id": node_id, "outcome": "leaf",
-                "children": [], "task_id": task_id, "reason": reason}
+        return {
+            "ok": True,
+            "node_id": node_id,
+            "outcome": "leaf",
+            "children": [],
+            "task_id": task_id,
+            "reason": reason,
+        }
 
     # ── SPLIT: insert children, then resolve depends_on among leaf children ──
     children = (plan.get("children") or [])[:_MAX_CHILDREN]
@@ -346,9 +344,10 @@ async def expand_node(
         c_status = "ready" if c_is_leaf else "draft"
         c_node_type = "leaf" if c_is_leaf else "subtask"
 
-        crow = (await session.execute(
-            text(
-                """
+        crow = (
+            await session.execute(
+                text(
+                    """
                 INSERT INTO ideas
                     (parent_id, kind, title, content,
                      node_type, node_status, depth, sort_order)
@@ -357,30 +356,41 @@ async def expand_node(
                      :ntype, :nstatus, :depth, :sort)
                 RETURNING id
                 """
-            ),
-            {
-                "pid": node_id,
-                "title": c_title,
-                "content": c_content,
-                "ntype": c_node_type,
-                "nstatus": c_status,
-                "depth": depth + 1,
-                "sort": idx,
-            },
-        )).fetchone()
+                ),
+                {
+                    "pid": node_id,
+                    "title": c_title,
+                    "content": c_content,
+                    "ntype": c_node_type,
+                    "nstatus": c_status,
+                    "depth": depth + 1,
+                    "sort": idx,
+                },
+            )
+        ).fetchone()
         child_id = crow[0]
 
         task_id = None
         if c_is_leaf:
             child_node = await _load_node(session, child_id)
             task_id = await _create_leaf_task(
-                session, node=child_node, title=c_title,
-                description=c_desc or c_title, acceptance=c_accept,
+                session,
+                node=child_node,
+                title=c_title,
+                description=c_desc or c_title,
+                acceptance=c_accept,
             )
 
         depends_idx = child.get("depends_on") if isinstance(child.get("depends_on"), list) else []
-        inserted.append({"idx": idx, "id": child_id, "is_leaf": c_is_leaf,
-                         "task_id": task_id, "depends_idx": depends_idx})
+        inserted.append(
+            {
+                "idx": idx,
+                "id": child_id,
+                "is_leaf": c_is_leaf,
+                "task_id": task_id,
+                "depends_idx": depends_idx,
+            }
+        )
 
     # Resolve sibling dependencies → tasks.depends_on (only edges between
     # materialised leaf tasks; subtask deps are honoured once they leafify).
@@ -388,7 +398,11 @@ async def expand_node(
     for c in inserted:
         if not c["task_id"]:
             continue
-        dep_task_ids = [idx_to_task[i] for i in c["depends_idx"] if i in idx_to_task and idx_to_task[i] != c["task_id"]]
+        dep_task_ids = [
+            idx_to_task[i]
+            for i in c["depends_idx"]
+            if i in idx_to_task and idx_to_task[i] != c["task_id"]
+        ]
         if dep_task_ids:
             await session.execute(
                 text("UPDATE tasks SET depends_on = :dep WHERE id = :tid"),
@@ -402,9 +416,17 @@ async def expand_node(
         ),
         {"nt": parent_type, "er": plan.get("reason") or "", "nid": node_id},
     )
-    await _emit(session, None, "goal_expanded",
-                {"node_id": node_id, "children": [c["id"] for c in inserted],
-                 "count": len(inserted), "reason": plan.get("reason")})
+    await _emit(
+        session,
+        None,
+        "goal_expanded",
+        {
+            "node_id": node_id,
+            "children": [c["id"] for c in inserted],
+            "count": len(inserted),
+            "reason": plan.get("reason"),
+        },
+    )
     await session.commit()
 
     if enqueue:
@@ -412,9 +434,14 @@ async def expand_node(
             if c["task_id"] and not c["depends_idx"]:
                 await _enqueue_task(c["task_id"])
 
-    return {"ok": True, "node_id": node_id, "outcome": "split",
-            "children": [c["id"] for c in inserted], "task_id": None,
-            "reason": plan.get("reason")}
+    return {
+        "ok": True,
+        "node_id": node_id,
+        "outcome": "split",
+        "children": [c["id"] for c in inserted],
+        "task_id": None,
+        "reason": plan.get("reason"),
+    }
 
 
 # ─── rollup ──────────────────────────────────────────────────────────────────
@@ -446,25 +473,35 @@ async def rollup_node(session: AsyncSession, node_id: int) -> dict:
     if not node:
         return {"ok": False, "reason": f"node {node_id} not found"}
 
-    children = (await session.execute(
-        text(
-            """
+    children = (
+        (
+            await session.execute(
+                text(
+                    """
             SELECT id, title, node_status, rollup_summary, content, task_id
             FROM ideas
             WHERE parent_id = :pid AND node_type IS NOT NULL
             ORDER BY sort_order, id
             """
-        ),
-        {"pid": node_id},
-    )).mappings().fetchall()
+                ),
+                {"pid": node_id},
+            )
+        )
+        .mappings()
+        .fetchall()
+    )
 
     active = [c for c in children if c["node_status"] != "abandoned"]
     if not active:
         return {"ok": False, "node_id": node_id, "reason": "no active children to roll up"}
     not_done = [c["id"] for c in active if c["node_status"] != "done"]
     if not_done:
-        return {"ok": False, "node_id": node_id, "reason": "children not all done",
-                "pending": not_done}
+        return {
+            "ok": False,
+            "node_id": node_id,
+            "reason": "children not all done",
+            "pending": not_done,
+        }
 
     # Build the children evidence block (prefer a child's own rollup summary).
     blocks = []
@@ -473,7 +510,8 @@ async def rollup_node(session: AsyncSession, node_id: int) -> dict:
         blocks.append(f"### {c['title']}\n{body or '(no summary)'}")
     children_block = "\n\n".join(blocks)
 
-    vendor, model, mode = await _read_system_llm(session)
+    llm = await system_llm.read(session)
+    vendor, model, mode = llm.vendor, llm.model, llm.mode
     prompt = _ROLLUP_PROMPT.format(
         title=node["title"],
         content=(node.get("content") or "")[:2000] or "(no detail)",
@@ -482,15 +520,20 @@ async def rollup_node(session: AsyncSession, node_id: int) -> dict:
     summary, score, evidence = "", _ROLLUP_PASS_SCORE, ""
     try:
         raw = await llm_client.complete(
-            vendor=vendor, model=model, prompt=prompt, max_tokens=2048,
-            timeout=120, json_mode=True, mode=mode,
+            vendor=vendor,
+            model=model,
+            prompt=prompt,
+            max_tokens=2048,
+            timeout=120,
+            json_mode=True,
+            mode=mode,
         )
         parsed = _parse_json_block(raw) or {}
         summary = str(parsed.get("summary") or "").strip()
         evidence = str(parsed.get("evidence") or "").strip()
         try:
             score = int(parsed.get("score"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             score = _ROLLUP_PASS_SCORE
     except Exception:
         logger.exception("rollup LLM call failed for node %s", node_id)
@@ -506,18 +549,33 @@ async def rollup_node(session: AsyncSession, node_id: int) -> dict:
             "UPDATE ideas SET node_status = :st, evaluator_score = :sc, "
             "rollup_summary = :rs, stop_reason = :sr WHERE id = :nid"
         ),
-        {"st": new_status, "sc": score,
-         "rs": (summary + (f"\n\n_evidence: {evidence}_" if evidence else "")),
-         "sr": stop_reason, "nid": node_id},
+        {
+            "st": new_status,
+            "sc": score,
+            "rs": (summary + (f"\n\n_evidence: {evidence}_" if evidence else "")),
+            "sr": stop_reason,
+            "nid": node_id,
+        },
     )
-    await _emit(session, node.get("task_id"), "node_rolled_up",
-                {"node_id": node_id, "score": score, "status": new_status})
+    await _emit(
+        session,
+        node.get("task_id"),
+        "node_rolled_up",
+        {"node_id": node_id, "score": score, "status": new_status},
+    )
     await session.commit()
-    return {"ok": True, "node_id": node_id, "status": new_status,
-            "score": score, "summary": summary, "reason": stop_reason}
+    return {
+        "ok": True,
+        "node_id": node_id,
+        "status": new_status,
+        "score": score,
+        "summary": summary,
+        "reason": stop_reason,
+    }
 
 
 # ─── redetalize (improve-over-improve; wired into agent_runner in a later phase) ─
+
 
 async def redetalize_node(session: AsyncSession, node_id: int, *, reason: str = "") -> dict:
     """Reopen a failed/over-budget leaf as a subtask and decompose one level.
@@ -536,12 +594,16 @@ async def redetalize_node(session: AsyncSession, node_id: int, *, reason: str = 
         ),
         {"er": f"re-detalized: {reason}"[:2000], "nid": node_id},
     )
-    await _emit(session, node.get("task_id"), "node_leafified",
-                {"node_id": node_id, "redetalize": True, "reason": reason})
+    await _emit(
+        session,
+        node.get("task_id"),
+        "node_leafified",
+        {"node_id": node_id, "redetalize": True, "reason": reason},
+    )
     await session.commit()
     return await expand_node(session, node_id)
 
 
 # ─── enqueue (best-effort; mirrors night_cycle's Next.js handoff) ────────────
 
-from services.queue_bridge import enqueue_via_web as _enqueue_task  # noqa: E402,F401
+from services.queue_bridge import enqueue_via_web as _enqueue_task  # noqa: E402

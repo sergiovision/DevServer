@@ -12,8 +12,8 @@ interface RouteContext {
 /**
  * Drop a conversation's worker-side session ("New chat").
  *
- * Without this the next question would `--resume` the previous agent CLI
- * conversation, so a "new" chat would still carry the old one's context.
+ * Without this the next question would continue the previous worker-side
+ * session, so a "new" chat would still carry the old one's context.
  *
  * Best-effort by design: the session is an in-memory registry with a TTL, so
  * failing to clear it costs an expired entry, not correctness. The UI must

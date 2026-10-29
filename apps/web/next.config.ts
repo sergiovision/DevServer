@@ -1,5 +1,5 @@
 import type { NextConfig } from 'next';
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { hostname, userInfo } from 'os';
 
@@ -10,15 +10,6 @@ try {
   const v = JSON.parse(readFileSync(versionPath, 'utf-8'));
   versionString = `${v.major}.${v.minor}.${v.build}`;
 } catch { /* fallback */ }
-
-// Determine edition: 'pro' (full version) or 'free'. The free version is
-// produced by `scripts/strip-pro.sh`, which deletes every `pro/` folder.
-// We detect it by probing for the pro folders that script removes — if the
-// pro components/services are gone, this is a free build.
-const edition = (
-  existsSync(resolve(__dirname, 'src', 'components', 'pro')) ||
-  existsSync(resolve(__dirname, '..', 'worker', 'src', 'services', 'pro'))
-) ? 'pro' : 'free';
 
 // Determine deploy mode: docker | production | development
 const deployMode = process.env.DEPLOY_MODE
@@ -75,23 +66,8 @@ const nextConfig: NextConfig = {
   },
   env: {
     NEXT_PUBLIC_VERSION: `${versionString}.${deployMode}`,
-    NEXT_PUBLIC_EDITION: edition,
     NEXT_PUBLIC_HOSTNAME: hostname(),
     NEXT_PUBLIC_USER: userInfo().username,
-  },
-  // A2A agent discovery (Pro). The protocol mandates the RFC 8615 well-known
-  // path, but the handler lives under app/api/pro/ so `strip-pro.sh` removes it
-  // with the rest of the Pro bundle — hence a rewrite rather than a real route.
-  // Gated on `edition` so a free build 404s here instead of advertising a
-  // gateway whose endpoint no longer exists.
-  async rewrites() {
-    if (edition !== 'pro') return [];
-    return [
-      {
-        source: '/.well-known/agent-card.json',
-        destination: '/api/pro/a2a/card',
-      },
-    ];
   },
 };
 
