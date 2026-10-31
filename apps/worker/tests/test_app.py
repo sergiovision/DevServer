@@ -7,8 +7,13 @@ from httpx import ASGITransport, AsyncClient
 
 
 @pytest.fixture
-def _patch_lifespan():
+def _patch_lifespan(monkeypatch, tmp_path):
     """Patch all lifespan dependencies so the app doesn't need real services."""
+    from config import settings
+
+    # Lifespan creates these directories; without a .env they are empty strings.
+    monkeypatch.setattr(settings, "worktree_dir", str(tmp_path / "worktrees"))
+    monkeypatch.setattr(settings, "log_dir", str(tmp_path / "logs"))
     with (
         patch("main.start_consumer", new_callable=AsyncMock) as mock_start,
         patch("main.stop_consumer", new_callable=AsyncMock) as mock_stop,
