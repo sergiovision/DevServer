@@ -174,10 +174,14 @@ def scenario(tmp_path: Path) -> Iterator[Scenario]:
 
 @pytest.fixture
 def quiet_world(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """No notifications, no embedding model, logs under ``tmp_path``."""
+    """No notifications, no embedding model, a fixed git identity, logs under ``tmp_path``."""
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
     monkeypatch.setattr(settings, "log_dir", str(log_dir))
+    # The runner commits with this identity; without a .env it is empty and
+    # every commit (and so every patch export) silently fails.
+    monkeypatch.setattr(settings, "git_user_name", "DevServer Test")
+    monkeypatch.setattr(settings, "git_user_email", "test@example.com")
     monkeypatch.setattr(notify, "_backends", [])
 
     async def _no_embedding(_text: str) -> None:

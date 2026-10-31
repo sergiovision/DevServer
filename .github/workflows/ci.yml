@@ -38,6 +38,9 @@ jobs:
 
     env:
       DEVSERVER_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/devserver_test
+      # CI has no .env; models/base.py builds its engine at import time, so it
+      # needs a parseable URL. The runner tests rebind it to the test database.
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/devserver_test
 
     steps:
       - uses: actions/checkout@v5

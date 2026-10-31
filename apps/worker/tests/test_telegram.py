@@ -9,11 +9,17 @@ import pytest
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-os.environ["TELEGRAM_BOT_TOKEN"] = "test-token"
-os.environ["TELEGRAM_CHAT_ID"] = "12345"
-
 from config import settings
 from services import telegram
+
+
+@pytest.fixture(autouse=True)
+def _telegram_credentials(monkeypatch):
+    # ``settings`` is built once at first import, so setting env vars here
+    # would be too late; patch the loaded values instead.
+    monkeypatch.setattr(settings, "telegram_bot_token", "test-token")
+    monkeypatch.setattr(settings, "telegram_chat_id", "12345")
+
 
 # ─── Send tests ─────────────────────────────────────────────────────────────
 
