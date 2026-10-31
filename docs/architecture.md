@@ -2,7 +2,7 @@
 
 A walkthrough of how a coding task becomes a pull request, written for a
 reviewer who wants to know *where things are and why they are shaped that way*.
-For the decision log behind the shapes, see [decisions.md](decisions.md).
+For the decision log behind the shapes, see [design-decisions.md](design-decisions.md).
 
 ## 1. The moving parts
 
