@@ -2,9 +2,9 @@
 
 # DevServer
 
-### A self-hosted pipeline that runs AI coding agents and opens pull requests.
+### Give it a task. Get back a pull request.
 
-**It dispatches coding tasks, runs Claude Code, Codex, Gemini (Antigravity) or GLM in an isolated git worktree, verifies build/test/lint and opens a pull request on GitHub or Gitea. You can also point it at any local git folder: no remote, no tokens, works with every git provider.**
+**The open-source MVP of an autonomous coding pipeline. It runs Claude Code, Codex, Gemini (Antigravity) or GLM on your own machine, checks their work with your build, tests and linter, and hands you a pull request. Clone it. Change it. Make it yours.**
 
 [![CI](https://github.com/sergiovision/DevServer/actions/workflows/ci.yml/badge.svg)](https://github.com/sergiovision/DevServer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -13,17 +13,54 @@
 [![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker/)
 
+**DevServer grew up. Its name is now [DevAgentForce →](https://capitaltools.app/devagentforce)**
+
 <img src="assets/viewtask.png" alt="DevServer task detail view — live event log, run history, and the agent settings sidebar" width="90%" />
 
-[Why](#why-devserver) · [Engineering](#engineering-highlights) · [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Development](#development) · [Docs](#documentation) · [Roadmap](#roadmap)
+[The idea](#the-idea) · [Make it yours](#start-here-make-it-yours) · [DevAgentForce](#then-it-grew-up) · [Engineering](#engineering-highlights) · [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Docs](#documentation) · [Roadmap](#roadmap)
 
 </div>
 
 ---
 
-## Why DevServer?
+## The idea
 
-Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted harness** that runs the coding-agent CLIs you already use (Claude Code, Codex, Antigravity, GLM) as supervised workers — with a queue, a verifier, guardrails, an audit trail and a dashboard around them.
+The best coding agents in the world live in a terminal. They are astonishing. And they have one problem.
+
+They need you. One task at a time, one window at a time, while you sit there and watch.
+
+So I asked a simple question. What if you could just hand over the work?
+
+Give an agent a task. Give it its own copy of the code. Run your build, your tests and your linter. If the work passes, open a pull request. If it fails, tell the agent exactly why, and let it try again.
+
+That's the whole idea. Task in. Pull request out.
+
+<table>
+<tr>
+<td width="50%"><img src="assets/logo/BeforeDevServer.jpg" alt="Three unharnessed horses standing idle in a field, branded with the Gemini, Claude and ChatGPT logos" /><br/><sub><b>Before.</b> All that horsepower, standing in a field.</sub></td>
+<td width="50%"><img src="assets/logo/WithDevServer.jpg" alt="A black horse rearing, fitted with a DevServer saddle and branded with the three AI provider logos" /><br/><sub><b>After.</b> The same horsepower, with a harness.</sub></td>
+</tr>
+</table>
+
+## Start here. Make it yours.
+
+DevServer is a minimum viable product, on purpose. Minimum doesn't mean unfinished. It means everything that wasn't essential was left out, and everything that's left works: the queue, the isolated worktree, the agent, the verifier, the pull request.
+
+Every team builds software differently. Your checks aren't my checks. Your rules aren't my rules. So a pipeline you can't change is a pipeline you'll eventually stop using.
+
+That's why DevServer is MIT licensed and written to be read. It's the foundation for your own autonomous coding pipeline. Fork it, then change the parts that make your team yours.
+
+| You want to | Start here |
+|---|---|
+| Add an agent vendor | `AgentBackend` in [`agent_backends.py`](apps/worker/src/services/agent_backends.py) |
+| Decide what "done" means | [`verifier.py`](apps/worker/src/services/verifier.py) |
+| Decide what must never ship | [`pr_preflight.py`](apps/worker/src/services/pr_preflight.py) |
+| Shape what the agent knows before it starts | [`runner/evidence.py`](apps/worker/src/services/runner/evidence.py), [`runner/prompt.py`](apps/worker/src/services/runner/prompt.py) |
+| Start work from your own tools | Webhook triggers, cron, or the [MCP server](apps/mcp-memory/README.md) |
+
+### What's already in the box
+
+Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted harness** that runs the coding-agent CLIs you already use as supervised workers, with a queue, a verifier, guardrails, an audit trail and a dashboard around them.
 
 - **Multi-vendor agent backends.** Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI) and GLM (Zhipu), behind one `AgentBackend` interface. Switch per task; fail over to a backup vendor or model automatically when retries run out.
 - **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (Claude Max, ChatGPT Plus, Google AI Pro/Ultra through the CLI's own login).
@@ -34,6 +71,53 @@ Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a C
 - **Full live observability.** Every step is a typed event: PostgreSQL `NOTIFY` → WebSocket → dashboard, plus opt-in OpenTelemetry export.
 
 All of the above are real, tested code paths. The sections below and the [`docs/`](docs/) folder show how they are built.
+
+## Then it grew up.
+
+DevServer proved the idea. Then the real work began.
+
+The worker was rewritten in Go. The setup shrank to one command. Secrets went into a sealed vault. Every agent on the machine came into one cockpit, where you can steer it with a sentence. Every repository got a memory. And it got a new name.
+
+**[DevAgentForce](https://capitaltools.app/devagentforce)** is the product DevServer grew into. Claude, Gemini and Codex are the engines. DevAgentForce is the harness. It runs on your hardware, and your code goes straight from you to your AI vendor. No one in the middle.
+
+| | DevServer | DevAgentForce |
+|---|---|---|
+| **What it is** | The open-source MVP | The finished product |
+| **Made for** | Building your own pipeline | Shipping with agents today |
+| **Price** | Free, MIT licensed | Free edition. Pro is $15 a month |
+| **Source** | Open. Read it, fork it | Proprietary |
+| **Install** | Clone, then set up Node, Python and PostgreSQL | One command, or a native desktop app. The database comes with it |
+| **Worker** | Python | Go |
+| **Agents** | Claude, Codex, Gemini, GLM | Claude, Codex, Gemini |
+| **Pay with your AI subscription** | Yes | Yes, with a paid licence |
+| **Git** | GitHub, Gitea, any local folder | Those, plus Azure DevOps |
+| **Reality gate, plan approval, budget breaker, PR preflight** | Yes | Yes, in Pro |
+| **Code review** | Yours | A reviewer agent inspects every change, round after round (Pro) |
+| **Secrets** | `.env` files | Encrypted vault and redaction. Per-task scoping in Pro |
+| **Steering a running agent** | Notes, delivered to the agent | A live Sessions cockpit across every agent on the machine (Pro) |
+| **Memory** | Recall of past tasks | Facts, decisions and every past attempt, per repo (Pro) |
+| **MCP** | Create and run tasks from your CLI | Memory, code search and the task queue from your CLI (Pro). Attach external MCP servers, every call on the record |
+| **Interface** | English | 9 languages |
+
+**[Compare the editions](https://capitaltools.app/devagentforce#editions) · [Install it free](https://capitaltools.app/devagentforce#install) · [Buy Pro](https://capitaltools.app/devagentforce#pricing)**
+
+### Looking at Cursor, Devin or JetBrains Air?
+
+They're good tools. Look at this one too.
+
+Cursor gives you an editor. Devin gives you an engineer in someone else's cloud. JetBrains Air gives you a desktop app to delegate from.
+
+DevAgentForce gives you a factory. It's yours, and it runs on your machine. Keep the editor you love, and the Claude Code, Codex or Antigravity CLI you already pay for. Hand it a backlog. Every task gets its own worktree, your own build and tests, and a pull request at the end. Hit a rate limit, and another vendor takes over mid-task. We never resell AI. You pay us for the harness, and your AI vendor for the horsepower.
+
+**[See it working →](https://capitaltools.app/devagentforce#screenshots)**
+
+### Hiring? Leading an engineering team?
+
+This is what one engineer can ship in the AI age.
+
+I'm Sergei Zhuravlev. I started DevServer in April 2026. Seven months later it's a commercial product: a licence server, a checkout, an installer for macOS, Linux and Windows, a native desktop app in Rust, an interface in nine languages. DevAgentForce is built with DevAgentForce.
+
+You don't have to take my word for it. The code is right here. Start with [Engineering highlights](#engineering-highlights), then read the [design decisions](docs/design-decisions.md). Then let's talk: [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [hi@sergego.com](mailto:hi@sergego.com).
 
 ## Engineering highlights
 
@@ -235,6 +319,18 @@ A file-by-file map of the runner is in [`docs/architecture.md`](docs/architectur
 
 Contributions and issues are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
+## One more thing
+
+Everything on this page is the beginning of the story. The rest of it takes one line:
+
+```bash
+curl -fsSL https://capitaltools.app/install.sh | bash
+```
+
+It downloads, verifies, starts and opens the dashboard. No account. No database to prepare. On Windows, or if you'd rather have a native app, [the installers are here](https://capitaltools.app/devagentforce#install). Want all of Pro first? [Generate a 14-day trial key](https://capitaltools.app/account/trial?product=devagentforce).
+
+**All the horsepower of AI. Finally harnessed. [capitaltools.app/devagentforce →](https://capitaltools.app/devagentforce)**
+
 ## License
 
 [MIT](LICENSE) — free for personal and commercial use. Attribution appreciated but not required.
@@ -244,5 +340,5 @@ Contributions and issues are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and
 <div align="center">
 
 ### Built by Sergei Zhuravlev
-[LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [GitHub](https://github.com/sergiovision) · [hi@sergego.com](mailto:hi@sergego.com)
+[DevAgentForce](https://capitaltools.app/devagentforce) · [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [GitHub](https://github.com/sergiovision) · [hi@sergego.com](mailto:hi@sergego.com)
 </div>

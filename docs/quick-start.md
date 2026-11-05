@@ -2,6 +2,8 @@
 
 Everything needed to install, run and upgrade DevServer on macOS, Linux and Windows — host processes or Docker. Back to the [README](../README.md).
 
+> **Want to skip all of this?** DevServer is the open-source MVP, and you set it up by hand. [DevAgentForce](https://capitaltools.app/devagentforce), the product it grew into, installs with one command. The database comes with it. [Install it free →](https://capitaltools.app/devagentforce#install)
+
 ## Prerequisites
 
 - Node.js >= 22 LTS

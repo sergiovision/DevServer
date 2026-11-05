@@ -6,6 +6,8 @@ a task in a repo with a chosen vendor/model, start it on the local worker, then
 read its live state and final output. It owns no database — every tool is a
 thin `httpx` proxy to the worker's `/internal/tasks/*` endpoints.
 
+> This server gives your CLI the task queue. [DevAgentForce Pro](https://capitaltools.app/devagentforce#memory), the product DevServer grew into, gives it the memory too: facts, decisions, past attempts and code search across every repo.
+
 ## Install
 
 ```bash
