@@ -4,7 +4,7 @@ A walkthrough of how a coding task becomes a pull request, written for a
 reviewer who wants to know *where things are and why they are shaped that way*.
 For the decision log behind the shapes, see [design-decisions.md](design-decisions.md).
 
-> DevServer is the open-source MVP, and this is its blueprint. Use it to build your own pipeline, or see what the same design became in [DevAgentForce →](https://capitaltools.app/devagentforce)
+> DevServer is the open-source MVP, and this is its blueprint. Use it to build your own pipeline, or see what the same design became in [DevAgentForce →](https://github.com/sergiovision/DevAgentForce)
 
 ## 1. The moving parts
 

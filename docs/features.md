@@ -2,7 +2,7 @@
 
 A tour of every screen and subsystem. Back to the [README](../README.md).
 
-> **This is where it started.** DevServer is the open-source MVP. [DevAgentForce](https://capitaltools.app/devagentforce) is what it grew into: a sealed secrets vault, a live cockpit for every agent, a memory for every repo. [Compare the editions →](https://capitaltools.app/devagentforce#editions)
+> **This is where it started.** DevServer is the open-source MVP. [DevAgentForce](https://github.com/sergiovision/DevAgentForce) is what it grew into: a sealed secrets vault, a live cockpit for every agent, a memory for every repo. [Compare the editions →](https://capitaltools.app/devagentforce#editions)
 
 ## Dashboard — what's running, what's queued, what cost what
 

@@ -13,7 +13,7 @@
 [![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker/)
 
-**DevServer grew up. Its name is now [DevAgentForce →](https://capitaltools.app/devagentforce)**
+**DevServer grew up. Its name is now [DevAgentForce →](https://github.com/sergiovision/DevAgentForce)**
 
 <img src="assets/viewtask.png" alt="DevServer task detail view — live event log, run history, and the agent settings sidebar" width="90%" />
 
@@ -78,7 +78,7 @@ DevServer proved the idea. Then the real work began.
 
 The worker was rewritten in Go. The setup shrank to one command. Secrets went into a sealed vault. Every agent on the machine came into one cockpit, where you can steer it with a sentence. Every repository got a memory. And it got a new name.
 
-**[DevAgentForce](https://capitaltools.app/devagentforce)** is the product DevServer grew into. Claude, Gemini and Codex are the engines. DevAgentForce is the harness. It runs on your hardware, and your code goes straight from you to your AI vendor. No one in the middle.
+**[DevAgentForce](https://github.com/sergiovision/DevAgentForce)** is the product DevServer grew into. Claude, Gemini and Codex are the engines. DevAgentForce is the harness. It runs on your hardware, and your code goes straight from you to your AI vendor. No one in the middle.
 
 | | DevServer | DevAgentForce |
 |---|---|---|
@@ -340,5 +340,5 @@ It downloads, verifies, starts and opens the dashboard. No account. No database 
 <div align="center">
 
 ### Built by Sergei Zhuravlev
-[DevAgentForce](https://capitaltools.app/devagentforce) · [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [GitHub](https://github.com/sergiovision) · [hi@sergego.com](mailto:hi@sergego.com)
+[DevAgentForce](https://github.com/sergiovision/DevAgentForce) · [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [GitHub](https://github.com/sergiovision) · [hi@sergego.com](mailto:hi@sergego.com)
 </div>

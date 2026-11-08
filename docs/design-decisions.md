@@ -2,7 +2,7 @@
 
 The reasoning behind the main shapes in the code. For the module-by-module walkthrough see [architecture.md](architecture.md). Back to the [README](../README.md).
 
-> These decisions shaped DevServer, the open-source MVP. They still shape [DevAgentForce →](https://capitaltools.app/devagentforce), the product it grew into.
+> These decisions shaped DevServer, the open-source MVP. They still shape [DevAgentForce →](https://github.com/sergiovision/DevAgentForce), the product it grew into.
 
 ## 1. Multi-vendor agent backends
 

@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/sergiovision/DevServer/security/advisories/new
     about: Please report security issues privately, not as public issues.
   - name: Looking for the finished product?
-    url: https://capitaltools.app/devagentforce
+    url: https://github.com/sergiovision/DevAgentForce
     about: DevServer is the open-source MVP. DevAgentForce is what it grew into.
