@@ -109,15 +109,12 @@ def _dotted(version: str) -> tuple[int, ...]:
 
 
 def _parse_slug(vendor: str, model_id: str) -> _ParsedSlug | None:
-    if vendor == "anthropic":
-        if m := _CLAUDE_SLUG.match(model_id):
-            return _ParsedSlug(m[1], "", (int(m[2]), int(m[3] or 0)))
-    elif vendor == "google":
-        if m := _GEMINI_SLUG.match(model_id):
-            return _ParsedSlug(m[2], m[3], _dotted(m[1]))
-    elif vendor == "openai":
-        if m := _GPT_SLUG.match(model_id):
-            return _ParsedSlug(m[2] or "", "", _dotted(m[1]))
+    if vendor == "anthropic" and (m := _CLAUDE_SLUG.match(model_id)):
+        return _ParsedSlug(m[1], "", (int(m[2]), int(m[3] or 0)))
+    if vendor == "google" and (m := _GEMINI_SLUG.match(model_id)):
+        return _ParsedSlug(m[2], m[3], _dotted(m[1]))
+    if vendor == "openai" and (m := _GPT_SLUG.match(model_id)):
+        return _ParsedSlug(m[2] or "", "", _dotted(m[1]))
     return None
 
 
