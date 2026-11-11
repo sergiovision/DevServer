@@ -11,22 +11,64 @@ The two ranked lists are fused with Reciprocal Rank Fusion (k=60), which beats
 pure cosine for code work (exact symbols, error strings, file paths). When the
 embedding model is unavailable the vector lane is simply skipped; when neither
 lane yields anything we fall back to the most recent entries.
+
+Two opt-in settings keep recall fresh as the table grows (both 0 = off):
+
+    - ``memory_decay_half_life_days`` — exponential recency decay applied to
+      the fused score, so an old memory needs a stronger match to win
+    - ``memory_archive_days`` — a daily sweep archives memories that were
+      never recalled within that many days (see ``archive_stale_memories``)
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.agent_memory import AgentMemory
-from services import embeddings
+from services import app_settings, embeddings
 
 logger = logging.getLogger(__name__)
 
 # Reciprocal Rank Fusion constant (Cormack et al. 2009).
 _RRF_K = 60
+
+
+def _decay_factor(
+    created_at: datetime | None, half_life_days: int, *, now: datetime | None = None
+) -> float:
+    """Exponential recency decay: 1.0 when fresh, 0.5 after one half-life.
+
+    ``half_life_days <= 0`` disables decay (always 1.0).
+    """
+    if half_life_days <= 0 or created_at is None:
+        return 1.0
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=UTC)
+    age_days = max(0.0, ((now or datetime.now(UTC)) - created_at).total_seconds() / 86400.0)
+    return 2.0 ** (-age_days / half_life_days)
+
+
+async def _bump_recall(session: AsyncSession, ids: list[int]) -> None:
+    """Mark rows as recalled so the archive sweep spares them. Never raises."""
+    if not ids:
+        return
+    try:
+        await session.execute(
+            text(
+                "UPDATE agent_memory SET recall_count = recall_count + 1, "
+                "last_recalled_at = NOW() WHERE id = ANY(:ids)"
+            ),
+            {"ids": ids},
+        )
+        await session.commit()
+    except Exception:
+        # Bookkeeping only: recall itself already succeeded.
+        logger.debug("recall bookkeeping update failed", exc_info=True)
+        await session.rollback()
 
 
 async def store_memory(
@@ -95,8 +137,11 @@ async def search_memory_hybrid(
 
     Returns dicts with ``id, content, memory_type, metadata, created_at,
     similarity, score`` — ``similarity`` is the cosine score from the vector
-    lane (0.0 for lexical-only hits), ``score`` is the fused RRF score.
+    lane (0.0 for lexical-only hits), ``score`` is the fused RRF score, scaled
+    by recency when ``memory_decay_half_life_days`` is set. Returned rows are
+    counted as recalled, which protects them from the archive sweep.
     """
+    half_life = await app_settings.get_int_setting(session, "memory_decay_half_life_days", 0)
     where = (
         "repo_id = :repo_id AND memory_type <> 'transcript' "
         "AND archived_at IS NULL AND invalidated_at IS NULL"
@@ -104,6 +149,7 @@ async def search_memory_hybrid(
     cand = max(limit * 4, 20)
 
     items: dict[int, dict] = {}
+    created: dict[int, datetime | None] = {}
     vrank: dict[int, int] = {}
     lrank: dict[int, int] = {}
 
@@ -137,6 +183,7 @@ async def search_memory_hybrid(
                 "created_at": str(r[4]),
                 "similarity": float(r[5]),
             }
+            created[r[0]] = r[4]
             vrank[r[0]] = rank
 
     # ── Lexical lane ──
@@ -166,6 +213,7 @@ async def search_memory_hybrid(
                 "created_at": str(r[4]),
                 "similarity": 0.0,
             }
+            created[r[0]] = r[4]
         lrank[r[0]] = rank
 
     if not items:
@@ -177,9 +225,38 @@ async def search_memory_hybrid(
             rrf += 1.0 / (_RRF_K + vrank[mid])
         if mid in lrank:
             rrf += 1.0 / (_RRF_K + lrank[mid])
-        it["score"] = rrf
+        it["score"] = rrf * _decay_factor(created.get(mid), half_life)
 
-    return sorted(items.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    hits = sorted(items.values(), key=lambda x: x["score"], reverse=True)[:limit]
+    await _bump_recall(session, [it["id"] for it in hits])
+    return hits
+
+
+async def archive_stale_memories(session: AsyncSession) -> int:
+    """Archive never-recalled memories older than ``memory_archive_days``.
+
+    Opt-in: 0 (the default) disables the sweep. Rows that were ever recalled
+    are spared regardless of age. Archived rows stay in the table but are
+    excluded from recall. Returns the number of rows archived; never raises.
+    """
+    days = await app_settings.get_int_setting(session, "memory_archive_days", 0)
+    if days <= 0:
+        return 0
+    try:
+        result = await session.execute(
+            text(
+                "UPDATE agent_memory SET archived_at = NOW() "
+                "WHERE archived_at IS NULL AND recall_count = 0 "
+                "AND created_at < NOW() - make_interval(days => :days)"
+            ),
+            {"days": days},
+        )
+        await session.commit()
+        return result.rowcount or 0  # type: ignore[attr-defined]
+    except Exception:
+        logger.exception("archive_stale_memories failed")
+        await session.rollback()
+        return 0
 
 
 def render_memory_recall(memories: list[dict]) -> str:

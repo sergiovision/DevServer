@@ -62,7 +62,7 @@ That's why DevServer is MIT licensed and written to be read. It's the foundation
 
 Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted harness** that runs the coding-agent CLIs you already use as supervised workers, with a queue, a verifier, guardrails, an audit trail and a dashboard around them.
 
-- **Multi-vendor agent backends.** Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI) and GLM (Zhipu), behind one `AgentBackend` interface. Switch per task; fail over to a backup vendor or model automatically when retries run out.
+- **Multi-vendor agent backends.** Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI) and GLM (Zhipu), behind one `AgentBackend` interface. Switch per task; fail over to a backup vendor or model automatically when retries run out. Pick a family instead of a version: `claude-opus-latest`, `gpt-sol-latest` or `gemini-argon-latest` resolve to the newest model at launch time.
 - **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (Claude Max, ChatGPT Plus, Google AI Pro/Ultra through the CLI's own login).
 - **Evidence before action.** A repo map, a 0–100 reality score and hybrid memory recall go into the prompt before the agent writes a line; an opt-in abstain gate blocks tasks the code base cannot support.
 - **Error-class-aware retries.** Failures are classified by 20+ rules and the next attempt gets a targeted hint. The same error twice escalates instead of burning retries.
@@ -129,7 +129,7 @@ DevServer is also a showcase of how to build an **agent harness** that stays rea
 | "Did the refactor change behaviour?" | Characterisation tests drive the real runner against real PostgreSQL, a temp git repo and a scripted fake agent subprocess | [`tests/runner/`](apps/worker/tests/runner/) |
 | Cancel only relabelled the task | A `RunningTasks` registry cancels the `asyncio.Task`; `proc.run` kills the agent's whole process group; the runner always writes a terminal status | [`running_tasks.py`](apps/worker/src/services/running_tasks.py), [`proc.py`](apps/worker/src/services/proc.py), [`task_control.py`](apps/worker/src/services/task_control.py) |
 | Locks that could be stolen or leak | Repo locks are **leases**: an owner, a short TTL and a heartbeat; release deletes only the caller's row; a busy repo re-queues the job instead of failing it | [`repo_lock.py`](apps/worker/src/services/repo_lock.py), [`queue_consumer.py`](apps/worker/src/services/queue_consumer.py) |
-| Model IDs copied across Python and TypeScript | One typed registry (`ModelInfo`) served at `/internal/agent-registry`; the web app renders every picker from it | [`agent_backends.py`](apps/worker/src/services/agent_backends.py), [`agent-vendors.ts`](apps/web/src/lib/agent-vendors.ts) |
+| Model IDs copied across Python and TypeScript | One typed registry (`ModelInfo`) served at `/internal/agent-registry`; the web app renders every picker from it; floating aliases (`claude-opus-latest`) are resolved by version at spawn time, so a model release is one line | [`agent_backends.py`](apps/worker/src/services/agent_backends.py), [`agent-vendors.ts`](apps/web/src/lib/agent-vendors.ts), [`model_aliases.py`](apps/worker/src/services/model_aliases.py) |
 | Four hand-rolled retry loops | One `retry_async(fn, attempts=, backoff=Backoff(...), retry_on=)` | [`retry.py`](apps/worker/src/services/retry.py) |
 | DB sessions pinned for an hour per task | Repository-style functions, one short session per unit of work; nothing holds a session across a subprocess | [`runner/store.py`](apps/worker/src/services/runner/store.py) |
 | Hung git remotes | Every git call takes a required, per-operation timeout | [`git_ops.py`](apps/worker/src/services/git_ops.py) |
@@ -149,10 +149,10 @@ Tooling: `ruff` (lint + format, blocking), `pyright` basic (reported), `pytest` 
 |---|---|
 | **Task pipeline** | Queue → isolated worktree → agent CLI → verify (build/test/lint) → PR preflight → PR, direct commit, `.patch` files or untracked changes |
 | **Repositories** | GitHub (incl. Enterprise), Gitea/Forgejo, or **Local Git**: any local clone, no tokens, never pushes |
-| **Agents** | Claude, Codex, Gemini via Antigravity, GLM; per-task vendor/model, backup model for auto-failover, API-key or subscription billing |
+| **Agents** | Claude, Codex, Gemini via Antigravity, GLM; per-task vendor/model, `-latest` model aliases that follow new releases, backup model for auto-failover, API-key or subscription billing |
 | **Guardrails** | Reality gate (0–100 evidence score), budget circuit breaker, secret/forbidden-file preflight, Plan Gate approval |
 | **Human in the loop** | Plan approval, Task Notes delivered to a running agent, real cancellation, Telegram/Discord notifications |
-| **Memory** | Hybrid pgvector + full-text recall of past tasks, fused with Reciprocal Rank Fusion, local embeddings |
+| **Memory** | Hybrid pgvector + full-text recall of past tasks, fused with Reciprocal Rank Fusion, local embeddings; recency decay, an archive sweep for never-recalled entries, and an outcome forecast from similar past tasks |
 | **Automation** | Cron jobs, HMAC-signed webhook triggers, Confluence import, MCP server for Claude Code / Codex / Gemini |
 | **Observability** | Typed events over `NOTIFY` → WebSocket, live logs, analytics, opt-in OpenTelemetry export |
 | **Product extras** | Task templates, an ideas tree, a Mermaid module diagram per repo, an *Ask Agent* help assistant |
@@ -300,7 +300,7 @@ A file-by-file map of the runner is in [`docs/architecture.md`](docs/architectur
 | [Architecture](docs/architecture.md) | How a task becomes a pull request, module by module |
 | [Design Decisions](docs/design-decisions.md) | Multi-vendor backends, failover, error-class retries, rate limits, OpenTelemetry, patterns |
 | [Backup & Restore](docs/backup-restore.md) | Full-system backup and restore scripts |
-| [Releases](https://github.com/sergiovision/DevServer/releases) | Release notes per version |
+| [Release notes](docs/release-notes/) · [Releases](https://github.com/sergiovision/DevServer/releases) | What changed in each version |
 
 ## Roadmap
 

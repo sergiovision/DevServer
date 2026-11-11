@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar
 
 from config import settings
+from services import model_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,9 @@ class CLINotInstalledError(RuntimeError):
 # ``deprecated`` models are two or more generations old: hidden from the
 # picker, but still accepted wherever a task or repo already stores them.
 # Users may also type any free-form model string — this is a menu, not an
-# allow-list.
+# allow-list. A stored selection may also be a floating alias such as
+# ``claude-opus-latest`` (see ``services.model_aliases``); ``resolve_model``
+# turns it into the newest matching ID here at call time.
 
 
 @dataclass(frozen=True)
@@ -113,16 +116,17 @@ def _legacy(id: str, label: str) -> ModelInfo:
 
 
 VENDOR_MODELS: dict[str, tuple[ModelInfo, ...]] = {
-    # Anthropic models page, 2026-10. ``claude-mythos-5`` is deliberately
-    # absent: it is only served to Project Glasswing accounts.
+    # Anthropic models page, 2026-11. The Mythos tier is deliberately absent:
+    # it is only served to approved organisations.
     "anthropic": (
         _model("claude-sonnet-5-5", "Claude Sonnet 5.5 (default, Max)", default=True),
         _model("claude-opus-5-5", "Claude Opus 5.5 (flagship — agentic coding, long-horizon)"),
-        _model("claude-fable-5-1", "Claude Fable 5.1 (most capable, premium)"),
+        _model("claude-fable-5-2", "Claude Fable 5.2 (most capable, premium)"),
         _model("claude-haiku-5-5", "Claude Haiku 5.5 (fast, affordable)"),
         _model("claude-sonnet-5", "Claude Sonnet 5"),
         _model("claude-opus-5", "Claude Opus 5"),
-        _model("claude-fable-5", "Claude Fable 5"),
+        _model("claude-fable-5-1", "Claude Fable 5.1"),
+        _legacy("claude-fable-5", "Claude Fable 5"),
         _legacy("claude-opus-4-8", "Claude Opus 4.8"),
         _legacy("claude-opus-4-7", "Claude Opus 4.7"),
         _legacy("claude-opus-4-6", "Claude Opus 4.6"),
@@ -131,10 +135,11 @@ VENDOR_MODELS: dict[str, tuple[ModelInfo, ...]] = {
         _legacy("claude-opus-4-5", "Claude Opus 4.5"),
         _legacy("claude-sonnet-4-5", "Claude Sonnet 4.5"),
     ),
-    # Slugs as listed by ``agy models`` (Antigravity CLI 1.4.9, 2026-10-29).
+    # Slugs as listed by ``agy models`` (Antigravity CLI 1.5.5, 2026-11-11).
     # Since agy 1.1.2 the reasoning effort is part of the slug. Gemini 3.1 Pro
-    # stays the default per the operator's choice even though agy 1.4.9 no
-    # longer lists it; ``AntigravityBackend`` remaps retired slugs.
+    # stays the default per the operator's choice even though agy no longer
+    # lists it; ``AntigravityBackend`` remaps retired slugs. agy also serves
+    # partner models (Claude, GPT-OSS) under its own effort-suffixed slugs.
     "google": (
         _model(
             "gemini-3.1-pro-high", "Gemini 3.1 Pro (High) — strong coding, default", default=True
@@ -146,21 +151,32 @@ VENDOR_MODELS: dict[str, tuple[ModelInfo, ...]] = {
         _model("gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"),
         _model("gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"),
         _model("gemini-3.8-flash-low", "Gemini 3.8 Flash (Low) — fast, cheap"),
+        _model("claude-opus-5-5-high", "Claude Opus 5.5 (High) — via Antigravity"),
+        _model("claude-opus-5-5-medium", "Claude Opus 5.5 (Medium) — via Antigravity"),
+        _model("claude-opus-5-5-low", "Claude Opus 5.5 (Low) — via Antigravity"),
+        _model("claude-sonnet-5-5-high", "Claude Sonnet 5.5 (High) — via Antigravity"),
+        _model("claude-sonnet-5-5-medium", "Claude Sonnet 5.5 (Medium) — via Antigravity"),
+        _model("claude-sonnet-5-5-low", "Claude Sonnet 5.5 (Low) — via Antigravity"),
+        _model("gpt-oss-120b-medium", "GPT-OSS 120B (Medium) — open weights, via Antigravity"),
         _legacy("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"),
         _legacy("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"),
         _legacy("gemini-3.6-flash-high", "Gemini 3.6 Flash (High)"),
         _legacy("gemini-3.6-flash-medium", "Gemini 3.6 Flash (Medium)"),
         _legacy("gemini-3.6-flash-low", "Gemini 3.6 Flash (Low)"),
     ),
-    # Slugs from the model catalog bundled in codex-cli 0.155.1. The GPT-6.1
-    # Sol/Terra, GPT-6 Luna and GPT-6 Pro slugs are not in that catalog yet,
-    # so they are not offered until the CLI accepts them.
+    # Slugs from the model catalog bundled in codex-cli 0.166.0
+    # (``codex debug models --bundled``). Which of them an account can
+    # actually run depends on its ChatGPT plan / API tier.
     "openai": (
         _model("gpt-6-astra", "GPT-6 Astra — most capable, complex demanding work", default=True),
-        _model("gpt-5.6-sol", "GPT-5.6 Sol — frontier agentic coding"),
-        _model("gpt-5.6-terra", "GPT-5.6 Terra — balanced agentic coding"),
-        _model("gpt-5.6-luna", "GPT-5.6 Luna — fast + affordable agentic coding"),
-        _model("gpt-5.5", "GPT-5.5 (frontier: complex coding + research)"),
+        _model("gpt-6.1-sol", "GPT-6.1 Sol — latest workhorse for coding"),
+        _model("gpt-6.1-terra", "GPT-6.1 Terra — balanced agentic coding"),
+        _model("gpt-6-sol", "GPT-6 Sol — previous-generation workhorse"),
+        _model("gpt-6-luna", "GPT-6 Luna — fast + affordable, easier tasks"),
+        _model("gpt-5.6-sol", "GPT-5.6 Sol — older workhorse"),
+        _model("gpt-5.6-terra", "GPT-5.6 Terra — older balanced model"),
+        _model("gpt-5.6-luna", "GPT-5.6 Luna — older fast + efficient model"),
+        _legacy("gpt-5.5", "GPT-5.5"),
         _legacy("gpt-5.4", "GPT-5.4"),
         _legacy("gpt-5.3-codex", "GPT-5.3 Codex"),
         _legacy("gpt-5.4-mini", "GPT-5.4 Mini"),
@@ -228,6 +244,24 @@ def is_known_model(model_id: str) -> bool:
     return any(m.id == model_id for models in VENDOR_MODELS.values() for m in models)
 
 
+def _catalogue(vendor: str) -> tuple[str, ...]:
+    return tuple(m.id for m in VENDOR_MODELS.get(vendor, ()))
+
+
+def resolve_model(vendor: str, model: str) -> str:
+    """The concrete model a stored selection runs as.
+
+    A floating alias (``claude-opus-latest``, ``gpt-latest``) becomes the
+    newest matching registry ID; anything else is returned unchanged.
+    """
+    return model_aliases.resolve(vendor, model, _catalogue(vendor))
+
+
+def model_aliases_for(vendor: str) -> tuple[model_aliases.ModelAlias, ...]:
+    """The vendor's floating aliases with the model each one names today."""
+    return model_aliases.latest_aliases(vendor, _catalogue(vendor))
+
+
 def registry_payload() -> dict[str, dict]:
     """JSON-ready registry for ``/internal/agent-registry``."""
     return {
@@ -242,6 +276,10 @@ def registry_payload() -> dict[str, dict]:
                     "deprecated": m.deprecated,
                 }
                 for m in models
+            ],
+            "aliases": [
+                {"id": a.id, "label": a.label, "resolves_to": a.resolves_to}
+                for a in model_aliases_for(vendor)
             ],
         }
         for vendor, models in VENDOR_MODELS.items()

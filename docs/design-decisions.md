@@ -10,12 +10,14 @@ DevServer isn't locked to one AI provider. The `AgentBackend` abstraction covers
 
 | Vendor | CLI Binary | Picker models (default first) | Source of the IDs |
 |---|---|---|---|
-| `anthropic` | `claude` | **Claude Sonnet 5.5**, Opus 5.5, Fable 5.1, **Haiku 5.5**, Sonnet 5, Opus 5, Fable 5 | Anthropic models page |
-| `google` | `agy` | **Gemini 3.1 Pro** (High/Low), **Gemini 4 Argon** (High/Medium/Low), Gemini 3.8 Flash | `agy models` (Antigravity CLI 1.4.9) |
-| `openai` | `codex` | **GPT-6 Astra**, GPT-5.6 Sol / Terra / Luna, GPT-5.5 | model catalogue in codex-cli 0.155.1 |
+| `anthropic` | `claude` | **Claude Sonnet 5.5**, Opus 5.5, **Fable 5.2**, **Haiku 5.5**, Sonnet 5, Opus 5, Fable 5.1 | Anthropic models page |
+| `google` | `agy` | **Gemini 3.1 Pro** (High/Low), **Gemini 4 Argon** (High/Medium/Low), Gemini 3.8 Flash, Claude Opus / Sonnet 5.5 and GPT-OSS 120B via Antigravity | `agy models` (Antigravity CLI 1.5.5) |
+| `openai` | `codex` | **GPT-6 Astra**, **GPT-6.1 Sol / Terra**, GPT-6 Sol / Luna, GPT-5.6 Sol / Terra / Luna | model catalogue in codex-cli 0.166.0 |
 | `glm` | `claude` | **GLM-5.3**, 5.2, 5.1, 5 Turbo, 5 — the Claude CLI against Zhipu's Anthropic-compatible API | Zhipu `/models` API |
 
 Older models (Claude 4.x, Gemini 3.6/3.7 Flash, GPT-5.2–5.4, GLM-4.x) are marked `deprecated`: hidden from the pickers, still accepted where a task or repo already stores them.
+
+**Floating aliases.** A stored model may be an alias instead of an ID: `claude-opus-latest`, `claude-sonnet-latest`, `claude-haiku-latest`, `claude-fable-latest`; `gpt-latest`, `gpt-astra-latest`, `gpt-sol-latest`, `gpt-terra-latest`, `gpt-luna-latest`; `gemini-argon-latest`, `gemini-flash-latest` (plus `-medium-latest` / `-low-latest`). [`model_aliases.py`](../apps/worker/src/services/model_aliases.py) parses family and version out of each registry slug and picks the highest version, never the list order, so adding `claude-opus-6` to `VENDOR_MODELS` moves every task, repo default and System LLM setting that holds `claude-opus-latest`. Resolution happens in exactly two places: when the agent subprocess is spawned and when the System LLM setting is read. The registry endpoint publishes each alias with its current target, so the dashboard shows *Claude Opus — latest (→ claude-opus-5-5)* without a second copy of the rules. Concrete IDs and free-form strings pass through unchanged.
 
 Each task carries `agent_vendor`, `claude_model`, and `claude_mode` (billing mode: `api` or `max`). The worker dispatches to the right backend automatically. Adding a new vendor is one `AgentBackend` subclass, a `register_backend()` call and its models in `VENDOR_MODELS`.
 

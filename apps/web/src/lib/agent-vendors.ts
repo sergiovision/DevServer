@@ -27,10 +27,23 @@ export interface RegistryModel {
   deprecated: boolean;
 }
 
+/**
+ * A floating alias ("claude-opus-latest"). The worker resolves it to the
+ * newest matching model when the agent is launched, so a stored selection
+ * follows new releases; `resolves_to` is what it names today.
+ */
+export interface RegistryAlias {
+  id: string;
+  label: string;
+  resolves_to: string;
+}
+
 export interface RegistryVendor {
   label: string;
   default_model: string;
   models: RegistryModel[];
+  /** Absent when talking to a worker that predates aliases. */
+  aliases?: RegistryAlias[];
 }
 
 export interface AgentRegistry {
@@ -110,13 +123,41 @@ export function vendorOptions(registry: AgentRegistry | null, selected: string):
   return options;
 }
 
-/** Models a picker should suggest: current ones only, default first. */
+/** The vendor's floating aliases, each with the model it names today. */
+export function modelAliases(registry: AgentRegistry | null, vendor: string): RegistryAlias[] {
+  return findVendor(registry, vendor)?.aliases ?? [];
+}
+
+/**
+ * Models a picker should suggest: current ones (default first), then the
+ * floating aliases, each labelled with the model it resolves to today.
+ */
 export function pickerModels(registry: AgentRegistry | null, vendor: string): RegistryModel[] {
   const models = findVendor(registry, vendor)?.models ?? [];
   const current = models.filter((model) => !model.deprecated);
   const defaults = current.filter((model) => model.is_default);
   const others = current.filter((model) => !model.is_default);
-  return [...defaults, ...others];
+  const aliases = modelAliases(registry, vendor).map((alias) => ({
+    id: alias.id,
+    label: `${alias.label} (→ ${alias.resolves_to})`,
+    is_default: false,
+    deprecated: false,
+  }));
+  return [...defaults, ...others, ...aliases];
+}
+
+/**
+ * The concrete model a stored selection runs as today: an alias resolved,
+ * anything else unchanged. The worker is the authority; this only reads the
+ * registry it published.
+ */
+export function resolveVendorModel(
+  registry: AgentRegistry | null,
+  vendor: string,
+  model: string,
+): string {
+  const alias = modelAliases(registry, vendor).find((entry) => entry.id === model);
+  return alias?.resolves_to ?? model;
 }
 
 /** The vendor's default model id, or '' when unknown / not loaded yet. */
@@ -129,14 +170,17 @@ export function vendorLabel(registry: AgentRegistry | null, vendor: string): str
   return findVendor(registry, vendor)?.label ?? vendor;
 }
 
-/** True when `model` is registered under `vendor` (deprecated ids included). */
+/** True when `model` is a registered id (deprecated included) or alias of `vendor`. */
 export function isModelOfVendor(
   registry: AgentRegistry | null,
   vendor: string,
   model: string,
 ): boolean {
   const models = findVendor(registry, vendor)?.models ?? [];
-  return models.some((entry) => entry.id === model);
+  return (
+    models.some((entry) => entry.id === model) ||
+    modelAliases(registry, vendor).some((alias) => alias.id === model)
+  );
 }
 
 /**

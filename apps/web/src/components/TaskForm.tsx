@@ -21,13 +21,13 @@ import type { Repo, Task, TaskTemplate, GitFlow, AgentVendor, TaskType } from '@
 import {
   defaultModelFor,
   modelAfterVendorChange,
-  pickerModels,
   vendorLabel,
   vendorOptions,
 } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
 import { TASK_TYPES, DEFAULT_TASK_TYPE, taskTypeEntry } from '@/lib/task-types';
 import { MaxTurnsInput } from '@/components/MaxTurnsInput';
+import { ModelCombobox } from '@/components/ModelCombobox';
 import { VendorModelPicker } from '@/components/VendorModelPicker';
 
 interface TaskFormProps {
@@ -586,23 +586,13 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
                   )
                 </small>
               </CFormLabel>
-              <CFormInput
+              <ModelCombobox
                 name="claude_model"
+                vendor={formData.agent_vendor}
                 value={formData.claude_model}
-                onChange={(e) =>
-                  setFormData((prev) => ({ ...prev, claude_model: e.target.value }))
-                }
-                list={`task-model-datalist-${formData.agent_vendor}`}
+                onChange={(model) => setFormData((prev) => ({ ...prev, claude_model: model }))}
                 placeholder="Leave blank to use repo default"
-                autoComplete="off"
               />
-              <datalist id={`task-model-datalist-${formData.agent_vendor}`}>
-                {pickerModels(agentRegistry, formData.agent_vendor).map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </datalist>
             </CCol>
           </CRow>
 

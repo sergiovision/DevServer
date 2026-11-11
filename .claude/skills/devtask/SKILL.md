@@ -40,7 +40,7 @@ You receive a free-form task description in `$ARGUMENTS`. Return **only** a sing
 - **acceptance**: Bullet list of testable criteria, or `null` if trivial. Keep short — 2-5 bullets max.
 - **priority**: 1=critical/prod-down, 2=high/blocking, 3=medium (default), 4=low/cosmetic.
 - **labels**: 1-3 lowercase kebab-case. Common: `feature`, `bug`, `refactor`, `ui`, `api`, `database`, `docs`, `security`, `performance`, `devops`.
-- **claude_model**: `null` (repo default) for most tasks. `"claude-sonnet-4-20250514"` for simple/well-defined. `"claude-opus-4-20250514"` for complex/multi-file/security.
+- **claude_model**: `null` (repo default) for most tasks. `"claude-sonnet-5-5"` for simple/well-defined. `"claude-opus-5-5"` for complex/multi-file/security.
 - **max_turns**: Simple fix: 10-20. Small feature: 20-40. Medium: 40-60. Large: 60-100. Open-ended: `null`.
 - **mode**: Always `"autonomous"` unless explicitly interactive.
 - **claude_mode**: Always `"api"` unless user says Max.

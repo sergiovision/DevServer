@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from config import settings
 from services import agent_cli_installer
 from services import proc as proc_util
-from services.agent_backends import AgentBackend, AgentResult
+from services.agent_backends import AgentBackend, AgentResult, resolve_model
 from services.retry import Backoff, RetryNotice, retry_async
 
 from . import store
@@ -123,7 +123,9 @@ async def _spawn(call: AgentInvocation) -> tuple[int, str, str]:
     """One subprocess run; returns ``(exit_code, stdout, stderr)``."""
     cmd = call.backend.build_command(
         prompt=call.prompt,
-        model=call.model,
+        # A floating alias ("claude-opus-latest") becomes a concrete ID here,
+        # at spawn time, so stored selections follow new releases.
+        model=resolve_model(call.backend.vendor, call.model),
         allowed_tools=call.allowed_tools,
         session_id=call.session_id,
         max_turns=call.max_turns,

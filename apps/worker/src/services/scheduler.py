@@ -22,7 +22,7 @@ from sqlalchemy import text
 
 from config import settings
 from models.base import async_session
-from services import repo_lock
+from services import memory, repo_lock
 from services.queue_bridge import enqueue_via_web
 from services.telegram import tg_send
 
@@ -49,6 +49,9 @@ class Job:
 
 
 _JOBS: dict[str, Job] = {}
+
+#: Hour (UTC) of the daily memory archive sweep — a quiet hour for most teams.
+_MEMORY_ARCHIVE_HOUR_UTC = 3
 
 
 def _compute_next_daily(hour: int) -> float:
@@ -188,6 +191,17 @@ async def _cleanup_old_logs() -> int:
 # ─── DB-backed schedules (Phase 1) ───────────────────────────────────────────
 
 _SCHEDULE_GROUP = "schedule"
+
+
+async def _run_memory_archive() -> str:
+    """Archive never-recalled stale agent memories.
+
+    Opt-in through the ``memory_archive_days`` setting; at 0 (the default)
+    this is a single settings read.
+    """
+    async with async_session() as session:
+        archived = await memory.archive_stale_memories(session)
+    return f"Archived {archived} stale memories" if archived else "No stale memories"
 
 
 def _parse_cron(expr: str) -> tuple[int | None, int | None, str]:
@@ -379,6 +393,16 @@ async def start_scheduler() -> list[asyncio.Task]:
             next_time=time.time() + 15 * 60,
         ),
         _run_stale_task_recovery,
+    )
+    _register(
+        Job(
+            name="memory_archive",
+            group="devserver",
+            schedule=f"daily at {_MEMORY_ARCHIVE_HOUR_UTC:02d}:00 UTC",
+            daily_hour_utc=_MEMORY_ARCHIVE_HOUR_UTC,
+            next_time=_compute_next_daily(_MEMORY_ARCHIVE_HOUR_UTC),
+        ),
+        _run_memory_archive,
     )
     # DB-backed schedules (Phase 1). Registered here so the loop-creation
     # below starts their outer loops alongside the built-in jobs.

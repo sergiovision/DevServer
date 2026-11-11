@@ -3,7 +3,7 @@
  * AgentBackend abstraction.
  *
  * Left: a select of the vendors the worker's registry knows. Right: a
- * free-text input with a datalist of that vendor's current models, so users
+ * `ModelCombobox` that autocompletes that vendor's current models, so users
  * can pick a suggestion or type any id (a pinned/dated model, or one that has
  * since been deprecated and is therefore no longer suggested).
  *
@@ -16,14 +16,11 @@
 'use client';
 
 import React, { useCallback } from 'react';
-import { CFormInput, CFormSelect } from '@coreui/react-pro';
+import { CFormSelect } from '@coreui/react-pro';
 import type { AgentVendor } from '@/lib/types';
-import {
-  modelAfterVendorChange,
-  pickerModels,
-  vendorOptions,
-} from '@/lib/agent-vendors';
+import { modelAfterVendorChange, vendorOptions } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
+import { ModelCombobox } from './ModelCombobox';
 
 interface VendorModelPickerProps {
   vendor: AgentVendor;
@@ -53,8 +50,6 @@ export function VendorModelPicker({
   disabled,
 }: VendorModelPickerProps) {
   const registry = useAgentRegistry();
-  const modelList = pickerModels(registry, vendor);
-  const datalistId = `${modelName}-${vendor}-datalist`;
 
   const handleVendorChange = useCallback(
     (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -87,22 +82,14 @@ export function VendorModelPicker({
       </div>
       <div className="col-md-7">
         <label className="form-label mb-1">{modelLabel ?? 'Model'}</label>
-        <CFormInput
+        <ModelCombobox
           name={modelName}
+          vendor={vendor}
           value={model}
-          onChange={(e) => onModelChange(e.target.value)}
-          list={datalistId}
-          placeholder={modelPlaceholder ?? 'Type or select a model…'}
-          autoComplete="off"
+          onChange={onModelChange}
+          placeholder={modelPlaceholder}
           disabled={disabled}
         />
-        <datalist id={datalistId}>
-          {modelList.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </datalist>
       </div>
     </div>
   );

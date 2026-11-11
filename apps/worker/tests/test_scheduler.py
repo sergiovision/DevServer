@@ -8,7 +8,7 @@ import pytest
 import services.scheduler as scheduler
 from services.scheduler import start_scheduler, stop_scheduler
 
-BUILT_IN_JOBS = {"stale_task_recovery"}
+BUILT_IN_JOBS = {"stale_task_recovery", "memory_archive"}
 
 
 @pytest.fixture(autouse=True)

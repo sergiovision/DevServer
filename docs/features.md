@@ -155,7 +155,14 @@ Every coding task passes through three checks that need no extra LLM call:
 
 Every successful task is summarised into `agent_memory` with a local [fastembed](https://github.com/qdrant/fastembed) embedding (no cloud key). The next task on the same repo recalls the most relevant entries through two lanes: pgvector cosine similarity, and Postgres full-text search, which catches exact symbols, error strings and file paths. The two ranked lists are combined with **Reciprocal Rank Fusion** (k=60), and the top hits go into the prompt as "Prior Experience".
 
-📂 [`apps/worker/src/services/memory.py`](../apps/worker/src/services/memory.py) · [`apps/worker/src/services/embeddings.py`](../apps/worker/src/services/embeddings.py)
+Memory stays useful as it grows, through two opt-in settings (0 = off):
+
+- **Recency decay** (`memory_decay_half_life_days`). The fused score is halved for every half-life of age, so an old memory needs a stronger match to outrank a fresh one.
+- **Archive sweep** (`memory_archive_days`). A daily scheduler job archives memories that were never recalled within that many days. Every recall is counted, so a memory that has ever helped is kept.
+
+The same embeddings drive the **outcome forecast** on a task's page: the five most similar past tasks in the repo, their real success rate, average duration and turns. With no comparable history it falls back to the repo-wide baseline, and the card says which one you are looking at.
+
+📂 [`apps/worker/src/services/memory.py`](../apps/worker/src/services/memory.py) · [`apps/worker/src/services/outcome.py`](../apps/worker/src/services/outcome.py) · [`apps/worker/src/services/embeddings.py`](../apps/worker/src/services/embeddings.py)
 
 ## Plan Gate — approve the plan before any code is written
 

@@ -33,7 +33,7 @@ import { PredictionCard } from './PredictionCard';
 import { useAssistantPageContext } from './AssistantProvider';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
-import { vendorLabel } from '@/lib/agent-vendors';
+import { resolveVendorModel, vendorLabel } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
 import { taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 
@@ -47,6 +47,12 @@ interface TaskDetailProps {
 export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   const router = useRouter();
   const agentRegistry = useAgentRegistry();
+  // A floating alias ("claude-opus-latest") is shown with the model it runs as today.
+  const runsAsModel = resolveVendorModel(
+    agentRegistry,
+    task.agent_vendor ?? 'anthropic',
+    task.claude_model ?? '',
+  );
 
   // Tell the Ask Agent panel which task is on screen, so "why is this stuck?"
   // is answered about this one rather than in the abstract. The repo id also
@@ -629,6 +635,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                 {task.claude_model && (
                   <small className="text-body-secondary">
                     Current: {task.agent_vendor ?? 'anthropic'} · {task.claude_model}
+                    {runsAsModel !== task.claude_model && ` (→ ${runsAsModel})`}
                   </small>
                 )}
               </div>

@@ -19,10 +19,10 @@ import type { AgentVendor, ClaudeMode } from '@/lib/types';
 import {
   defaultModelFor,
   modelAfterVendorChange,
-  pickerModels,
   vendorOptions,
 } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
+import { ModelCombobox } from './ModelCombobox';
 
 interface SettingsFormProps {
   settings: Record<string, unknown>;
@@ -142,9 +142,6 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
     }
   }, [draft]);
 
-  // Model datalist for the selected system LLM vendor
-  const sysModelList = pickerModels(agentRegistry, draft.system_llm_vendor);
-
   return (
     <>
       {/* General Settings */}
@@ -215,20 +212,11 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
               </CCol>
               <CCol md={6}>
                 <CFormLabel className="mb-1">Model</CFormLabel>
-                <CFormInput
+                <ModelCombobox
+                  vendor={draft.system_llm_vendor}
                   value={draft.system_llm_model}
-                  onChange={(e) => set('system_llm_model', e.target.value)}
-                  list="settings-system-llm-models"
-                  placeholder="Type or select a model…"
-                  autoComplete="off"
+                  onChange={(model) => set('system_llm_model', model)}
                 />
-                <datalist id="settings-system-llm-models">
-                  {sysModelList.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.label}
-                    </option>
-                  ))}
-                </datalist>
               </CCol>
               <CCol md={3}>
                 <CFormLabel className="mb-1">Billing</CFormLabel>

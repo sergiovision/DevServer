@@ -14,7 +14,11 @@ from dataclasses import dataclass
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.agent_backends import SYSTEM_LLM_DEFAULT_MODEL, SYSTEM_LLM_DEFAULT_VENDOR
+from services.agent_backends import (
+    SYSTEM_LLM_DEFAULT_MODEL,
+    SYSTEM_LLM_DEFAULT_VENDOR,
+    resolve_model,
+)
 
 _KEYS = ("system_llm_vendor", "system_llm_model", "system_llm_mode")
 
@@ -44,8 +48,10 @@ async def read(db: AsyncSession) -> SystemLLM:
     )
     found = {row.key: _as_text(row.value) for row in rows if row.value not in (None, "")}
     defaults = SystemLLM()
+    vendor = found.get("system_llm_vendor") or defaults.vendor
     return SystemLLM(
-        vendor=found.get("system_llm_vendor") or defaults.vendor,
-        model=found.get("system_llm_model") or defaults.model,
+        vendor=vendor,
+        # The setting may hold a floating alias; callers get the concrete ID.
+        model=resolve_model(vendor, found.get("system_llm_model") or defaults.model),
         mode=found.get("system_llm_mode") or defaults.mode,
     )

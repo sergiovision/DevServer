@@ -52,7 +52,7 @@ _PREDICTION_CACHE_MAX = 256
 
 @router.get("/tasks/{task_key}/prediction")
 async def task_prediction(task_key: str):
-    """Forecast a task's outcome from its repo's recent success rate.
+    """Forecast a task's outcome from similar past tasks, else the repo baseline.
 
     The response carries ``basis`` so the UI can label where the number comes from.
     """
@@ -68,7 +68,12 @@ async def task_prediction(task_key: str):
         if task is None:
             raise HTTPException(404, f"task {task_key!r} not found")
 
-        pred = await outcome.predict_outcome_basic(db, task.repo_id)
+        pred = await outcome.predict_outcome_similar(
+            db, task.repo_id, task.id, task.title, task.description or ""
+        )
+        # No embedding model or no comparable history: repo-level baseline.
+        if not pred or not pred.get("sample_size"):
+            pred = await outcome.predict_outcome_basic(db, task.repo_id)
 
     if len(_PREDICTION_CACHE) >= _PREDICTION_CACHE_MAX:
         oldest = min(_PREDICTION_CACHE, key=lambda k: _PREDICTION_CACHE[k][0])
