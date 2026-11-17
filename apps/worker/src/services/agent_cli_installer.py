@@ -25,8 +25,6 @@ a wrapper script, a renamed build — :func:`ensure_cli` refuses to install and
 lets the existing "CLI not found" message stand. Managing that path is then the
 operator's business, which is the whole point of the override.
 
-This module is FREE-level (no ``pro`` dependency) and survives
-``strip-pro.sh``.
 """
 
 from __future__ import annotations

@@ -120,6 +120,8 @@ class TaskContext:
     approved_plan_text: str = ""
     preflight_allowlist: list[str] | None = None
     gate_prompt: str = ""
+    #: Opt-in ``agent_lanes_prompt`` setting: append ``prompt.AGENT_LANES_BLOCK``.
+    agent_lanes: bool = False
     skill_prompt: str = ""
     error_context: str = ""
     session_id: str | None = None

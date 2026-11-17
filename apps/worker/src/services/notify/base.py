@@ -166,6 +166,17 @@ class NotifyBackend(ABC):
             lines.append(f"  ...+{len(violations) - 5} more")
         return await self.send_text("\n".join(lines))
 
+    async def send_plan_approval(
+        self,
+        *,
+        task_key: str,
+        task_id: int,
+        plan: dict,
+    ) -> bool:
+        """An interactive task drafted a plan and waits for approval."""
+        summary = str(plan.get("summary") or "(no summary)")[:300]
+        return await self.send_text(f"📋 *{task_key}* plan ready for review: {summary}")
+
     async def send_task_state_changed(
         self,
         *,

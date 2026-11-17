@@ -15,7 +15,9 @@ import logging
 from models.base import async_session
 from services import (
     agent_backends,
+    app_settings,
     compaction,
+    corpus,
     git_ops,
     plan_gate,
     side_effect_gate,
@@ -98,6 +100,7 @@ async def gather_evidence(ctx: TaskContext) -> bool:
         await evidence.recall_memory(ctx)
 
     async with async_session() as db:
+        ctx.agent_lanes = await app_settings.get_bool_setting(db, "agent_lanes_prompt", False)
         if await side_effect_gate.is_enabled(db):
             ctx.gate_prompt = "\n".join(side_effect_gate.render_gate_prompt_block())
         ctx.skill_prompt = await skills.get_skill_body_for_task(db, task.id)
@@ -222,3 +225,15 @@ async def finalise(ctx: TaskContext, *, success: bool) -> None:
             await git_ops.restore_local_branch(ctx.repo.gitea_url, ctx.local_original_branch)
     else:
         await git_ops.reset_worktree(ctx.repo.name, ctx.repo.default_branch)
+
+    if success:
+        # After the restore: the corpus must index the default/operator branch,
+        # never the task's agent/* branch. Still under the repo lock.
+        kinds = await corpus.auto_index(
+            ctx.repo.id,
+            provider=ctx.repo.provider,
+            local_root=ctx.repo.gitea_url,
+            name=ctx.repo.name,
+        )
+        if kinds:
+            ctx.log.note("corpus", f"re-indexing {', '.join(kinds)} in the background")

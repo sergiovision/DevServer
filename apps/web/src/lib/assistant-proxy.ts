@@ -11,7 +11,8 @@ import { WORKER_URL } from '@/lib/worker-url';
  *
  * 1. `signal: request.signal` must be forwarded. Without it, closing the
  *    browser tab leaves the worker streaming a vendor response (and paying
- *    for its tokens) into a dead socket.
+ *    for its tokens) into a dead socket — and, in agent mode, an orphaned CLI
+ *    subprocess holding a repo directory.
  * 2. The outer Response gets **fresh** headers. Re-using the upstream headers
  *    drags `content-length` / `content-encoding` along and truncates or
  *    corrupts the stream.
@@ -28,13 +29,19 @@ export const SSE_HEADERS = {
   'X-Accel-Buffering': 'no',
 } as const;
 
-/** Headers for an assistant call to the worker. */
+/** Headers for an assistant call to the worker, including the
+ *  action-execution shared secret. */
 export function workerHeaders(extra?: Record<string, string>): Record<string, string> {
-  return {
+  const headers: Record<string, string> = {
     'content-type': 'application/json',
     accept: 'text/event-stream',
     ...extra,
   };
+  // Only the worker's action-execution endpoint enforces this, but sending it
+  // on every assistant call keeps the client code uniform and costs nothing.
+  const token = process.env.INTERNAL_API_TOKEN;
+  if (token) headers['x-internal-token'] = token;
+  return headers;
 }
 
 /** Relay a worker SSE endpoint to the browser unchanged. */

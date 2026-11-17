@@ -83,21 +83,21 @@ ENV EMBEDDING_MODEL=${EMBEDDING_MODEL} \
 RUN /opt/venv/bin/python -c \
     "from fastembed import TextEmbedding; TextEmbedding(model_name='${EMBEDDING_MODEL}')"
 
-# DevServer MCP server — the Pro assistant's tool lane, installed into the same
-# venv so `devserver-mcp` is on PATH when an agent CLI spawns it. The bracketed
-# path makes the COPY optional: `strip-pro.sh` deletes apps/mcp-memory, and the
-# free image must still build.
+# DevServer MCP server — the Ask Agent panel's tool lane, installed into the
+# same venv so `devserver-mcp` is on PATH when an agent CLI spawns it. The
+# bracketed path makes the COPY optional, so a trimmed checkout without
+# apps/mcp-memory still builds.
 COPY apps/mcp-memor[y] ./mcp-memory/
-# PYTHON_SOURCELESS also applies here: the MCP server is Pro, and `uv pip
-# install` lands its .py files in site-packages, so compiling /app/src alone
-# would still leave readable Pro source in the image.
-ARG PYTHON_SOURCELESS=1
+# PYTHON_SOURCELESS also applies here: `uv pip install` lands the MCP server's
+# .py files in site-packages, so compiling /app/src alone would leave it as the
+# one package still shipped as source. Off by default — see the worker stage.
+ARG PYTHON_SOURCELESS=0
 COPY --chmod=0755 docker/sourceless.sh /usr/local/bin/sourceless.sh
 RUN if [ -f ./mcp-memory/pyproject.toml ]; then \
         uv pip install --python /opt/venv/bin/python --no-cache ./mcp-memory; \
         sourceless.sh "$(/opt/venv/bin/python -c 'import devserver_memory_mcp as m, os; print(os.path.dirname(m.__file__))')"; \
     else \
-        echo "apps/mcp-memory absent (free edition) — skipping MCP server"; \
+        echo "apps/mcp-memory absent — skipping MCP server"; \
     fi
 
 # ── Stage: web dependencies ──────────────────────────────────────────────────
@@ -233,16 +233,12 @@ COPY --chown=devserver:devserver scripts/ ./scripts/
 # first start instead. Keep the path in step with DEVSERVER_MIGRATIONS_DIR.
 COPY --chown=devserver:devserver database/migrations/ ./database/migrations/
 
-# ── Production build: bytecode only, no Python source ────────────────────────
-# See docker/sourceless.sh for how and why. Deleting the sources is what makes
-# the Pro modules (services/pro/**, routes/pro_internal.py) ship as binaries.
-#
-# Pro is NOT stripped from this image — it is compiled in and gated at runtime
-# by services/pro/__init__.py's _LicenseGatedHooks, which routes every call to
-# the real implementation when licensing.is_pro_active() and to the free no-ops
-# otherwise. So an unlicensed deployment of this image behaves exactly like the
-# free edition, and a licensed one unlocks Pro without pulling a second image.
-ARG PYTHON_SOURCELESS=1
+# ── Optional bytecode-only build ──────────────────────────────────────────────
+# Off by default (PYTHON_SOURCELESS=0): DevServer is open source, so stripping
+# the .py files hides nothing, and keeping them gives readable tracebacks inside
+# a running container. Build with --build-arg PYTHON_SOURCELESS=1 for a slightly
+# smaller, bytecode-only image; see docker/sourceless.sh for how.
+ARG PYTHON_SOURCELESS=0
 COPY --chmod=0755 docker/sourceless.sh /usr/local/bin/sourceless.sh
 RUN sourceless.sh /app/src && chown -R devserver:devserver /app/src
 

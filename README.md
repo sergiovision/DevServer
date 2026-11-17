@@ -2,14 +2,14 @@
 
 # DevServer
 
-### Give it a task. Get back a pull request.
+### Task in. Pull request out.
 
-**The open-source MVP of an autonomous coding pipeline. It runs Claude Code, Codex, Gemini (Antigravity) or GLM on your own machine, checks their work with your build, tests and linter, and hands you a pull request. Clone it. Change it. Make it yours.**
+**Claude Code, Codex, Gemini and GLM are the engines. DevServer is the pipeline around them. Hand it a task. It gives the agent its own copy of the code, checks the work with your build, your tests and your linter, and hands you a pull request. Open source. On your machine. Yours to change.**
 
 [![CI](https://github.com/sergiovision/DevServer/actions/workflows/ci.yml/badge.svg)](https://github.com/sergiovision/DevServer/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.14](https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white)](https://python.org/)
-[![Next.js 15](https://img.shields.io/badge/Next.js-15-black?logo=next.js&logoColor=white)](https://nextjs.org/)
+[![Next.js 16](https://img.shields.io/badge/Next.js-16-black?logo=next.js&logoColor=white)](https://nextjs.org/)
 [![PostgreSQL 17](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://postgresql.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](docker/)
 
@@ -17,7 +17,9 @@
 
 <img src="assets/viewtask.png" alt="DevServer task detail view — live event log, run history, and the agent settings sidebar" width="90%" />
 
-[The idea](#the-idea) · [Make it yours](#start-here-make-it-yours) · [DevAgentForce](#then-it-grew-up) · [Engineering](#engineering-highlights) · [Features](#features) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Docs](#documentation) · [Roadmap](#roadmap)
+[The idea](#the-idea) · [How it works](#how-it-works) · [Features](#what-you-get) · [Security](#your-keys-stay-home) · [Make it yours](#start-here-make-it-yours) · [Engineering](#engineering-highlights) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Docs](#documentation)
+
+**4 agent CLIs · 3 git hosts · 1 database · 0 servers in the middle · MIT licensed**
 
 </div>
 
@@ -29,26 +31,62 @@ The best coding agents in the world live in a terminal. They are astonishing. An
 
 They need you. One task at a time, one window at a time, while you sit there and watch.
 
-So I asked a simple question. What if you could just hand over the work?
+So here is a simple question. What if you could just hand over the work?
 
 Give an agent a task. Give it its own copy of the code. Run your build, your tests and your linter. If the work passes, open a pull request. If it fails, tell the agent exactly why, and let it try again.
 
-That's the whole idea. Task in. Pull request out.
+That's the whole idea.
+
+## How it works
+
+Take the wheel, or let it run. Either way, you only see work that already passes.
+
+| | Step | What happens |
+|---|---|---|
+| **01** | **Hand it a task** | Type it in the dashboard. Or start it from a template, a cron schedule, a signed webhook, a Confluence page, another agent over A2A, or your own CLI over MCP. |
+| **02** | **An agent picks it up** | Claude, Codex, Gemini or GLM, in a worktree of its own. Before it writes a line, it gets a map of the repo, a reality score and what past tasks learned. |
+| **03** | **Your checks decide** | Your build, tests and lint run. A preflight scans for leaked secrets, oversize files and scope creep. Nothing is taken on trust. |
+| **04** | **A pull request appears** | On GitHub or Gitea, or as `.patch` files, or as changes in your local folder. You review. You merge. |
+
+**And when it fails?** The error is matched against 20+ rules and the next attempt gets a precise hint. The same failure twice escalates instead of burning retries. Out of retries? A backup vendor takes over.
+
+## What you get
+
+| | |
+|---|---|
+| **Every major agent. One queue.**<br/>Claude, Codex, Gemini through Antigravity, and GLM, behind one interface. Pick one per task. Ask for `claude-opus-latest` and get the newest model the day it ships. | **Pay the way you already pay.**<br/>Use a metered API key, or the Claude Max, ChatGPT or Google AI subscription you already have. Set it per task. |
+| **Verified before you see it.**<br/>Your build, your tests, your linter, in an isolated git worktree. Only passing work becomes a pull request. | **Knows when to say no.**<br/>A 0–100 reality score checks the code base before a token is spent. Turn on the abstain gate, and doomed tasks never start. |
+| **You stay in charge.**<br/>Agree on the plan before a line is written, from the dashboard or a Telegram button. The approved file list becomes a fence the agent can't cross. | **Budgets that actually stop.**<br/>Set a cost or wall-time ceiling per task. A warning at 80%. A hard stop at 100%. |
+| **Talk to a running agent.**<br/>Send a note, or start a two-way thread with the agent while it works. Reply from Telegram. Cancel for real: the agent's whole process group goes with it. | **Every task makes the next one smarter.**<br/>Past tasks are recalled with hybrid vector and full-text search. Each repo keeps its facts and decisions. Embeddings run locally, with no cloud key. |
+| **Work while you sleep.**<br/>Cron jobs, an overnight Night Cycle, HMAC-signed webhooks and Confluence import keep the queue full. | **Speaks to other agents.**<br/>An MCP server puts the task queue inside Claude Code, Codex or Gemini. An A2A gateway lets other agents delegate work, under quotas you set. |
+| **Ask. It already knows.**<br/>An assistant on every page that knows the screen you're on. It proposes actions; nothing runs until you approve. | **See everything, live.**<br/>Every step is a typed event, streamed to your browser in about 100 ms. Analytics, cost per pull request, and every Claude Code and Codex session on the host in one view. |
 
 <table>
 <tr>
-<td width="50%"><img src="assets/logo/BeforeDevServer.jpg" alt="Three unharnessed horses standing idle in a field, branded with the Gemini, Claude and ChatGPT logos" /><br/><sub><b>Before.</b> All that horsepower, standing in a field.</sub></td>
-<td width="50%"><img src="assets/logo/WithDevServer.jpg" alt="A black horse rearing, fitted with a DevServer saddle and branded with the three AI provider logos" /><br/><sub><b>After.</b> The same horsepower, with a harness.</sub></td>
+<td width="50%"><a href="assets/dashboard.png"><img src="assets/dashboard.png" alt="Dashboard — running agents, queue controls, cost and success-rate analytics" /></a><br/><sub><b>Dashboard</b>: live queue, cost per PR, success rate</sub></td>
+<td width="50%"><a href="assets/tasks.png"><img src="assets/tasks.png" alt="Tasks list — priority, status, repo, turns" /></a><br/><sub><b>Tasks</b>: backlog grid or a kanban pipeline board</sub></td>
 </tr>
 </table>
 
+Five kinds of work share the queue: **coding**, **test**, **script**, **skill** and **research**. Every screen and subsystem, with screenshots and source links: **[docs/features.md](docs/features.md)**.
+
+## Your keys stay home.
+
+Left alone, a coding agent will paste a key into a commit and never notice. DevServer is built to catch it.
+
+| | |
+|---|---|
+| **Checked before every push.**<br/>A deterministic preflight scans every diff for secrets and oversize files, and checks the commit author. No LLM involved. A hit stops the pull request. | **Scrubbed on the way out.**<br/>Messages between agents, session transcripts, assistant output and everything sent to an A2A peer go through the same secret rules first. |
+| **Nothing reaches the worker from outside.**<br/>The worker binds to `127.0.0.1`. Outside callers go through the web tier, with hashed peer tokens and an SSRF guard on every push. | **Risky moves wait for you.**<br/>An agent about to touch the outside world can be made to ask first. The task waits until you decide, in the dashboard or on Telegram. |
+| **Your folder, untouched.**<br/>Point it at a local clone. It never pushes, never resets, never cleans. Your git config stays yours. | **Self-hosted. No middleman.**<br/>Your code goes straight from your machine to your AI vendor. No account, no telemetry home. Lock the dashboard with one optional admin token. |
+
 ## Start here. Make it yours.
 
-DevServer is a minimum viable product, on purpose. Minimum doesn't mean unfinished. It means everything that wasn't essential was left out, and everything that's left works: the queue, the isolated worktree, the agent, the verifier, the pull request.
+DevServer is a minimum viable product, on purpose. Minimum doesn't mean unfinished. It means everything that wasn't essential was left out, and everything that's left works: the queue, the worktree, the agent, the verifier, the pull request.
 
-Every team builds software differently. Your checks aren't my checks. Your rules aren't my rules. So a pipeline you can't change is a pipeline you'll eventually stop using.
+Every team builds software differently. Your checks aren't mine. Your rules aren't mine. A pipeline you can't change is a pipeline you'll eventually stop using.
 
-That's why DevServer is MIT licensed and written to be read. It's the foundation for your own autonomous coding pipeline. Fork it, then change the parts that make your team yours.
+So DevServer is MIT licensed and written to be read. Fork it. Then change the parts that make your team yours.
 
 | You want to | Start here |
 |---|---|
@@ -58,70 +96,9 @@ That's why DevServer is MIT licensed and written to be read. It's the foundation
 | Shape what the agent knows before it starts | [`runner/evidence.py`](apps/worker/src/services/runner/evidence.py), [`runner/prompt.py`](apps/worker/src/services/runner/prompt.py) |
 | Start work from your own tools | Webhook triggers, cron, or the [MCP server](apps/mcp-memory/README.md) |
 
-### What's already in the box
-
-Most autonomous coding agents ship as a closed SaaS, a VS Code extension, or a CLI glued to GitHub. DevServer is the opposite: a **self-hosted harness** that runs the coding-agent CLIs you already use as supervised workers, with a queue, a verifier, guardrails, an audit trail and a dashboard around them.
-
-- **Multi-vendor agent backends.** Claude (Anthropic), Gemini via Google's Antigravity CLI, Codex (OpenAI) and GLM (Zhipu), behind one `AgentBackend` interface. Switch per task; fail over to a backup vendor or model automatically when retries run out. Pick a family instead of a version: `claude-opus-latest`, `gpt-sol-latest` or `gemini-argon-latest` resolve to the newest model at launch time.
-- **Pay by API key or by subscription.** Per-task billing mode: `api` (metered key) or `max` (Claude Max, ChatGPT Plus, Google AI Pro/Ultra through the CLI's own login).
-- **Evidence before action.** A repo map, a 0–100 reality score and hybrid memory recall go into the prompt before the agent writes a line; an opt-in abstain gate blocks tasks the code base cannot support.
-- **Error-class-aware retries.** Failures are classified by 20+ rules and the next attempt gets a targeted hint. The same error twice escalates instead of burning retries.
-- **Guardrails without extra LLM calls.** Budget circuit breaker, deterministic PR preflight (secrets, forbidden and oversize files, author), side-effect approval gate.
-- **Human in the loop where it matters.** Plan approval for interactive tasks, operator notes delivered to a running agent, real cancellation that kills the agent process.
-- **Full live observability.** Every step is a typed event: PostgreSQL `NOTIFY` → WebSocket → dashboard, plus opt-in OpenTelemetry export.
-
-All of the above are real, tested code paths. The sections below and the [`docs/`](docs/) folder show how they are built.
-
-## Then it grew up.
-
-DevServer proved the idea. Then the real work began.
-
-The worker was rewritten in Go. The setup shrank to one command. Secrets went into a sealed vault. Every agent on the machine came into one cockpit, where you can steer it with a sentence. Every repository got a memory. And it got a new name.
-
-**[DevAgentForce](https://github.com/sergiovision/DevAgentForce)** is the product DevServer grew into. Claude, Gemini and Codex are the engines. DevAgentForce is the harness. It runs on your hardware, and your code goes straight from you to your AI vendor. No one in the middle.
-
-| | DevServer | DevAgentForce |
-|---|---|---|
-| **What it is** | The open-source MVP | The finished product |
-| **Made for** | Building your own pipeline | Shipping with agents today |
-| **Price** | Free, MIT licensed | Free edition. Pro is $15 a month |
-| **Source** | Open. Read it, fork it | Proprietary |
-| **Install** | Clone, then set up Node, Python and PostgreSQL | One command, or a native desktop app. The database comes with it |
-| **Worker** | Python | Go |
-| **Agents** | Claude, Codex, Gemini, GLM | Claude, Codex, Gemini |
-| **Pay with your AI subscription** | Yes | Yes, with a paid licence |
-| **Git** | GitHub, Gitea, any local folder | Those, plus Azure DevOps |
-| **Reality gate, plan approval, budget breaker, PR preflight** | Yes | Yes, in Pro |
-| **Code review** | Yours | A reviewer agent inspects every change, round after round (Pro) |
-| **Secrets** | `.env` files | Encrypted vault and redaction. Per-task scoping in Pro |
-| **Steering a running agent** | Notes, delivered to the agent | A live Sessions cockpit across every agent on the machine (Pro) |
-| **Memory** | Recall of past tasks | Facts, decisions and every past attempt, per repo (Pro) |
-| **MCP** | Create and run tasks from your CLI | Memory, code search and the task queue from your CLI (Pro). Attach external MCP servers, every call on the record |
-| **Interface** | English | 9 languages |
-
-**[Compare the editions](https://capitaltools.app/devagentforce#editions) · [Install it free](https://capitaltools.app/devagentforce#install) · [Buy Pro](https://capitaltools.app/devagentforce#pricing)**
-
-### Looking at Cursor, Devin or JetBrains Air?
-
-They're good tools. Look at this one too.
-
-Cursor gives you an editor. Devin gives you an engineer in someone else's cloud. JetBrains Air gives you a desktop app to delegate from.
-
-DevAgentForce gives you a factory. It's yours, and it runs on your machine. Keep the editor you love, and the Claude Code, Codex or Antigravity CLI you already pay for. Hand it a backlog. Every task gets its own worktree, your own build and tests, and a pull request at the end. Hit a rate limit, and another vendor takes over mid-task. We never resell AI. You pay us for the harness, and your AI vendor for the horsepower.
-
-**[See it working →](https://capitaltools.app/devagentforce#screenshots)**
-
-### Hiring? Leading an engineering team?
-
-This is what one engineer can ship in the AI age.
-
-I'm Sergei Zhuravlev. I started DevServer in April 2026. Seven months later it's a commercial product: a licence server, a checkout, an installer for macOS, Linux and Windows, a native desktop app in Rust, an interface in nine languages. DevAgentForce is built with DevAgentForce.
-
-You don't have to take my word for it. The code is right here. Start with [Engineering highlights](#engineering-highlights), then read the [design decisions](docs/design-decisions.md). Then let's talk: [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [hi@sergego.com](mailto:hi@sergego.com).
-
 ## Engineering highlights
 
-DevServer is also a showcase of how to build an **agent harness** that stays readable as it grows. The priorities, in order: **readability → reviewability → correctness → features**. Performance is deliberately not a goal.
+Readable first. Then reviewable. Then correct. Then features. Performance is deliberately not a goal.
 
 | Concern | How it is solved | Where |
 |---|---|---|
@@ -134,30 +111,7 @@ DevServer is also a showcase of how to build an **agent harness** that stays rea
 | DB sessions pinned for an hour per task | Repository-style functions, one short session per unit of work; nothing holds a session across a subprocess | [`runner/store.py`](apps/worker/src/services/runner/store.py) |
 | Hung git remotes | Every git call takes a required, per-operation timeout | [`git_ops.py`](apps/worker/src/services/git_ops.py) |
 
-Tooling: `ruff` (lint + format, blocking), `pyright` basic (reported), `pytest` with real-database integration tests, Node's test runner for the web's pure modules, all run by [GitHub Actions](.github/workflows/ci.yml) on every push. The design walkthrough is in [`docs/architecture.md`](docs/architecture.md) and the reasoning behind it in [`docs/design-decisions.md`](docs/design-decisions.md).
-
-## Features
-
-<table>
-<tr>
-<td width="50%"><a href="assets/dashboard.png"><img src="assets/dashboard.png" alt="Dashboard — running agents, queue controls, cost and success-rate analytics" /></a><br/><sub><b>Dashboard</b>: live queue, cost per PR, success rate</sub></td>
-<td width="50%"><a href="assets/tasks.png"><img src="assets/tasks.png" alt="Tasks list — priority, status, repo, turns" /></a><br/><sub><b>Tasks</b>: backlog grid or a kanban pipeline board</sub></td>
-</tr>
-</table>
-
-| Area | What you get |
-|---|---|
-| **Task pipeline** | Queue → isolated worktree → agent CLI → verify (build/test/lint) → PR preflight → PR, direct commit, `.patch` files or untracked changes |
-| **Repositories** | GitHub (incl. Enterprise), Gitea/Forgejo, or **Local Git**: any local clone, no tokens, never pushes |
-| **Agents** | Claude, Codex, Gemini via Antigravity, GLM; per-task vendor/model, `-latest` model aliases that follow new releases, backup model for auto-failover, API-key or subscription billing |
-| **Guardrails** | Reality gate (0–100 evidence score), budget circuit breaker, secret/forbidden-file preflight, Plan Gate approval |
-| **Human in the loop** | Plan approval, Task Notes delivered to a running agent, real cancellation, Telegram/Discord notifications |
-| **Memory** | Hybrid pgvector + full-text recall of past tasks, fused with Reciprocal Rank Fusion, local embeddings; recency decay, an archive sweep for never-recalled entries, and an outcome forecast from similar past tasks |
-| **Automation** | Cron jobs, HMAC-signed webhook triggers, Confluence import, MCP server for Claude Code / Codex / Gemini |
-| **Observability** | Typed events over `NOTIFY` → WebSocket, live logs, analytics, opt-in OpenTelemetry export |
-| **Product extras** | Task templates, an ideas tree, a Mermaid module diagram per repo, an *Ask Agent* help assistant |
-
-Every screen and subsystem, with screenshots and source links: **[docs/features.md](docs/features.md)**.
+Tooling: `ruff` (lint + format, blocking), `pyright` basic (reported), `pytest` with real-database integration tests, and Node's test runner for the web's pure modules. [GitHub Actions](.github/workflows/ci.yml) runs all of it on every push. The walkthrough is in [`docs/architecture.md`](docs/architecture.md); the reasoning is in [`docs/design-decisions.md`](docs/design-decisions.md).
 
 ## Architecture
 
@@ -205,7 +159,7 @@ flowchart TB
   Out --> TG
 ```
 
-Three small services, one PostgreSQL. No Redis, no RabbitMQ, no Celery — **PgQueuer** uses the same database everything else lives in.
+Two services. One PostgreSQL. No Redis, no RabbitMQ, no Celery: **PgQueuer** lives in the same database as everything else.
 
 ### One attempt
 
@@ -220,27 +174,26 @@ flowchart LR
   B -->|exceeded| X
 ```
 
-Every exit of an attempt is a `Verdict` (`SUCCEEDED`, `RETRY`, `ESCALATE`, `BLOCKED`, `BUDGET_EXCEEDED`, `SUSPENDED`); the attempt loop and [`outcome.record`](apps/worker/src/services/runner/outcome.py) are a `match` over that enum. A walkthrough of every module is in [`docs/architecture.md`](docs/architecture.md).
+Every exit of an attempt is a `Verdict` (`SUCCEEDED`, `RETRY`, `ESCALATE`, `BLOCKED`, `BUDGET_EXCEEDED`, `SUSPENDED`); the attempt loop and [`outcome.record`](apps/worker/src/services/runner/outcome.py) are a `match` over that enum. Every module is walked through in [`docs/architecture.md`](docs/architecture.md).
 
 ## Tech Stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| **Frontend** | Next.js 15 App Router · React 19 · CoreUI Pro | Server components for task pages, client components for real-time panels. |
-| **Backend worker** | Python 3.14 · FastAPI · SQLAlchemy 2.0 async · asyncpg | Async from top to bottom — every subprocess, DB call, and agent invocation is non-blocking. |
-| **Job queue** | [PgQueuer](https://github.com/janbjorge/pgqueuer) | PostgreSQL-native queue. No Redis, no RabbitMQ — one fewer service to monitor. |
-| **Database** | PostgreSQL 17 | Relational truth + queue + real-time notifications in one store. |
-| **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Dashboard updates arrive within ~100 ms. |
-| **AI engines** | Claude, Gemini, Codex, GLM CLIs | DevServer *orchestrates* existing CLIs instead of reimplementing agent logic. |
-| **Embeddings** | `fastembed` (local, ONNX/CPU) | Local semantic embeddings for memory recall — no cloud API, no key. Default `BAAI/bge-base-en-v1.5` (768-dim), override via `EMBEDDING_MODEL`. |
-| **Git platform** | Gitea / Forgejo / GitHub / Local Git | Gitea and GitHub get PRs via their REST APIs; Local Git repos work on a plain local clone — any provider, no API, no tokens. |
-| **Notifications** | Telegram Bot API | Basic task lifecycle alerts. |
-| **Charts** | Chart.js + react-chartjs-2 | Lightweight, no-frills analytics visualizations. |
+| **Frontend** | Next.js 16 App Router · React 19 · CoreUI | Server components for task pages, client components for real-time panels. |
+| **Backend worker** | Python 3.14 · FastAPI · SQLAlchemy 2.0 async · asyncpg | Async top to bottom. Every subprocess, DB call and agent run is non-blocking. |
+| **Job queue** | [PgQueuer](https://github.com/janbjorge/pgqueuer) | A PostgreSQL-native queue. One fewer service to run. |
+| **Database** | PostgreSQL 17 + pgvector | Records, queue, vectors and real-time notifications in one store. |
+| **Real-time** | `LISTEN/NOTIFY` → WebSocket | Zero-dependency pub/sub. Updates arrive in about 100 ms. |
+| **AI engines** | Claude, Codex, Gemini (Antigravity), GLM CLIs | DevServer *orchestrates* the CLIs you already trust instead of rebuilding them. |
+| **Embeddings** | `fastembed` (local, ONNX/CPU) | No cloud API, no key. Default `BAAI/bge-base-en-v1.5` (768-dim), override with `EMBEDDING_MODEL`. |
+| **Git platform** | GitHub / Gitea / Forgejo / Local Git | Pull requests through the REST APIs, or a plain local clone with no API and no tokens. |
+| **Notifications** | Telegram · Discord · A2A push | Rich task cards, plan buttons and replies on Telegram. |
 | **Package mgmt** | `uv` (Python) · `npm` (Node) | Fast, cacheable, boring. |
 
 ## Quick Start
 
-Prerequisites: Node.js 22+, Python 3.14+, PostgreSQL 16+ with `pgvector`, [`uv`](https://docs.astral.sh/uv/), and at least one agent CLI signed in (e.g. `claude login`).
+You need Node.js 22+, Python 3.14+, PostgreSQL 16+ with `pgvector`, [`uv`](https://docs.astral.sh/uv/), and one agent CLI signed in (for example `claude login`).
 
 ```bash
 git clone https://github.com/sergiovision/DevServer.git
@@ -251,45 +204,43 @@ cp config/.env.example .env   # minimum: PGPASSWORD and one vendor key (or a CLI
 ./scripts/start.sh --dev      # worker + web in dev mode
 ```
 
-Open **http://localhost:3200**. To run with Docker instead, use `./scripts/start.sh --docker`.
+Open **http://localhost:3200**. Prefer Docker? `./scripts/start.sh --docker`.
 
-The full guide covers both Docker topologies, host PostgreSQL, subscription logins inside containers, Windows (native PowerShell or Docker Desktop) and upgrades: **[docs/quick-start.md](docs/quick-start.md)**.
+Both Docker topologies, host PostgreSQL, subscription logins inside containers, Windows and upgrades are in **[docs/quick-start.md](docs/quick-start.md)**.
 
 ## Development
 
 ```bash
 cd apps/worker
-uv sync
+uv sync --extra test
 uv run ruff check . && uv run ruff format --check .   # blocking
 uv run pyright                                         # basic mode, reported
 uv run pytest                                          # needs a local PostgreSQL for tests/runner
 ```
 
-The integration tests create and migrate `devserver_test` on first use (override with `DEVSERVER_TEST_DATABASE_URL`). Without a reachable server they are skipped and the unit tests still run.
+The integration tests create and migrate `devserver_test` on first use (override with `DEVSERVER_TEST_DATABASE_URL`). With no server reachable they are skipped, and the unit tests still run.
 
 ```bash
 cd apps/web
-npm test              # webhook template / signature / handler tests
+npm test
 npx tsc --noEmit
 npm run build
 ```
 
-CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same commands against a `pgvector/pgvector:pg17` service. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same commands against a `pgvector/pgvector:pg17` service. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 ## Project Layout
 
 ```
 apps/
-  web/          → Next.js dashboard, API routes, PgQueuer producer, WebSocket relay, webhook receiver
+  web/          → Next.js dashboard, API routes, PgQueuer producer, WebSocket relay, webhooks, A2A gateway
   worker/       → FastAPI worker: queue consumer, task runner (src/services/runner/), agent backends, guardrails
-  mcp-memory/   → stdio MCP server that lets coding CLIs create and run DevServer tasks
+  mcp-memory/   → MCP server that lets coding CLIs create and run DevServer tasks
 database/       → idempotent SQL migrations
-docker/         → one Dockerfile (--target web|worker|pydeps) + compose files
+docker/         → one Dockerfile (--target web|worker) + compose files
 scripts/        → build / start / stop / migrate / backup / restore (bash and PowerShell)
 docs/           → architecture, design decisions, features, quick start, backup
 ```
-
-A file-by-file map of the runner is in [`docs/architecture.md`](docs/architecture.md).
 
 ## Documentation
 
@@ -300,7 +251,7 @@ A file-by-file map of the runner is in [`docs/architecture.md`](docs/architectur
 | [Architecture](docs/architecture.md) | How a task becomes a pull request, module by module |
 | [Design Decisions](docs/design-decisions.md) | Multi-vendor backends, failover, error-class retries, rate limits, OpenTelemetry, patterns |
 | [Backup & Restore](docs/backup-restore.md) | Full-system backup and restore scripts |
-| [Release notes](docs/release-notes/) · [Releases](https://github.com/sergiovision/DevServer/releases) | What changed in each version |
+| [Releases](https://github.com/sergiovision/DevServer/releases) | What changed in each version |
 
 ## Roadmap
 
@@ -311,29 +262,42 @@ A file-by-file map of the runner is in [`docs/architecture.md`](docs/architectur
 - Make `pyright` blocking once the remaining basic-mode findings in older modules are fixed.
 - GPT-6.1 Sol / Terra, GPT-6 Luna and GPT-6 Pro in the registry as soon as the Codex CLI catalogue lists them.
 
-**Intentionally deferred:**
+**Left out, on purpose:**
 
-- **Parallel sub-agents per task** — git worktrees are already per-task; sub-worktrees add complexity with unclear value at this scale.
-- **Sandboxed container per task** — overlaps with the existing worktree + repo-lock isolation.
-- **Codebase-as-typed-graph** — the repo map captures most of the value at a small fraction of the effort.
+- **Parallel sub-agents per task.** Worktrees are already per task; sub-worktrees add complexity with unclear value at this scale.
+- **A sandboxed container per task.** It overlaps with the worktree and repo-lock isolation already in place.
+- **A typed code graph.** The repo map captures most of the value at a fraction of the effort.
 
-Contributions and issues are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+Issues and contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
-## One more thing
+## Then it grew up.
 
-Everything on this page is the beginning of the story. The rest of it takes one line:
+DevServer proved the idea. Then the real work began.
 
-```bash
-curl -fsSL https://capitaltools.app/install.sh | bash
-```
+The worker was rewritten in Go. The setup shrank to one command. And it got a new name: **[DevAgentForce](https://github.com/sergiovision/DevAgentForce)**.
 
-It downloads, verifies, starts and opens the dashboard. No account. No database to prepare. On Windows, or if you'd rather have a native app, [the installers are here](https://capitaltools.app/devagentforce#install). Want all of Pro first? [Generate a 14-day trial key](https://capitaltools.app/account/trial?product=devagentforce).
+| | DevServer | DevAgentForce |
+|---|---|---|
+| **What it is** | The open-source MVP | The finished product |
+| **Made for** | Building your own pipeline | Shipping with agents today |
+| **Price** | Free, MIT licensed | Free edition. Pro is $15 a month |
+| **Source** | Open. Read it, fork it | Proprietary |
+| **Install** | Clone, then set up Node, Python and PostgreSQL | One command, or a native desktop app |
+| **Worker** | Python | Go |
 
-**All the horsepower of AI. Finally harnessed. [capitaltools.app/devagentforce →](https://capitaltools.app/devagentforce)**
+**[Compare the editions](https://capitaltools.app/devagentforce#editions) · [Install it free](https://capitaltools.app/devagentforce#install)**
+
+### Hiring? Leading an engineering team?
+
+This is what one engineer can ship in the AI age.
+
+I'm Sergei Zhuravlev. I started DevServer in April 2026. Seven months later it's a commercial product: a licence server, a checkout, installers for macOS, Linux and Windows, a native desktop app in Rust, an interface in nine languages.
+
+Don't take my word for it. The code is right here. Start with [Engineering highlights](#engineering-highlights), then read the [design decisions](docs/design-decisions.md). Then let's talk: [LinkedIn](https://www.linkedin.com/in/sergeizhuravlev/) · [hi@sergego.com](mailto:hi@sergego.com).
 
 ## License
 
-[MIT](LICENSE) — free for personal and commercial use. Attribution appreciated but not required.
+[MIT](LICENSE). Free for personal and commercial use. Attribution appreciated, never required.
 
 ---
 

@@ -1,4 +1,5 @@
-"""devserver-mcp — the ``DevServer`` MCP server: task control for coding CLIs.
+"""devserver-mcp — the ``DevServer`` MCP server: shared per-repo memory
+knowledge base plus task control for coding CLIs.
 
 A thin, provider-agnostic stdio MCP server that proxies the running DevServer
 worker's ``/internal/tasks/*`` endpoints so Claude Code / Codex / Gemini can

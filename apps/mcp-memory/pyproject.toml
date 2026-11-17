@@ -1,7 +1,7 @@
 [project]
 name = "devserver-mcp"
 version = "0.1.0"
-description = "The DevServer MCP server — task control for coding CLIs (Claude Code / Codex / Gemini), backed by the DevServer worker."
+description = "The DevServer MCP server — shared per-repo memory knowledge base plus task control for coding CLIs (Claude Code / Codex / Gemini), backed by the DevServer worker."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [

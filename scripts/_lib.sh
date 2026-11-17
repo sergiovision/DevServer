@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared helpers for DevServer start/stop/restart scripts.
+# Shared helpers for DevServer lifecycle, service, migration and backup scripts.
 # Source this file: `source "$(dirname "$0")/_lib.sh"`
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -67,11 +67,55 @@ pids_on_port() {
   fi
 }
 
-# Kill anything listening on the given TCP port (best-effort, no error if free).
+# True when PID belongs to THIS checkout: its command line names a path under
+# the repo root (worker venv, web node_modules, --app-dir ...) or its working
+# directory is inside the repo (`node server.js` run from apps/web). Anything
+# else on our ports — Docker Desktop's port forwarder publishing a container,
+# another checkout, an unrelated service — is not ours to kill.
+DS_ROOT_REAL="$(cd "$ROOT" && pwd -P)"
+is_devserver_pid() {
+  local pid="$1" cmd cwd r
+  cmd="$(ps -o command= -p "$pid" 2>/dev/null || true)"
+  [[ -n "$cmd" ]] || return 1
+  for r in "$ROOT" "$DS_ROOT_REAL"; do
+    case "$cmd" in *"$r"/*) return 0 ;; esac
+  done
+  if [[ -e "/proc/${pid}/cwd" ]]; then
+    cwd="$(readlink "/proc/${pid}/cwd" 2>/dev/null || true)"
+  elif command -v lsof >/dev/null 2>&1; then
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)"
+  else
+    cwd=""
+  fi
+  [[ -n "$cwd" ]] || return 1
+  for r in "$ROOT" "$DS_ROOT_REAL"; do
+    case "$cwd" in "$r"|"$r"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# PIDs listening on a TCP port that belong to this checkout (see above).
+devserver_pids_on_port() {
+  local pid
+  for pid in $(pids_on_port "$1"); do
+    if is_devserver_pid "$pid"; then echo "$pid"; fi
+  done
+}
+
+# Describe whatever holds a port, one "pid: command" line each — for messages.
+describe_port_holders() {
+  local pid
+  for pid in $(pids_on_port "$1"); do
+    printf '  pid %s: %s\n' "$pid" "$(ps -o command= -p "$pid" 2>/dev/null || echo '?')"
+  done
+}
+
+# Kill the DevServer processes listening on the given TCP port (best-effort,
+# no error if free). Foreign listeners are left alone, see is_devserver_pid.
 kill_port() {
   local port="$1"
   local pids
-  pids="$(pids_on_port "$port")"
+  pids="$(devserver_pids_on_port "$port")"
   if [[ -n "$pids" ]]; then
     # shellcheck disable=SC2086
     kill $pids 2>/dev/null || true
@@ -128,9 +172,35 @@ sweep_orphans() {
   done
 }
 
+# ── PostgreSQL client dispatch ────────────────────────────────────────────────
+# pg_cmd TOOL DBNAME [ARGS...] — run a PostgreSQL client tool (psql, pg_dump,
+# pg_restore) against DBNAME the way the caller's MODE asks:
+#   • MODE=docker       → inside the bundled ${PG_CONTAINER} container
+#   • PGHOST+PGUSER set → over TCP with the PG* vars (.env)
+#   • Linux             → peer auth as the postgres system user
+#   • otherwise         → the current user (Homebrew PostgreSQL on macOS)
+# stdin is passed through in every mode, so `pg_cmd psql db < file.sql` and
+# `pg_cmd pg_restore db [flags] < dump` behave the same locally and in Docker.
+pg_cmd() {
+  local tool="$1" db="$2"
+  shift 2
+  if [[ "${MODE:-local}" == "docker" ]]; then
+    docker exec -i "${PG_CONTAINER:-${DEVSERVER_STACK:-devserver}-postgres}" \
+      "$tool" -U "${PGUSER:-devserver}" -d "$db" "$@"
+  elif [[ -n "${PGHOST:-}" && -n "${PGUSER:-}" ]]; then
+    PGPASSWORD="${PGPASSWORD:-}" "$tool" \
+      -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$db" "$@"
+  elif [[ "$IS_LINUX" == 1 ]]; then
+    sudo -u postgres "$tool" -d "$db" "$@"
+  else
+    "$tool" -d "$db" "$@"
+  fi
+}
+
 # ── Docker helpers ────────────────────────────────────────────────────────────
 docker_running() {
-  docker ps --format '{{.Names}}' 2>/dev/null | grep -qE '^devserver-(web|worker|postgres)$'
+  docker ps --format '{{.Names}}' 2>/dev/null \
+    | grep -qxE "${DEVSERVER_STACK:-devserver}-(web|worker|postgres)"
 }
 
 # Decide whether to bring in the host-db override. Rules:
@@ -150,7 +220,7 @@ docker_use_host_db() {
   # Skip the detection if our own bundled-DB container is the one holding
   # the port — tearing down will free it and the user probably wants the
   # bundled DB back.
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'devserver-postgres'; then
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "${DEVSERVER_STACK:-devserver}-postgres"; then
     return 1
   fi
   port_busy "$port"
@@ -260,7 +330,7 @@ stop_host() {
   for port in "$WORKER_PORT" "$WEB_PORT"; do
     if port_busy "$port"; then
       local stragglers
-      stragglers="$(pids_on_port "$port")"
+      stragglers="$(devserver_pids_on_port "$port")"
       if [[ -n "$stragglers" ]]; then
         # shellcheck disable=SC2086
         kill -KILL $stragglers 2>/dev/null || true
@@ -271,9 +341,9 @@ stop_host() {
   done
 
   if [[ "$still_busy" == 1 ]]; then
-    red "Failed to free ports ${WORKER_PORT}/${WEB_PORT}. Holders:"
-    pids_on_port "$WORKER_PORT"
-    pids_on_port "$WEB_PORT"
+    red "Failed to free ports ${WORKER_PORT}/${WEB_PORT}. Holders (non-DevServer processes are never killed):"
+    describe_port_holders "$WORKER_PORT"
+    describe_port_holders "$WEB_PORT"
     return 1
   fi
 

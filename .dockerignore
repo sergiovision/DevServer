@@ -47,7 +47,7 @@ backups/
 .DS_Store
 
 # Kept deliberately (required by docker/Dockerfile):
-#   docker/sourceless.sh   .py -> .pyc for the Pro modules, used in two stages
+#   docker/sourceless.sh   .py -> .pyc for the worker image, used in two stages
 #   docker/devserver-bootstrap.py
 #                          first-start schema apply + settings seed
 #   database/migrations/** the schema that bootstrap applies. NOTE: `logs/`
@@ -57,7 +57,7 @@ backups/
 #   apps/web/**            source, package.json, package-lock.json, public/, server.ts
 #   version.json           read by next.config.ts at build time
 #   apps/worker/**         pyproject.toml, uv.lock, src/
-#   apps/mcp-memory/**     optional Pro MCP server (bracketed COPY tolerates absence)
+#   apps/mcp-memory/**     DevServer MCP server, the Ask Agent tool lane (bracketed COPY tolerates absence)
 #   .claude/skills/**      agent skills baked into the worker image
 #   docs/assistant/**      Ask Agent knowledge pack
 #   scripts/**             maintenance scripts the Ask Agent can propose

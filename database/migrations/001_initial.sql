@@ -235,8 +235,8 @@ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS content_tsv tsvector
 -- ─── Temporal facts (KG-lite, Tier 1.2) ──────────────────────────────────────
 -- subject-predicate-object facts with validity windows + supersession. A new
 -- fact for the same (repo, subject, predicate) closes the prior one; recall
--- shows only current facts (valid_until IS NULL). Always present; written only
--- by the Pro memory_facts module.
+-- shows only current facts (valid_until IS NULL). Written by
+-- services/memory_facts.py.
 CREATE TABLE IF NOT EXISTS memory_facts (
     id              BIGSERIAL PRIMARY KEY,
     repo_id         INT REFERENCES repos(id) ON DELETE CASCADE,
@@ -257,13 +257,16 @@ CREATE TABLE IF NOT EXISTS memory_facts (
 CREATE INDEX IF NOT EXISTS idx_facts_repo         ON memory_facts(repo_id);
 CREATE INDEX IF NOT EXISTS idx_facts_repo_current ON memory_facts(repo_id, subject)
     WHERE valid_until IS NULL;
-CREATE INDEX IF NOT EXISTS idx_facts_embedding    ON memory_facts
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+-- No ivfflat index on `embedding`: semantic fact search is scoped to one
+-- repo's current facts (a handful of rows), where an exact cosine scan is
+-- cheap and always correct. ivfflat (lists=100) built on a near-empty table
+-- can return *zero* rows — see the corpus_chunks note below. Dropped for
+-- databases created before this change.
+DROP INDEX IF EXISTS idx_facts_embedding;
 
 -- ─── Per-repo Memory Knowledge Base registry (Foundation B) ──────────────────
 -- One row per repo holding KB-level config plus the cached "wake-up" digest
--- (Tier 3). The schema is always present; only the Pro RepoMemory object
--- (services/pro/repo_kb.py) reads/writes it — it stays empty in the free build.
+-- (Tier 3). Read and written by the RepoMemory object (services/repo_kb.py).
 CREATE TABLE IF NOT EXISTS repo_memory (
     repo_id        INT PRIMARY KEY REFERENCES repos(id) ON DELETE CASCADE,
     embed_model    VARCHAR(80),
@@ -276,9 +279,9 @@ CREATE TABLE IF NOT EXISTS repo_memory (
 -- ─── Per-repo code/doc corpus (semantic search over source & docs) ───────────
 -- One row per overlapping text window of an indexed file. Powers the
 -- code_search / doc_search / corpus_stats / corpus_ingest MCP lanes through
--- routes/pro_internal.py → services/pro/corpus.py. Chunks are content-addressed
+-- routes/memory_kb.py → services/corpus.py. Chunks are content-addressed
 -- (file_sha) so an incremental re-ingest only re-embeds files that changed.
--- Always present; written only by the Pro corpus module (empty in the free build).
+-- Written by services/corpus.py.
 CREATE TABLE IF NOT EXISTS corpus_chunks (
     id          BIGSERIAL PRIMARY KEY,
     repo_id     INT         NOT NULL REFERENCES repos(id) ON DELETE CASCADE,

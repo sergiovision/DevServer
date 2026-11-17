@@ -137,9 +137,9 @@ It is grounded in a curated handbook shipped in the repo (`docs/assistant/`) rat
 
 A combobox in the drawer's toolbar picks the **model** for the next turn, from whatever your System LLM vendor offers — reach for a bigger model on a hard question, drop back to a cheap one for the rest. The vendor itself stays a Settings decision, since changing it also changes credentials and billing. Your choice is remembered.
 
-It answers questions and says plainly when it cannot see something. It has no tools and no shell: it can explain, never act.
+By default it is plain streaming chat. **Agent mode** is opt-in — turn on the `assistant_agent_mode` setting, and for Anthropic and GLM the question is answered by the vendor CLI with a read-only DevServer MCP toolset (memory, code search, task status), so it can look things up instead of guessing. Anything that would change state — creating, running or cancelling a task — is only *proposed* as an action card in the drawer; nothing happens until you press **Approve**; maintenance-script actions are refused unless `INTERNAL_API_TOKEN` is set. Other vendors stay on plain streaming chat.
 
-📂 [`apps/web/src/components/AskAgentPanel.tsx`](../apps/web/src/components/AskAgentPanel.tsx) · [`apps/worker/src/routes/assistant.py`](../apps/worker/src/routes/assistant.py) · [`apps/worker/src/services/assistant_kb.py`](../apps/worker/src/services/assistant_kb.py)
+📂 [`apps/web/src/components/AskAgentPanel.tsx`](../apps/web/src/components/AskAgentPanel.tsx) · [`apps/worker/src/routes/assistant.py`](../apps/worker/src/routes/assistant.py) · [`assistant_kb.py`](../apps/worker/src/services/assistant_kb.py) · [`assistant_agent.py`](../apps/worker/src/services/assistant_agent.py) · [`assistant_actions.py`](../apps/worker/src/services/assistant_actions.py)
 
 ## Agent guardrails — evidence, budget, and a deterministic preflight
 
@@ -162,7 +162,13 @@ Memory stays useful as it grows, through two opt-in settings (0 = off):
 
 The same embeddings drive the **outcome forecast** on a task's page: the five most similar past tasks in the repo, their real success rate, average duration and turns. With no comparable history it falls back to the repo-wide baseline, and the card says which one you are looking at.
 
-📂 [`apps/worker/src/services/memory.py`](../apps/worker/src/services/memory.py) · [`apps/worker/src/services/outcome.py`](../apps/worker/src/services/outcome.py) · [`apps/worker/src/services/embeddings.py`](../apps/worker/src/services/embeddings.py)
+### Repo knowledge base and agent lanes
+
+On top of task memories, each repo keeps a small knowledge base: **facts** (bi-temporal subject/predicate/object statements that can be invalidated), **decisions** (problem, choice, alternatives, reasoning), archived **run transcripts**, a **code/doc corpus** chunked and embedded for search-by-meaning, and a **wake-up digest** — a short summary of the repo prepended to recall. A successful run archives its transcript, re-indexes the corpus in the background and rebuilds the digest.
+
+A running agent gets `DEVSERVER_WORKER_URL` and `DEVSERVER_TASK_KEY` in its environment and an *Autonomous agent lanes* block in its prompt: `curl` endpoints under `/internal/tasks/<key>/` for `memory/recall|remember|transcripts|facts|decisions`, `corpus/search`, `repo-map`, `facts`, `decisions` and `messages/inbox|send|thread`. Seed a repo's knowledge base by hand with `apps/worker/scripts/seed_repo_memory.py`.
+
+📂 [`apps/worker/src/services/memory.py`](../apps/worker/src/services/memory.py) · [`repo_kb.py`](../apps/worker/src/services/repo_kb.py) · [`memory_facts.py`](../apps/worker/src/services/memory_facts.py) · [`corpus.py`](../apps/worker/src/services/corpus.py) · [`routes/memory_kb.py`](../apps/worker/src/routes/memory_kb.py) · [`apps/worker/src/services/outcome.py`](../apps/worker/src/services/outcome.py) · [`apps/worker/src/services/embeddings.py`](../apps/worker/src/services/embeddings.py)
 
 ## Plan Gate — approve the plan before any code is written
 
@@ -175,6 +181,38 @@ Set a task's mode to **interactive** and the agent first runs read-only with a s
 Post a note on a running task ("use the existing retry helper", "skip the docs"). The runner picks up unread notes at the start of the next attempt, adds them to that attempt's prompt and marks them read in the same SQL statement — so each note reaches the agent **exactly once**. Notes on a finished task are kept for the record and never replayed into a later run. Also available from Telegram as `/reply TASK-KEY <note>`.
 
 📂 [`task_notes.py`](../apps/worker/src/services/task_notes.py) · [`TaskNotesPanel.tsx`](../apps/web/src/components/TaskNotesPanel.tsx)
+
+## Task Messages — a two-way thread with a running agent
+
+The **Messages** panel on a task page is a chat thread with the agent. The agent posts with `messages/send` (to `user`/`operator`, or to another task by key) and drains its inbox with `messages/inbox`; you reply from the panel as the operator. Messages are screened for secrets before they are stored, and anything addressed to the operator is pushed to every configured notification channel. In Telegram, `/inbox [N]` lists recent operator-bound messages.
+
+📂 [`task_messaging.py`](../apps/worker/src/services/task_messaging.py) · [`routes/messaging.py`](../apps/worker/src/routes/messaging.py) · [`MessagesPanel.tsx`](../apps/web/src/components/MessagesPanel.tsx)
+
+## Rich Telegram notifications
+
+Telegram notifications are formatted cards — task start, success, failure, vendor failover, budget warning/exceeded, preflight blocked. A Plan Gate plan arrives with inline **Approve** / **Reject** buttons that decide the plan straight from the chat. If Telegram rejects a card, the plain-text message is sent instead.
+
+📂 [`telegram_rich.py`](../apps/worker/src/services/telegram_rich.py) · [`telegram_polling.py`](../apps/worker/src/services/telegram_polling.py)
+
+## Night Cycle — an unattended overnight batch
+
+The **Night Cycle** panel on the Dashboard works through the backlog unattended until a configured end hour: it enqueues pending tasks one by one, retries tasks that failed during the cycle, and stops at the deadline (the end hour is UTC). A task is considered finished on any terminal status (`test`, `done`, `failed`, `blocked`, `cancelled`). Its state lives in Postgres, so a worker restart resumes an active cycle.
+
+Restarting the worker before a retry is **opt-in**: pass `restart_on_failed: true` to `POST /api/night-cycle` (`action: "start"`; default `false`). It goes through the `/api/worker` restart action, which kills the worker process — and with it every in-flight task — and does nothing when the worker runs in its own container.
+
+📂 [`night_cycle.py`](../apps/worker/src/services/night_cycle.py) · [`NightCyclePanel.tsx`](../apps/web/src/components/NightCyclePanel.tsx)
+
+## Sessions — live Claude Code and Codex sessions on this machine
+
+The **Sessions** page lists local Claude Code and Codex CLI sessions (including ones DevServer did not start), shows which task a session belongs to, and tails its transcript with secrets redacted. Stale Claude sessions can be deleted.
+
+📂 [`claude_sessions.py`](../apps/worker/src/services/claude_sessions.py) · [`codex_sessions.py`](../apps/worker/src/services/codex_sessions.py) · [`SessionsView.tsx`](../apps/web/src/components/SessionsView.tsx)
+
+## A2A — DevServer as an agent for other agents
+
+DevServer speaks the [Agent2Agent](https://a2a-protocol.org) protocol (JSON-RPC 2.0) at `/api/a2a`, with its agent card at `/.well-known/agent-card.json`. Register peers with bearer tokens on the **Agent Peers** page; a peer can send a task, stream its progress, subscribe to push notifications (with SSRF-safe URL checks), and reply to a plan or blocked task. Output sent to peers is redacted for secrets. The gateway lives in the Next.js tier only — the worker stays unexposed.
+
+📂 [`apps/web/src/lib/a2a/`](../apps/web/src/lib/a2a/) · [`apps/web/src/app/api/a2a/`](../apps/web/src/app/api/a2a/) · [`A2APeersView.tsx`](../apps/web/src/components/A2APeersView.tsx)
 
 ## Patch Export — reviewable `.patch` files
 
@@ -190,7 +228,7 @@ Create a trigger on the **Webhooks** page: a repo, an opaque URL token, a secret
 
 ## MCP server — drive DevServer from Claude Code, Codex or Gemini
 
-A small stdio MCP server lets an interactive coding CLI create a task in the current repo with a chosen vendor and model, start it on the worker, poll its status and read its output (`task_options`, `task_create`, `task_run`, `task_list`, `task_status`, `task_output`, `task_cancel`). Setup for each CLI is in its README.
+A small stdio MCP server lets an interactive coding CLI create a task in the current repo with a chosen vendor and model, start it on the worker, poll its status and read its output (`task_options`, `task_create`, `task_run`, `task_list`, `task_status`, `task_output`, `task_cancel`). It also exposes the repo knowledge base to any CLI session — `wake_digest`, `memory_recall`, `memory_facts`, `memory_decisions`, `memory_transcripts`, `repo_map`, `code_search`, `doc_search`, `corpus_*`, `memory_remember`, `record_fact`, `record_decision` — so Claude Code, Codex and Gemini share one memory with DevServer's own runs. A remote mode authenticates with an A2A peer token against a remote DevServer. Setup for each CLI is in its README.
 
 📂 [`apps/mcp-memory/`](../apps/mcp-memory/README.md) · design notes in [`docs/`]()
 

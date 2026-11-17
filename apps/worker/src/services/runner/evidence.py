@@ -13,8 +13,9 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError
 
 from models.base import async_session
-from services import app_settings, memory, reality_gate, repo_map
+from services import app_settings, memory, reality_gate, repo_kb, repo_map, system_llm
 from services.notify import notify
+from services.repo_kb import RepoMemory
 
 from . import store
 from .context import TaskContext
@@ -109,9 +110,21 @@ async def abstains(ctx: TaskContext) -> bool:
 
 
 async def recall_memory(ctx: TaskContext) -> None:
-    """Push a few relevant past experiences into the prompt."""
+    """Push a few relevant past experiences, plus the repo's wake-up digest.
+
+    Only a small recall is pushed (``memory_pushed_recall_limit``, default 2;
+    0 turns the whole block off, digest included); the agent pulls deeper
+    lanes on demand. ``memory_iterative_recall`` swaps single-pass recall for
+    LLM-planned multi-hop recall.
+
+    The DB session is closed before any system-LLM call (rerank, multi-hop
+    planner) so a slow vendor never pins a pooled connection.
+    """
     task = ctx.task
     query = f"{task.key} {task.title}\n{task.description}"
+    llm = None
+    rerank = False
+    memories: list[dict] = []
     try:
         async with async_session() as db:
             limit = await app_settings.get_int_setting(
@@ -119,12 +132,28 @@ async def recall_memory(ctx: TaskContext) -> None:
             )
             if limit <= 0:
                 return
-            memories = await memory.search_memory_hybrid(db, ctx.repo.id, query, limit=limit)
+            iterative = await app_settings.get_bool_setting(db, "memory_iterative_recall", False)
+            kb = RepoMemory(db, ctx.repo.id)
+            digest = await kb.wake_up_digest()
+            if not iterative:
+                memories, rerank = await kb.recall_candidates(query, limit=limit)
+            if iterative or rerank:
+                llm = await system_llm.read(db)
+        # Session closed: the LLM-backed steps below open short sessions of their own.
+        if iterative:
+            memories = await memory.search_memory_iterative(
+                None, ctx.repo.id, query, limit=limit, llm=llm
+            )
+        elif rerank:
+            memories = await repo_kb.llm_rerank(llm, query, memories, limit)
     except SQLAlchemyError:
         # Recall is an enhancement; a missing pgvector index must not fail the task.
         logger.exception("memory_recall failed for %s", task.key)
         return
-    ctx.evidence.memory_text = memory.render_memory_recall(memories)
+    recall_text = memory.render_memory_recall(memories)
+    ctx.evidence.memory_text = "\n\n".join(block for block in (digest, recall_text) if block)
+    if digest:
+        await store.emit_event(task.id, None, "wake_digest_built", {"chars": len(digest)})
     if not memories:
         return
     top = memories[0].get("similarity", 0.0)

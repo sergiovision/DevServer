@@ -1,10 +1,10 @@
--- 003 — A2A 1.0 peer gateway (Pro)
+-- 003 — A2A 1.0 peer gateway
 --
 -- Exposes DevServer as an Agent2Agent (A2A) peer so external agents can
 -- discover it via an Agent Card and delegate long-running coding work to it
--- over JSON-RPC 2.0. See ``docs/PlanA2A.md`` for the full design.
+-- over JSON-RPC 2.0. See the A2A gateway section of ``docs/features.md``.
 --
--- The gateway lives entirely in the Next.js tier (``app/api/pro/a2a``) — the
+-- The gateway lives entirely in the Next.js tier (``app/api/a2a``) — the
 -- worker is deliberately NOT exposed, because it has no authentication and
 -- serves ``/internal/env`` (cleartext secrets) on the same flat namespace.
 --
@@ -59,13 +59,14 @@ CREATE TABLE IF NOT EXISTS a2a_peers (
     updated_at            TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
--- Auth is a single indexed lookup on the token hash.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_a2a_peers_token
-    ON a2a_peers (token_sha256);
+-- Auth is a single indexed lookup on the token hash, served by the index the
+-- UNIQUE constraint on token_sha256 already creates. An earlier revision added
+-- a second, identical unique index; drop it on databases that still have it.
+DROP INDEX IF EXISTS idx_a2a_peers_token;
 
 -- ─── Push notification configs (A2A tasks/pushNotificationConfig/*) ──────────
--- Forward-declared for the phase-6 delivery backend. Creating the table now
--- keeps the migration count down and is harmless while unused.
+-- One row per push target a peer registered for a task; read by the A2A push
+-- delivery (apps/web/src/lib/a2a/push.ts, services/notify/a2a_backend.py).
 CREATE TABLE IF NOT EXISTS a2a_push_configs (
     id           SERIAL PRIMARY KEY,
     config_id    VARCHAR(64)  NOT NULL,                 -- client-supplied or generated UUID

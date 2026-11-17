@@ -12,6 +12,7 @@ import {
 } from '@coreui/react-pro';
 import { AgentCard } from './AgentCard';
 import { WorkerToolbar } from './WorkerToolbar';
+import { NightCyclePanel } from './NightCyclePanel';
 import { DashboardCharts } from './DashboardCharts';
 import { DecisionsBanner } from './DecisionsBanner';
 import type { Task } from '@/lib/types';
@@ -39,6 +40,7 @@ export function Dashboard({ runningTasks, queuedTasks }: DashboardProps) {
       {/* Worker status + controls */}
       <WorkerToolbar />
       <DecisionsBanner />
+      <NightCyclePanel />
 
       {/* Running Agents */}
       <CCard className="mb-4">

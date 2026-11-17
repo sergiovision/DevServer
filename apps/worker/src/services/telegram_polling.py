@@ -8,12 +8,16 @@ Supported commands:
   /reject  TASK-KEY — cancel a pending/blocked task
   /cancel  TASK-KEY — stop a running task (alias of /reject for any status)
   /retry   TASK-KEY
-  /reply   TASK-KEY <message> — post an operator note to a running task
+  /reply   TASK-KEY <message> — message a live agent (inbox) or leave a note for its next attempt
+  /inbox   [N] — show (and mark read) the newest N unread operator messages
   /pause
   /resume
   /mode autonomous|interactive
   /budget TASK-KEY — show budget status for a task
   /help
+
+Also handles callback_query updates: the inline Approve / Reject buttons on
+plan-approval cards (``services.telegram_rich``).
 """
 
 import asyncio
@@ -30,7 +34,7 @@ from config import settings
 from models.base import async_session
 from models.setting import Setting
 from models.task import Task
-from services import task_control, task_notes
+from services import task_control, task_messaging, task_notes, telegram_rich
 from services.retry import Backoff
 from services.telegram import tg_send
 
@@ -119,15 +123,65 @@ async def _cmd_cancel(task_key: str) -> str:
     return f"\U0001f6d1 Cancelled `{task_key}`{stopped}"
 
 
+#: Statuses in which the agent is live and polls its inbox between steps.
+_LIVE_INBOX_STATUSES = ("running", "verifying")
+
+
 async def _cmd_reply(task_key: str, body: str) -> str:
-    """Post an operator note; a running task sees it in its next attempt."""
+    """Answer a task as the operator.
+
+    A live agent (running / verifying) gets it on the message bus, so it reads
+    it on its next inbox check — the same lane as the dashboard's Messages
+    panel. Otherwise it is stored as an operator note, folded into the next
+    attempt's prompt.
+    """
     async with async_session() as db:
+        res = await db.execute(select(Task.status).where(Task.task_key == task_key))
+        status = res.scalars().first()
+        if status is None:
+            return f"\u274c Could not reply to `{task_key}`: task not found"
+        if status in _LIVE_INBOX_STATUSES:
+            try:
+                msg = await task_messaging.send_message(
+                    db,
+                    from_task_key=task_messaging.OPERATOR_KEY,
+                    to_task_key=task_key,
+                    body=body,
+                    kind="response",
+                )
+            except ValueError as exc:
+                return f"\u274c Could not message `{task_key}`: {exc}"
+            return f"\u2709 Message #{msg['id']} sent to `{task_key}` (agent is live)"
         try:
             note = await task_notes.post_note(db, task_key=task_key, body=body)
         except (ValueError, task_notes.TaskNotFoundError) as exc:
             return f"\u274c Could not post note to `{task_key}`: {exc}"
     when = "its next attempt" if note.will_be_delivered else "the record (task is not running)"
     return f"\u2709 Note #{note.id} for `{task_key}` saved for {when}"
+
+
+async def _cmd_inbox(n_arg: str | None) -> str:
+    """Show the newest unread operator-addressed messages and mark them read."""
+    try:
+        n = max(1, min(20, int(n_arg) if n_arg else 5))
+    except ValueError:
+        n = 5
+    async with async_session() as db:
+        rows = await task_messaging.read_inbox(
+            db,
+            task_key=task_messaging.OPERATOR_KEY,
+            mark_read=True,
+            limit=n,
+            newest_first=True,
+        )
+    if not rows:
+        return "\U0001f4ed Operator inbox is empty."
+    lines = [f"\U0001f4e5 *Operator inbox* — {len(rows)} unread (now marked read)"]
+    for r in rows:
+        subj = r.get("subject") or (r.get("body") or "")[:60]
+        lines.append(f"• `{r.get('from_task_key') or '?'}` ({r.get('kind', '?')}): {subj}")
+    lines.append("_Answer with /reply TASK-KEY <message>._")
+    return "\n".join(lines)
 
 
 async def _cmd_retry(task_key: str) -> str:
@@ -239,7 +293,8 @@ _HELP = (
     "/reject TASK\\-KEY — cancel pending/blocked task\n"
     "/cancel TASK\\-KEY — cancel task in any status\n"
     "/retry TASK\\-KEY — retry failed task\n"
-    "/reply TASK\\-KEY <msg> — post a note to a running task\n"
+    "/reply TASK\\-KEY <msg> — message a task as the operator\n"
+    "/inbox N — newest N unread messages agents sent to you\n"
     "/pause — pause queue\n"
     "/resume — resume queue\n"
     "/mode autonomous|interactive — set mode\n"
@@ -275,6 +330,8 @@ async def _dispatch(cmd: str, args: list[str]) -> str | None:
         if len(args) < 2:
             return "Usage: /reply TASK-KEY <message>"
         return await _cmd_reply(args[0], " ".join(args[1:]))
+    if cmd == "/inbox":
+        return await _cmd_inbox(args[0] if args else None)
     if cmd == "/pause":
         return await _cmd_pause()
     if cmd == "/resume":
@@ -335,7 +392,30 @@ def _addressed_to_us(target: str) -> bool:
 # ─── Update handler ──────────────────────────────────────────────────────────
 
 
+async def _handle_callback_query(callback_query: dict) -> None:
+    """Inline keyboard button press (plan approve / reject)."""
+    message = callback_query.get("message") or {}
+    chat_id = str((message.get("chat") or {}).get("id", ""))
+    if settings.telegram_chat_id and chat_id != settings.telegram_chat_id:
+        logger.warning("Ignoring callback from unauthorized chat_id=%s", chat_id)
+        return
+    data = callback_query.get("data") or ""
+    if telegram_rich.parse_plan_callback(data) is None:
+        return
+    try:
+        await telegram_rich.handle_plan_callback(
+            callback_query.get("id", ""), data, message.get("message_id")
+        )
+    except Exception:
+        logger.exception("Error handling plan callback %s", data)
+
+
 async def _handle_update(upd: dict) -> None:
+    callback_query = upd.get("callback_query")
+    if callback_query:
+        await _handle_callback_query(callback_query)
+        return
+
     # Text command
     message = upd.get("message") or upd.get("edited_message")
     if not message:
@@ -408,7 +488,7 @@ async def _poll() -> None:
                         # otherwise render a Python list as
                         # ``allowed_updates=message&allowed_updates=...``
                         # which Telegram silently interprets as "no filter".
-                        "allowed_updates": json.dumps(["message"]),
+                        "allowed_updates": json.dumps(["message", "callback_query"]),
                     },
                 )
             data = resp.json()

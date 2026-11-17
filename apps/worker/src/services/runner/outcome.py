@@ -12,8 +12,9 @@ import traceback
 from collections import Counter
 
 from models.base import async_session
-from services import memory, patch_export
+from services import app_settings, memory, patch_export
 from services.notify import notify
+from services.repo_kb import RepoMemory
 
 from . import store
 from .context import TaskContext
@@ -86,6 +87,7 @@ async def _record_success(ctx: TaskContext, success: Success) -> None:
     if ctx.git_flow == "patch":
         await _export_patches(ctx)
     await _remember_success(ctx, success)
+    await _refresh_knowledge_base(ctx)
 
 
 async def _export_patches(ctx: TaskContext) -> None:
@@ -189,3 +191,25 @@ async def _remember_success(ctx: TaskContext, success: Success) -> None:
         # Memory is an optional enhancement (embedding model, pgvector); log
         # with the traceback and keep the task's success.
         logger.exception("Failed to store success memory for %s", task.key)
+
+
+async def _refresh_knowledge_base(ctx: TaskContext) -> None:
+    """Fold a successful run into the repo's knowledge base. Best-effort.
+
+    - archive the run transcripts verbatim (``memory_verbatim_transcripts``,
+      default off) so the exact reasoning stays searchable;
+    - rebuild the wake-up digest so facts and decisions recorded during this
+      task reach the next one.
+
+    The code/doc corpus re-index (``corpus_auto_index``) runs later, from
+    ``phases.finalise``, once the checkout is off the task branch.
+    """
+    task, repo = ctx.task, ctx.repo
+    try:
+        async with async_session() as db:
+            kb = RepoMemory(db, repo.id)
+            if await app_settings.get_bool_setting(db, "memory_verbatim_transcripts", False):
+                await kb.archive_transcript(task.id, task_key=task.key)
+            await kb.wake_up_digest(force=True)
+    except Exception:
+        logger.exception("knowledge-base refresh failed for %s", task.key)

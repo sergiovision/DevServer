@@ -19,12 +19,23 @@ if _SRC_DIR not in sys.path:
     sys.path.insert(0, _SRC_DIR)
 
 from config import settings
-from routes import generation, registry, repos, system, task_actions, task_artifacts, tasks
+from routes import (
+    generation,
+    memory_kb,
+    messaging,
+    registry,
+    repos,
+    sessions_night,
+    system,
+    task_actions,
+    task_artifacts,
+    tasks,
+)
 from routes.assistant import router as assistant_router
 from routes.enhanced_health import router as enhanced_health_router
 from routes.env_config import router as env_config_router
 from routes.health import router as health_router
-from services import embeddings, telemetry
+from services import embeddings, night_cycle, telemetry
 from services.queue_consumer import start_consumer, stop_consumer
 from services.scheduler import start_scheduler, stop_scheduler
 from services.telegram_polling import start_polling, stop_polling
@@ -56,6 +67,10 @@ async def lifespan(app: FastAPI):
     await start_consumer()
     await start_scheduler()
     start_polling()
+    try:
+        await night_cycle.resume_if_active()
+    except Exception:
+        logger.exception("Night cycle resume failed")
     # Load the embedding model in the background so the first memory recall
     # is not blocked on a cold ONNX load. The task is kept so shutdown can
     # cancel it instead of leaving it dangling.
@@ -83,7 +98,18 @@ app = FastAPI(
 
 app.include_router(health_router)
 app.include_router(enhanced_health_router)
-for module in (tasks, task_actions, task_artifacts, repos, system, generation, registry):
+for module in (
+    tasks,
+    task_actions,
+    task_artifacts,
+    repos,
+    system,
+    generation,
+    registry,
+    sessions_night,
+    messaging,
+    memory_kb,
+):
     app.include_router(module.router)
 app.include_router(assistant_router)
 app.include_router(env_config_router)

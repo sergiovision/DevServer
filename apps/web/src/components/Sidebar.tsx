@@ -14,6 +14,8 @@ import {
   cilDescription,
   cilCopy,
   cilBolt,
+  cilTerminal,
+  cilShareBoxed,
 } from '@coreui/icons';
 
 interface SidebarProps {
@@ -35,6 +37,8 @@ const baseNavItems = [
   { name: 'Jobs', href: '/jobs', icon: cilClock },
   { name: 'Repos', href: '/repos', icon: cilStorage },
   { name: 'Settings', href: '/settings', icon: cilSettings },
+  { name: 'Agent Peers', href: '/a2a', icon: cilShareBoxed },
+  { name: 'Sessions', href: '/sessions', icon: cilTerminal },
   { name: 'Logs', href: '/logs', icon: cilDescription },
 ];
 

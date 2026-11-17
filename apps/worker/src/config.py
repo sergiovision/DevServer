@@ -174,9 +174,14 @@ class Settings(BaseSettings):
     # host — today the Ask Agent panel's approved-action runner. The web tier
     # attaches it as X-Internal-Token. Optional (unset = unenforced, matching
     # every pre-existing /internal route) but strongly recommended: the worker
-    # binds 0.0.0.0 by default and has no authentication of its own, so the
+    # has no authentication of its own (compose binds it to 127.0.0.1), so the
     # port must never be exposed regardless.
     internal_api_token: str = ""
+
+    # Opt-in web-tier admin token (apps/web/src/middleware.ts). When set, the
+    # worker's own callbacks to the web tier (enqueue, worker restart) send it
+    # as a Bearer token so they keep working behind the admin gate.
+    devserver_admin_token: str = ""
 
     # Web UI — port the Next.js dashboard listens on. The worker uses this
     # to reach the Next.js enqueue / worker API on localhost.
@@ -211,6 +216,12 @@ class Settings(BaseSettings):
         if self.web_url.strip():
             return self.web_url.strip().rstrip("/")
         return f"http://localhost:{self.web_port}"
+
+    @property
+    def web_headers(self) -> dict[str, str]:
+        """Headers for worker -> web calls (admin token when configured)."""
+        token = self.devserver_admin_token.strip()
+        return {"Authorization": f"Bearer {token}"} if token else {}
 
     @property
     def instance_label(self) -> str:

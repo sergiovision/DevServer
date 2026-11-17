@@ -1,6 +1,6 @@
 #!/bin/sh
 # Replace a tree's .py files with bytecode, in place. Used twice in
-# docker/Dockerfile — once for the Pro MCP server in `pydeps`, once for
+# docker/Dockerfile — once for the MCP server in `pydeps`, once for
 # /app/src in `worker` — which is why it is a script and not two RUN blocks
 # that have to be kept in agreement.
 #
@@ -18,14 +18,15 @@
 # Compiled with the venv interpreter, not the base image's: the .pyc magic
 # number must match the interpreter that actually runs the app.
 #
-# PYTHON_SOURCELESS=0 keeps the sources — useful when debugging a traceback
-# inside a running container, where sourceless frames show no code.
+# Opt-in: only PYTHON_SOURCELESS=1 strips the sources. The default (0, also the
+# Dockerfile's default) keeps them — the project is open source, so there is
+# nothing to hide, and sourceless frames show no code in a traceback.
 set -eu
 
 dir="$1"
 
-if [ "${PYTHON_SOURCELESS:-1}" != "1" ]; then
-    echo "PYTHON_SOURCELESS=0 — keeping Python sources in ${dir}"
+if [ "${PYTHON_SOURCELESS:-0}" != "1" ]; then
+    echo "PYTHON_SOURCELESS!=1 — keeping Python sources in ${dir}"
     exit 0
 fi
 

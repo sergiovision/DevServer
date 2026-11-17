@@ -216,6 +216,21 @@ class Dispatcher:
             violations=violations,
         )
 
+    async def plan_approval(
+        self,
+        *,
+        task_key: str,
+        task_id: int,
+        plan: dict,
+    ) -> dict[str, bool]:
+        """A plan awaits approval. Telegram adds inline Approve / Reject buttons."""
+        return await self._fanout(
+            "send_plan_approval",
+            task_key=task_key,
+            task_id=task_id,
+            plan=plan,
+        )
+
     async def task_state_changed(
         self,
         *,

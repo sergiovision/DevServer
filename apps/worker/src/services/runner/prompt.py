@@ -62,12 +62,76 @@ _SKIP_VERIFY_BLOCK = [
 ]
 
 
+_LANE_BASE = "$DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY"
+
+#: The HTTP lanes a running agent can call with curl. The runner sets
+#: ``DEVSERVER_WORKER_URL`` and ``DEVSERVER_TASK_KEY`` in the agent's env
+#: (see ``agent_call.lane_env``); the endpoints live in ``routes/memory_kb.py``
+#: and ``routes/messaging.py``.
+AGENT_LANES_BLOCK = [
+    "## Autonomous agent lanes (optional)",
+    "You can reach the DevServer worker over HTTP while you work. Your env",
+    "exposes $DEVSERVER_WORKER_URL and $DEVSERVER_TASK_KEY; every lane below",
+    f"lives under {_LANE_BASE}. Pull lanes on demand —",
+    "only a couple of prior memories are pushed above. Do not poll in a tight loop.",
+    "",
+    "### Messages (operator and peer tasks)",
+    "- Read your inbox (drains unread). Check it at the start and before any",
+    "  major commit; an operator message is the most recent human intent and",
+    "  overrides the task description where they differ:",
+    f'    curl -s "{_LANE_BASE}/messages/inbox"',
+    "- Reply to the operator (always acknowledge operator messages) or message a peer task:",
+    "    curl -s -X POST \\",
+    f'      "{_LANE_BASE}/messages/send" \\',
+    "      -H 'content-type: application/json' \\",
+    """      -d '{"to_task_key":"operator","kind":"response","body":"..."}'""",
+    "- The conversation so far:",
+    f'    curl -s "{_LANE_BASE}/messages/thread"',
+    "",
+    "### Project memory (read)",
+    "- What past tasks learned here:",
+    f"    curl -s -G \"{_LANE_BASE}/memory/recall\" --data-urlencode 'q=how does auth work'",
+    "- BEFORE retrying an approach, check whether a past attempt already failed it",
+    "  (searches verbatim transcripts of earlier runs):",
+    f"    curl -s -G \"{_LANE_BASE}/memory/transcripts\" --data-urlencode 'q=<approach>'",
+    "- Established facts (build/test commands, where things live):",
+    f"    curl -s -G \"{_LANE_BASE}/memory/facts\" --data-urlencode 'q=...'",
+    "- Past design decisions and their reasoning:",
+    f"    curl -s -G \"{_LANE_BASE}/memory/decisions\" --data-urlencode 'q=...'",
+    "- Find code/docs by meaning when you do not know the symbol name",
+    "  (kind=code or kind=doc narrows the search):",
+    f"    curl -s -G \"{_LANE_BASE}/corpus/search\" --data-urlencode 'q=where is retry backoff handled' --data-urlencode 'kind=code'",
+    "- A deeper symbol map of the directory you are editing:",
+    f"    curl -s -G \"{_LANE_BASE}/repo-map\" --data-urlencode 'subdir=src/api'",
+    "",
+    "### Project memory (write — durable knowledge only, not transient state)",
+    "- A non-obvious design decision (library choice, schema shape, trade-off):",
+    "    curl -s -X POST \\",
+    f'      "{_LANE_BASE}/decisions" \\',
+    "      -H 'content-type: application/json' \\",
+    """      -d '{"problem":"...","choice":"...","alternatives":["..."],"reasoning":"..."}'""",
+    "- A fact (subject → predicate → object). A new fact for the same",
+    "  subject+predicate supersedes the old one, so use it to correct stale knowledge:",
+    "    curl -s -X POST \\",
+    f'      "{_LANE_BASE}/facts" \\',
+    "      -H 'content-type: application/json' \\",
+    """      -d '{"subject":"tests","predicate":"run with","object":"pytest -q"}'""",
+    "- A gotcha or convention future tasks should know:",
+    "    curl -s -X POST \\",
+    f'      "{_LANE_BASE}/memory/remember" \\',
+    "      -H 'content-type: application/json' \\",
+    """      -d '{"content":"...","kind":"note"}'""",
+]
+
+
 def build_prompt(ctx: TaskContext, *, notes_block: str = "") -> str:
     """Prompt for the next attempt; resumed sessions get only the delta."""
     if ctx.session_id is not None:
         return _resume_prompt(ctx, notes_block=notes_block)
 
     parts = _header(ctx) + _context_blocks(ctx) + _instructions(ctx)
+    if ctx.agent_lanes:  # opt-in: ``agent_lanes_prompt`` setting
+        parts += ["", *AGENT_LANES_BLOCK]
     for block in (ctx.skill_prompt, notes_block):
         if block:
             parts.extend(["", block])

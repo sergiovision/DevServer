@@ -149,6 +149,7 @@ async def _run(
                     run_id=run_id,
                     billing_mode=billing_mode,
                     max_turns=max_turns,
+                    task_key=task.key,
                 )
             )
         except asyncio.CancelledError:

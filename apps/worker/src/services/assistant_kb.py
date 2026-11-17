@@ -237,15 +237,35 @@ MY repo?"), say plainly that you cannot see it, and tell them exactly where
 to look — which page, which panel, which log.\
 """
 
+_AGENT_RULES = """\
+## Your capabilities right now
+
+You have read-only tools: the operator's repository files (Read, Glob, Grep),
+the DevServer MCP server (live task state, and memory/code search where the
+deployment provides it). Use them before answering anything about the
+operator's own code, tasks or history — do not guess when you can look.
+
+You cannot change anything directly. When something needs doing — running a
+maintenance script, creating a task — call `propose_action` and STOP. The
+operator approves with one click and you will be told the outcome. Propose one
+concrete action, say in a sentence why it is the right one, and never propose
+anything they did not ask for.\
+"""
+
 
 def build_system_prompt(
     topics: list[dict[str, str]],
     page: dict | None = None,
     *,
     route: str | None = None,
+    tools_enabled: bool = False,
 ) -> str:
-    """Assemble the system prompt: rules + capabilities + page + handbook."""
-    parts = [_BASE_RULES, _CAPABILITY_RULES]
+    """Assemble the system prompt: rules + capabilities + page + handbook.
+
+    ``tools_enabled`` selects the agent-mode capability block (read-only tools
+    plus ``propose_action``) instead of the plain-chat one.
+    """
+    parts = [_BASE_RULES, _AGENT_RULES if tools_enabled else _CAPABILITY_RULES]
     page_block = render_page_context(page, route)
     if page_block:
         parts.append(page_block)

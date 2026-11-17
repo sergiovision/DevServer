@@ -168,7 +168,7 @@ async def stop_job(body: JobActionRequest):
     return {"status": "ok", "name": body.name}
 
 
-# Inter-task messaging endpoints moved to routes/pro_internal.py
+# Inter-task messaging endpoints live in routes/messaging.py
 # (/tasks/{task_key}/messages/send, /inbox, /thread, /sessions/list)
 
 # ─── Side-effect gate (human-in-the-loop) ──────────────────────────────────

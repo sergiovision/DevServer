@@ -128,6 +128,7 @@ async def _call_agent(
             run_id=run_id,
             billing_mode=ctx.billing_mode,
             max_turns=ctx.max_turns,
+            task_key=ctx.task.key,
         )
     )
     return result, _now_ms() - started_ms

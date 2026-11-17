@@ -41,7 +41,7 @@ PGPASSWORD="${_CLI_PGPASSWORD:-${PGPASSWORD:-}}"
 PGDATA="${_CLI_PGDATA:-${PGDATA:-}}"
 export PGPASSWORD
 WAIT_SECONDS="${DB_WAIT_SECONDS:-60}"
-PG_CONTAINER="${PG_CONTAINER:-devserver-postgres}"
+PG_CONTAINER="${PG_CONTAINER:-${DEVSERVER_STACK:-devserver}-postgres}"
 
 # Filled in by detect_target(); one of docker|launchd|systemd|pgctl
 TARGET=""

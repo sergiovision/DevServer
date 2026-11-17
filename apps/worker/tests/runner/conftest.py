@@ -90,6 +90,11 @@ async def db_engine(migrated_database: str) -> AsyncIterator[AsyncEngine]:
     engine = create_async_engine(url, poolclass=NullPool)
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {', '.join(_TABLES_TO_RESET)} RESTART IDENTITY CASCADE"))
+        # Explicitly off (also the default): a background corpus ingest would
+        # outlive the test and race the next one's TRUNCATE.
+        await conn.execute(
+            text("INSERT INTO settings (key, value) VALUES ('corpus_auto_index', 'false'::jsonb)")
+        )
     original_bind = base.async_session.kw.get("bind")
     base.async_session.configure(bind=engine)
     try:
@@ -188,6 +193,11 @@ def quiet_world(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         return None
 
     monkeypatch.setattr(embeddings, "embed", _no_embedding)
+
+    async def _no_batch_embedding(texts: list[str]) -> list[None]:
+        return [None] * len(texts)
+
+    monkeypatch.setattr(embeddings, "embed_batch", _no_batch_embedding)
 
 
 def _git(repo: Path, *args: str) -> str:

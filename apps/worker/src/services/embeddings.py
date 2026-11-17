@@ -15,8 +15,6 @@ different dimension therefore requires a schema migration + re-embed — see
 ``scripts/reembed_memory.py``. Both bundled defaults are 768-dim so they
 interchange without a migration.
 
-This module is FREE-level (no ``pro`` dependency) and survives
-``strip-pro.sh``.
 """
 
 from __future__ import annotations

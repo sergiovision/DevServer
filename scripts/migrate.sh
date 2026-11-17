@@ -3,39 +3,14 @@
 # Usage: ./scripts/migrate.sh [local|docker]
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-MIGRATIONS_DIR="${PROJECT_ROOT}/database/migrations"
-
-if [[ -f "${PROJECT_ROOT}/.env" ]]; then
-    set -a
-    source "${PROJECT_ROOT}/.env"
-    set +a
-fi
+# _lib.sh: ROOT, .env loading, colour helpers and the pg_cmd dispatch
+# (docker container / PG* over TCP / peer auth) shared with backup + restore.
+source "$(dirname "$0")/_lib.sh"
+MIGRATIONS_DIR="${ROOT}/database/migrations"
 
 MODE="${1:-local}"
 
-red()    { printf '\033[31m%s\033[0m\n' "$*"; }
-yellow() { printf '\033[33m%s\033[0m\n' "$*"; }
-
-OS_NAME="$(uname -s)"
-
-psql_cmd() {
-    if [[ "$MODE" == "docker" ]]; then
-        docker exec -i devserver-postgres psql -U "${PGUSER:-devserver}" -d "${PGDATABASE:-devserver}" "$@"
-    elif [[ -n "${PGHOST:-}" && -n "${PGUSER:-}" ]]; then
-        # Use env vars (.env loaded above) — works on Linux and macOS.
-        PGPASSWORD="${PGPASSWORD:-}" psql \
-            -h "${PGHOST}" -p "${PGPORT:-5432}" \
-            -U "${PGUSER}" -d "${PGDATABASE:-devserver}" "$@"
-    elif [[ "$OS_NAME" == "Linux" ]]; then
-        # Linux fallback: peer auth via postgres system user.
-        sudo -u postgres psql -d "${PGDATABASE:-devserver}" "$@"
-    else
-        # macOS fallback: Homebrew PostgreSQL runs as the current user.
-        psql -d "${PGDATABASE:-devserver}" "$@"
-    fi
-}
+psql_cmd() { pg_cmd psql "${PGDATABASE:-devserver}" "$@"; }
 
 # Pre-flight: refuse to run if another connection holds locks on `tasks`.
 # This catches the "idle in transaction" trap from a previously-killed worker

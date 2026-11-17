@@ -69,6 +69,16 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_HOSTNAME: hostname(),
     NEXT_PUBLIC_USER: userInfo().username,
   },
+  // A2A agent discovery. The protocol mandates the RFC 8615 well-known path;
+  // the handler lives with the rest of the gateway under app/api/a2a/.
+  async rewrites() {
+    return [
+      {
+        source: '/.well-known/agent-card.json',
+        destination: '/api/a2a/card',
+      },
+    ];
+  },
 };
 
 export default nextConfig;

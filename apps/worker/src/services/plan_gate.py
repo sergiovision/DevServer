@@ -202,7 +202,7 @@ async def await_approved_plan(ctx: TaskContext) -> Plan | None:
 
     await store.finish_run(run_id, status="success", plan_json=plan.to_json())
     await store.emit_event(task.id, run_id, "plan_pending", {"plan": plan.to_json()})
-    await notify.text(f"📋 *{task.key}* plan ready for review: {plan.summary[:300]}")
+    await notify.plan_approval(task_key=task.key, task_id=task.id, plan=plan.to_json())
     async with async_session() as db:
         timeout = await app_settings.get_int_setting(
             db, "plan_gate_timeout_seconds", DEFAULT_APPROVAL_TIMEOUT_SECONDS

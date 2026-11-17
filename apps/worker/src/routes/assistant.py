@@ -1,9 +1,18 @@
 """Ask Agent — the dashboard's assistant panel.
 
-One streaming endpoint backs the chat drawer on every dashboard page: the
-configured System LLM answers over HTTP, token by token, via
-:mod:`services.llm_stream`, grounded in the built-in handbook
-(:mod:`services.assistant_kb`). It has no tools and no side effects.
+One streaming endpoint backs the chat drawer on every dashboard page. It has
+two engines behind a single normalised event stream, both grounded in the
+built-in handbook (:mod:`services.assistant_kb`):
+
+- **chat** — the configured System LLM over HTTP, token by token, via
+  :mod:`services.llm_stream`. No tools, no side effects.
+- **agent** — the vendor's coding-agent CLI with the DevServer MCP server
+  attached (:mod:`services.assistant_agent`), so the assistant can read the
+  operator's code and live task state — and *propose* side-effecting fixes the
+  operator approves with one click (:mod:`services.assistant_actions`).
+
+Both emit the same event dicts (see :mod:`services.llm_stream`), so the browser
+has exactly one renderer.
 
 Deliberate design points:
 
@@ -24,18 +33,31 @@ import secrets
 import time
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import SQLAlchemyError
 
 from models.base import async_session
-from services import agent_backends, assistant_kb, llm_stream, system_llm
+from services import (
+    agent_backends,
+    app_settings,
+    assistant_actions,
+    assistant_agent,
+    assistant_kb,
+    llm_stream,
+    system_llm,
+)
 from services.system_llm import SystemLLM
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/internal")
+
+# Vendors whose CLI emits structured streaming output we can translate. The
+# Antigravity CLI (`agy`) has no --output-format at all, and codex's JSONL is
+# only partially structured, so those fall back to chat mode.
+_AGENT_VENDORS = assistant_agent.AGENT_VENDORS
 
 _HEARTBEAT_SECONDS = 15.0
 _MAX_STREAM_SECONDS = 20 * 60
@@ -70,14 +92,29 @@ class AssistantChatRequest(BaseModel):
     message: str
     session_id: str | None = None
     repo_id: int | None = None
-    #: Accepted for API compatibility; this edition always answers in chat mode.
-    mode: str = "chat"
+    #: auto | chat | agent — the agent engine is used only when the opt-in
+    #: ``assistant_agent_mode`` setting is on and the vendor supports it;
+    #: chat otherwise (the default).
+    mode: str = "auto"
     history: list[ChatMessageIn] = Field(default_factory=list)
     page: PageContextIn | None = None
     #: Per-turn model override, picked in the panel's toolbar. Must be one of
     #: the configured vendor's models; anything else falls back to the
     #: Settings value. The *vendor* is never overridable from the panel.
     model: str | None = None
+
+
+class ActionDecisionRequest(BaseModel):
+    decision: str  # approve | reject
+    comment: str = ""
+    follow_up: bool = True
+
+
+class ProposeActionRequest(BaseModel):
+    kind: str
+    summary: str = ""
+    params: dict = Field(default_factory=dict)
+    session_id: str | None = None
 
 
 # ── Session registry (in-memory by design — see module docstring) ────────────
@@ -99,7 +136,7 @@ class _Session:
         self.repo_id = repo_id
         self.created_at = time.time()
         self.touched_at = self.created_at
-        # Set by the Pro agent engine on the first turn and reused thereafter,
+        # Set by the agent engine on the first turn and reused thereafter,
         # so `--resume` finds the same conversation and MCP config.
         self.cli_session_id: str | None = None
         self.workdir: str | None = None
@@ -145,6 +182,16 @@ async def _read_system_llm() -> SystemLLM:
         return SystemLLM()
 
 
+async def _agent_mode_enabled() -> bool:
+    """The opt-in ``assistant_agent_mode`` setting; ``False`` without a database."""
+    try:
+        async with async_session() as db:
+            return await app_settings.get_bool_setting(db, "assistant_agent_mode", False)
+    except (SQLAlchemyError, OSError) as exc:
+        logger.warning("Assistant: agent-mode setting unreadable (%s); using chat", exc)
+        return False
+
+
 def _vendor_models(vendor: str) -> list[dict[str, str]]:
     """The models the panel may offer for *vendor*.
 
@@ -172,6 +219,33 @@ def _resolve_model(vendor: str, requested: str | None, configured: str) -> tuple
     return configured, (
         f"“{requested}” is not available for vendor {vendor} — answering with {configured}."
     )
+
+
+def _resolve_engine(
+    requested: str, vendor: str, agent_enabled: bool = False
+) -> tuple[str, str | None]:
+    """Decide which engine answers this turn. Returns ``(engine, notice)``.
+
+    Chat is the default; the agent engine (CLI with Read/Glob/Grep + actions)
+    is opt-in via the ``assistant_agent_mode`` setting.
+    """
+    if requested == "chat":
+        return "chat", None
+    if not agent_enabled:
+        if requested == "agent":
+            return "chat", (
+                "Agent mode is off (setting assistant_agent_mode) — answering "
+                "from the handbook instead."
+            )
+        return "chat", None
+    if vendor not in _AGENT_VENDORS:
+        if requested == "agent":
+            return "chat", (
+                f"The {vendor} CLI has no structured streaming output, so tools are "
+                "unavailable on this vendor — answering from the handbook instead."
+            )
+        return "chat", None
+    return "agent", None
 
 
 # ── SSE framing ──────────────────────────────────────────────────────────────
@@ -260,6 +334,9 @@ async def assistant_chat_stream(body: AssistantChatRequest, request: Request):
     llm = await _read_system_llm()
     vendor = llm.vendor
     model, model_notice = _resolve_model(vendor, body.model, llm.model)
+    engine, notice = _resolve_engine(
+        (body.mode or "auto").lower(), vendor, await _agent_mode_enabled()
+    )
 
     page = body.page.model_dump() if body.page else None
     route = (page or {}).get("route") or (page or {}).get("path")
@@ -268,18 +345,33 @@ async def assistant_chat_stream(body: AssistantChatRequest, request: Request):
         topics,
         page,
         route=route,
+        tools_enabled=engine == "agent",
     )
 
     async def events() -> AsyncIterator[dict]:
         yield {
             "type": "session",
             "session_id": session.id,
-            "engine": "chat",
+            "engine": engine,
             "vendor": vendor,
             "model": model,
         }
         if model_notice:
             yield {"type": "notice", "text": model_notice}
+        if notice:
+            yield {"type": "notice", "text": notice}
+
+        if engine == "agent":
+            async for event in assistant_agent.stream_agent_turn(
+                session=session,
+                user_text=body.message,
+                system_prompt=system_prompt,
+                vendor=vendor,
+                model=model,
+                billing_mode=llm.mode,
+            ):
+                yield event
+            return
 
         history = [
             {"role": m.role, "content": m.content}
@@ -307,12 +399,16 @@ async def assistant_chat_stream(body: AssistantChatRequest, request: Request):
 async def assistant_capabilities():
     """What the panel can offer here — read by the UI to render its picker."""
     llm = await _read_system_llm()
+    agent = llm.vendor in _AGENT_VENDORS and await _agent_mode_enabled()
     return {
         "vendor": llm.vendor,
         "model": llm.model,
         # The picker offers this vendor's models; `model` is its initial value.
         "models": _vendor_models(llm.vendor),
-        "tools": False,
+        "tools": agent,
+        "agent_vendors": sorted(_AGENT_VENDORS),
+        "agent_mode_enabled": agent,
+        "actions": agent,
     }
 
 
@@ -321,3 +417,112 @@ async def assistant_cancel(session_id: str):
     """Forget a session so the next turn starts a fresh agent conversation."""
     existed = _SESSIONS.pop(session_id, None) is not None
     return {"ok": True, "existed": existed}
+
+
+@router.get("/assistant/actions")
+async def assistant_list_actions(session_id: str | None = None):
+    """Pending side-effect proposals awaiting the operator's decision."""
+    return {"actions": [a.to_dict() for a in assistant_actions.list_pending(session_id)]}
+
+
+@router.post("/assistant/actions")
+async def assistant_propose(body: ProposeActionRequest):
+    """Record a side-effecting proposal for human approval.
+
+    Called by the ``propose_action`` MCP tool inside the assistant's CLI
+    subprocess. It performs **nothing** — it stores the proposal and returns an
+    id. The operator's click is what runs anything, and the worker runs it, not
+    the agent.
+    """
+    try:
+        action = assistant_actions.create(
+            session_id=body.session_id or "",
+            kind=body.kind,
+            summary=body.summary,
+            params=body.params,
+        )
+    except ValueError as exc:
+        # Returned to the model as a tool error so it can correct itself rather
+        # than silently believing it proposed something.
+        raise HTTPException(400, str(exc)) from exc
+    return {
+        "status": "awaiting_approval",
+        "action_id": action.id,
+        "kind": action.kind,
+        "summary": action.summary,
+        "params": action.params,
+        "risk": action.risk,
+        "note": "Nothing has run. Stop here and end your turn.",
+    }
+
+
+@router.post("/assistant/actions/{action_id}/decide")
+async def assistant_decide(action_id: str, body: ActionDecisionRequest, request: Request):
+    """Approve or reject a proposed action, streaming what happens next.
+
+    Guarded by ``X-Internal-Token`` — this is the one assistant endpoint that
+    executes something, and the worker has no authentication of its own.
+    Approving a ``run_script`` action is refused outright when
+    ``INTERNAL_API_TOKEN`` is unset; task creation is still allowed.
+    """
+    pending = assistant_actions.get(action_id)
+    is_script = pending is not None and pending.kind == "run_script"
+    _require_internal_token(request, required=is_script and body.decision == "approve")
+
+    try:
+        action = assistant_actions.decide(action_id, decision=body.decision, comment=body.comment)
+    except KeyError as exc:
+        raise HTTPException(
+            404, "this proposal is no longer pending — ask the assistant again"
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    session = _SESSIONS.get(action.session_id)
+
+    async def events() -> AsyncIterator[dict]:
+        async for event in assistant_actions.execute_and_resume(
+            action,
+            session=session,
+            follow_up=body.follow_up,
+            agent_engine=assistant_agent,
+        ):
+            yield event
+
+    return StreamingResponse(
+        _with_heartbeat(events(), request),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
+
+
+def _require_internal_token(
+    request: Request, *, required: bool = False, purpose: str = "assistant action"
+) -> None:
+    """Enforce ``INTERNAL_API_TOKEN``.
+
+    The worker has no auth on any route; compose binds its port to 127.0.0.1
+    by default and it must never be exposed. Even so, an endpoint that runs a
+    maintenance script must not trust whoever can reach the port: with
+    ``required`` (approving a script) an unset token is refused with 403.
+    Otherwise (task creation, rejections) an unset token is only logged.
+    """
+    from config import settings
+
+    expected = (getattr(settings, "internal_api_token", "") or "").strip()
+    if not expected:
+        if required:
+            raise HTTPException(
+                403,
+                "running scripts from the assistant requires INTERNAL_API_TOKEN "
+                "to be set on the worker and the web tier",
+            )
+        logger.warning(
+            "%s accepted without INTERNAL_API_TOKEN set — set it in .env, and "
+            "never expose the worker port.",
+            purpose.capitalize(),
+        )
+        return
+    supplied = (request.headers.get("x-internal-token") or "").strip()
+    if not secrets.compare_digest(supplied, expected):
+        raise HTTPException(401, "invalid or missing X-Internal-Token")

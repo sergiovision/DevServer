@@ -31,13 +31,37 @@ def _failed(backend_message: str, session_id: str | None) -> AgentResult:
     return AgentResult(exit_code=-1, session_id=session_id, error=backend_message)
 
 
-def _subprocess_env(backend: AgentBackend, billing_mode: str) -> dict[str, str] | None:
-    """The backend's env, plus the Azure/OpenAI-compatible endpoint overrides.
+def worker_url() -> str:
+    """Base URL an agent subprocess uses to reach this worker's lanes."""
+    host = settings.worker_host if settings.worker_host not in ("0.0.0.0", "::") else "127.0.0.1"
+    return f"http://{host}:{settings.worker_port}"
 
-    pydantic-settings reads these from ``.env`` but does not export them, so
-    they are forwarded explicitly for the Codex CLI.
+
+def lane_env(env: dict[str, str] | None, task_key: str | None) -> dict[str, str] | None:
+    """Expose the agent lanes (memory, messaging, gate) to a task's agent.
+
+    The prompt teaches the agent to ``curl
+    $DEVSERVER_WORKER_URL/internal/tasks/$DEVSERVER_TASK_KEY/...``; these two
+    variables make those commands work. An operator-set
+    ``DEVSERVER_WORKER_URL`` (e.g. a worker behind a proxy) is kept.
     """
-    env = backend.build_env(billing_mode=billing_mode)
+    if not task_key:
+        return env
+    env = dict(env if env is not None else os.environ)
+    env.setdefault("DEVSERVER_WORKER_URL", worker_url())
+    env["DEVSERVER_TASK_KEY"] = task_key
+    return env
+
+
+def _subprocess_env(
+    backend: AgentBackend, billing_mode: str, task_key: str | None = None
+) -> dict[str, str] | None:
+    """The backend's env, the agent-lane variables and the Azure/OpenAI overrides.
+
+    pydantic-settings reads the OpenAI overrides from ``.env`` but does not
+    export them, so they are forwarded explicitly for the Codex CLI.
+    """
+    env = lane_env(backend.build_env(billing_mode=billing_mode), task_key)
     if backend.vendor != "openai" or not (settings.openai_base_url or settings.openai_api_version):
         return env
     env = dict(env if env is not None else os.environ)
@@ -67,6 +91,8 @@ class AgentInvocation:
     run_id: int | None
     billing_mode: str
     max_turns: int | None
+    #: Set for task runs: exposes the agent lanes via ``DEVSERVER_TASK_KEY``.
+    task_key: str | None = None
 
     async def emit(self, event_type: str, payload: dict) -> None:
         await store.emit_event(self.task_id, self.run_id, event_type, payload)
@@ -136,7 +162,7 @@ async def _spawn(call: AgentInvocation) -> tuple[int, str, str]:
     exit_code, stdout, stderr = await proc_util.run(
         cmd,
         cwd=call.worktree_path,
-        env=_subprocess_env(call.backend, call.billing_mode),
+        env=_subprocess_env(call.backend, call.billing_mode, call.task_key),
         timeout=call.timeout_minutes * 60,
         stdin_devnull=stdin_payload is None,
         stdin_input=stdin_payload,

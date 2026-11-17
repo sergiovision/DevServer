@@ -29,6 +29,7 @@ import { VendorModelPicker } from './VendorModelPicker';
 import { PatchesPanel } from './PatchesPanel';
 import { PlanCard } from './PlanCard';
 import { TaskNotesPanel } from './TaskNotesPanel';
+import { MessagesPanel } from './MessagesPanel';
 import { PredictionCard } from './PredictionCard';
 import { useAssistantPageContext } from './AssistantProvider';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
@@ -551,6 +552,10 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
           {/* Operator notes, folded into the agent's next attempt. Placed above
               the Event Log so steering the task needs no scrolling. */}
           <TaskNotesPanel taskId={task.id} />
+
+          {/* Inter-task messages: what the agent sent (to other tasks or to
+              the operator) and the operator's replies to its inbox. */}
+          <MessagesPanel taskId={task.id} taskKey={task.task_key} />
 
           {/* Live Log */}
           <CCard className="mb-4">

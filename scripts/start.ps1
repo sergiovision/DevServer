@@ -76,8 +76,8 @@ function Start-Worker {
     }
 
     # A cancelled package update can leave dist-info behind while package
-    # files are incomplete. Catch that state before uvicorn starts with the
-    # entire Pro router silently unavailable.
+    # files are incomplete. Catch that state before uvicorn starts with
+    # a dependency silently missing (cryptography, used by signature checks).
     & $VenvPy -c 'from cryptography.exceptions import InvalidSignature'
     if ($LASTEXITCODE -ne 0) {
         Write-Red '  Worker dependency verification failed; recreate or repair apps\worker\.venv.'

@@ -27,7 +27,10 @@ async def enqueue_via_web(task_id: int) -> bool:
     """
     try:
         async with httpx.AsyncClient(timeout=8) as client:
-            resp = await client.post(f"{settings.web_base_url}/api/tasks/{task_id}/enqueue")
+            resp = await client.post(
+                f"{settings.web_base_url}/api/tasks/{task_id}/enqueue",
+                headers=settings.web_headers,
+            )
             return resp.status_code == 200
     except Exception:
         logger.exception("failed to enqueue task %d via web", task_id)

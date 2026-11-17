@@ -3,11 +3,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CBadge, CButton, CFormTextarea, CSpinner } from '@coreui/react-pro';
 import CIcon from '@coreui/icons-react';
-import { cilX, cilPlus } from '@coreui/icons';
+import { cilX, cilPlus, cilCheckAlt, cilBan, cilChevronBottom } from '@coreui/icons';
 import { useAssistantContext } from './AssistantProvider';
 import { AskAgentMarkdown } from './AskAgentMarkdown';
 import {
   askAgent,
+  decideAction,
   fetchCapabilities,
   type AssistantCapabilities,
   type AssistantEvent,
@@ -34,11 +35,33 @@ const MIN_WIDTH = 340;
 const MAX_WIDTH = 900;
 const DEFAULT_WIDTH = 440;
 
+interface ToolActivity {
+  id: string;
+  name: string;
+  ok?: boolean;
+  preview?: string;
+}
+
+interface ProposedAction {
+  actionId: string;
+  kind: string;
+  summary: string;
+  params: Record<string, unknown>;
+  risk: 'low' | 'medium' | 'high';
+  decided?: 'approve' | 'reject';
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  /** Agent mode: read-only lookups the assistant made this turn. */
+  tools: ToolActivity[];
   notices: string[];
+  /** Agent mode: side-effecting proposals awaiting the operator's click. */
+  actions: ProposedAction[];
+  /** Output of an approved action, streamed by the worker. */
+  output?: string;
   error?: string;
   streaming?: boolean;
 }
@@ -152,6 +175,34 @@ export function AskAgentPanel({ onClose }: { onClose: () => void }) {
         switch (event.type) {
           case 'text_delta':
             return { ...m, content: m.content + event.text };
+          case 'action_output':
+            return { ...m, output: (m.output || '') + event.text };
+          case 'tool_call':
+            return {
+              ...m,
+              tools: [...m.tools, { id: event.id, name: event.name }],
+            };
+          case 'tool_result':
+            return {
+              ...m,
+              tools: m.tools.map((t) =>
+                t.id === event.id ? { ...t, ok: event.ok, preview: event.preview } : t,
+              ),
+            };
+          case 'action_proposed':
+            return {
+              ...m,
+              actions: [
+                ...m.actions,
+                {
+                  actionId: event.action_id,
+                  kind: event.kind,
+                  summary: event.summary,
+                  params: event.params,
+                  risk: event.risk,
+                },
+              ],
+            };
           case 'notice':
             return { ...m, notices: [...m.notices, event.text] };
           case 'error':
@@ -181,11 +232,13 @@ export function AskAgentPanel({ onClose }: { onClose: () => void }) {
         .map((m) => ({ role: m.role, content: m.content }));
 
       const userMsg: Message = {
-        id: nextId(), role: 'user', content: question, notices: [],
+        id: nextId(), role: 'user', content: question,
+        tools: [], notices: [], actions: [],
       };
       const replyId = nextId();
       const replyMsg: Message = {
-        id: replyId, role: 'assistant', content: '', notices: [], streaming: true,
+        id: replyId, role: 'assistant', content: '',
+        tools: [], notices: [], actions: [], streaming: true,
       };
       setMessages((prev) => [...prev, userMsg, replyMsg]);
       setInput('');
@@ -208,6 +261,50 @@ export function AskAgentPanel({ onClose }: { onClose: () => void }) {
       }
     },
     [busy, messages, sessionId, repoId, page, applyEvent, model],
+  );
+
+  /** Approve or reject a proposal; the outcome streams into a new reply. */
+  const onDecide = useCallback(
+    async (msgId: string, action: ProposedAction, decision: 'approve' | 'reject') => {
+      if (busy) return;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                actions: m.actions.map((a) =>
+                  a.actionId === action.actionId ? { ...a, decided: decision } : a,
+                ),
+              }
+            : m,
+        ),
+      );
+      const replyId = nextId();
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: replyId, role: 'assistant', content: '',
+          tools: [], notices: [], actions: [], streaming: true,
+        },
+      ]);
+      setBusy(true);
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        await decideAction(
+          action.actionId, decision,
+          (event) => applyEvent(replyId, event),
+          controller.signal,
+        );
+      } finally {
+        setBusy(false);
+        abortRef.current = null;
+        setMessages((prev) =>
+          prev.map((m) => (m.id === replyId ? { ...m, streaming: false } : m)),
+        );
+      }
+    },
+    [busy, applyEvent],
   );
 
   const onModelChange = useCallback((next: string) => {
@@ -259,16 +356,16 @@ export function AskAgentPanel({ onClose }: { onClose: () => void }) {
         <span className="fw-semibold">Ask Agent</span>
         {caps && (
           <CBadge
-            color={caps.workerUnreachable ? 'danger' : 'secondary'}
+            color={caps.workerUnreachable ? 'danger' : caps.tools ? 'success' : 'secondary'}
             shape="rounded-pill"
             className="fw-normal"
             title={
               caps.workerUnreachable
                 ? 'The worker is unreachable'
-                : `${caps.vendor ?? '?'} · ${caps.model ?? '?'}`
+                : `${caps.vendor ?? '?'} · ${caps.model ?? '?'}${caps.tools ? ' · tools enabled' : ''}`
             }
           >
-            {caps.workerUnreachable ? 'offline' : 'chat'}
+            {caps.workerUnreachable ? 'offline' : caps.tools ? 'agent · tools' : 'chat'}
           </CBadge>
         )}
 
@@ -331,7 +428,12 @@ export function AskAgentPanel({ onClose }: { onClose: () => void }) {
         )}
 
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble
+            key={m.id}
+            message={m}
+            busy={busy}
+            onDecide={(action, decision) => onDecide(m.id, action, decision)}
+          />
         ))}
       </div>
 
@@ -374,7 +476,15 @@ export function AskAgentPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-function MessageBubble({ message }: { message: Message }) {
+function MessageBubble({
+  message,
+  busy,
+  onDecide,
+}: {
+  message: Message;
+  busy: boolean;
+  onDecide: (action: ProposedAction, decision: 'approve' | 'reject') => void;
+}) {
   const mine = message.role === 'user';
   return (
     <div className={`d-flex mb-3 ${mine ? 'justify-content-end' : ''}`}>
@@ -395,18 +505,149 @@ function MessageBubble({ message }: { message: Message }) {
           <div key={i} className="small text-body-secondary fst-italic mb-2">{n}</div>
         ))}
 
+        {message.tools.length > 0 && <ToolTimeline tools={message.tools} />}
+
         {message.content ? (
           <AskAgentMarkdown text={message.content} />
-        ) : message.streaming ? (
+        ) : message.streaming && message.tools.length === 0 ? (
           <span className="text-body-tertiary">
             <CSpinner size="sm" className="me-2" />thinking…
           </span>
         ) : null}
 
+        {message.output && (
+          <pre
+            className="mt-2 mb-0 p-2 rounded"
+            style={{
+              background: 'var(--cui-body-bg)',
+              border: '1px solid var(--cui-border-color)',
+              maxHeight: 260, overflow: 'auto', fontSize: '0.78rem',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            }}
+          >
+            {message.output}
+          </pre>
+        )}
+
+        {message.actions.map((a) => (
+          <ActionCard key={a.actionId} action={a} busy={busy} onDecide={onDecide} />
+        ))}
+
         {message.error && (
           <div className="small text-danger mt-1">{message.error}</div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ToolTimeline({ tools }: { tools: ToolActivity[] }) {
+  const [open, setOpen] = useState(false);
+  const pending = tools.some((t) => t.ok === undefined);
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        className="btn btn-sm btn-link p-0 text-body-secondary text-decoration-none"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <CIcon
+          icon={cilChevronBottom}
+          size="sm"
+          className="me-1"
+          style={{ transform: open ? 'none' : 'rotate(-90deg)', transition: 'transform .15s' }}
+        />
+        <small>
+          {pending && <CSpinner size="sm" className="me-1" />}
+          {tools.length} {tools.length === 1 ? 'lookup' : 'lookups'}
+        </small>
+      </button>
+      {open && (
+        <ul className="list-unstyled small mb-0 mt-1 ps-3">
+          {tools.map((t, i) => (
+            <li key={`${t.id}-${i}`} className="text-body-secondary">
+              <code style={{ fontSize: '0.78rem' }}>{prettyToolName(t.name)}</code>
+              {t.ok === false && <span className="text-danger ms-1">failed</span>}
+              {t.preview && (
+                <div className="text-body-tertiary text-truncate" title={t.preview}>
+                  {t.preview.slice(0, 160)}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function prettyToolName(name: string): string {
+  return name.replace(/^mcp__DevServer__/, '');
+}
+
+const RISK_COLOR: Record<string, string> = {
+  low: 'info',
+  medium: 'warning',
+  high: 'danger',
+};
+
+function ActionCard({
+  action,
+  busy,
+  onDecide,
+}: {
+  action: ProposedAction;
+  busy: boolean;
+  onDecide: (action: ProposedAction, decision: 'approve' | 'reject') => void;
+}) {
+  const decided = action.decided;
+  return (
+    <div
+      className="mt-2 rounded p-2"
+      style={{
+        border: '1px solid var(--cui-border-color)',
+        background: 'var(--cui-body-bg)',
+      }}
+    >
+      <div className="d-flex align-items-center gap-2 mb-1">
+        <CBadge color={RISK_COLOR[action.risk] || 'secondary'} shape="rounded-pill">
+          {action.kind.replace(/_/g, ' ')}
+        </CBadge>
+        <small className="text-body-secondary">needs your approval</small>
+      </div>
+      <div className="small mb-2">{action.summary}</div>
+      {Object.keys(action.params || {}).length > 0 && (
+        <pre
+          className="small mb-2 p-1 rounded"
+          style={{
+            background: 'var(--cui-tertiary-bg)',
+            fontSize: '0.75rem',
+            overflowX: 'auto',
+          }}
+        >
+          {JSON.stringify(action.params, null, 2)}
+        </pre>
+      )}
+      {decided ? (
+        <small className="text-body-secondary">
+          {decided === 'approve' ? 'Approved — running…' : 'Rejected.'}
+        </small>
+      ) : (
+        <div className="d-flex gap-2">
+          <CButton
+            size="sm" color="primary" disabled={busy}
+            onClick={() => onDecide(action, 'approve')}
+          >
+            <CIcon icon={cilCheckAlt} className="me-1" />Run
+          </CButton>
+          <CButton
+            size="sm" color="secondary" variant="outline" disabled={busy}
+            onClick={() => onDecide(action, 'reject')}
+          >
+            <CIcon icon={cilBan} className="me-1" />Cancel
+          </CButton>
+        </div>
+      )}
     </div>
   );
 }

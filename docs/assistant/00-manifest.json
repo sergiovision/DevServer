@@ -1,0 +1,123 @@
+{
+  "$comment": [
+    "Knowledge pack for the Ask Agent panel. Retrieval is deterministic:",
+    "topics pinned to the current route are always included, then the rest",
+    "fill a character budget by keyword score. Keep each topic file small",
+    "(1-3 KB) and user-facing — this is product help, not build documentation.",
+    "Loaded by apps/worker/src/services/assistant_kb.py."
+  ],
+  "version": 1,
+  "screens": {
+    "/": "Dashboard — what is running and queued, plus cost and duration analytics",
+    "/tasks": "Tasks — the full backlog, filterable, in grid or pipeline-board view",
+    "/tasks/new": "New Task — the task creation form",
+    "/tasks/[id]": "Task detail — event timeline, runs, logs, agent settings, patches",
+    "/templates": "Templates — saved task presets",
+    "/ideas": "Ideas — the hierarchical brainstorm tree",
+    "/jobs": "Jobs — cron schedules that re-run tasks",
+    "/repos": "Repositories — the repos DevServer can work in",
+    "/repos/[id]": "Repository detail — commands, provider settings, diagram, index",
+    "/settings": "Settings — queue controls, the system LLM, and the .env editor",
+    "/logs": "Logs — live tail of the worker and web process output",
+    "/agents/[id]": "Agent detail — a single agent run",
+    "/setup": "Setup wizard — first-time installation",
+    "/webhooks": "Webhooks — triggers that create tasks from external events",
+    "/a2a": "Agent Peers — external agents allowed to delegate work here",
+    "/sessions": "Sessions — the Claude Code and Codex CLI sessions on this machine"
+  },
+  "topics": [
+    {
+      "id": "overview",
+      "title": "What DevServer is",
+      "file": "overview.md",
+      "always": true,
+      "routes": ["/"],
+      "keywords": ["devserver", "what is", "overview", "pipeline", "dashboard",
+                   "how does it work", "architecture", "worker", "queue", "agent"]
+    },
+    {
+      "id": "tasks",
+      "title": "Working with tasks",
+      "file": "tasks.md",
+      "routes": ["/tasks", "/tasks/new", "/tasks/[id]", "/"],
+      "keywords": ["task", "create", "new task", "run", "retry", "continue",
+                   "cancel", "queue", "status", "priority", "blocked", "failed",
+                   "pending", "verifying", "enqueue", "approve", "reject"]
+    },
+    {
+      "id": "task-types",
+      "title": "Task types",
+      "file": "task-types.md",
+      "routes": ["/tasks/new", "/tasks/[id]", "/templates"],
+      "keywords": ["task type", "coding", "test", "script", "skill", "research",
+                   "acceptance", "skip verify", "verifier", "lightweight"]
+    },
+    {
+      "id": "repos",
+      "title": "Repositories and git flows",
+      "file": "repos.md",
+      "routes": ["/repos", "/repos/[id]", "/tasks/new"],
+      "keywords": ["repo", "repository", "gitea", "github", "local", "clone",
+                   "branch", "worktree", "git flow", "pull request", "pr",
+                   "patch", "mbox", "untracked", "commit", "provider", "token"]
+    },
+    {
+      "id": "vendors",
+      "title": "Agents, models and billing",
+      "file": "vendors.md",
+      "routes": ["/tasks/new", "/tasks/[id]", "/agents/[id]"],
+      "keywords": ["vendor", "model", "claude", "anthropic", "gemini", "google",
+                   "codex", "openai", "glm", "zhipu", "billing", "max",
+                   "subscription", "api key", "failover", "backup model",
+                   "rate limit", "cost", "turns", "expensive"]
+    },
+    {
+      "id": "settings",
+      "title": "Settings and environment",
+      "file": "settings.md",
+      "routes": ["/settings", "/setup", "/logs"],
+      "keywords": ["settings", "system llm", "env", "environment", "config",
+                   "pause", "resume", "telegram", "discord", "notification",
+                   "setup", "install", "database", "postgres", "obsidian"]
+    },
+    {
+      "id": "templates-ideas",
+      "title": "Templates, ideas and schedules",
+      "file": "templates-ideas.md",
+      "routes": ["/templates", "/ideas", "/jobs"],
+      "keywords": ["template", "preset", "idea", "brainstorm", "tree", "plan",
+                   "devplan", "job", "schedule", "cron", "recurring", "import",
+                   "confluence"]
+    },
+    {
+      "id": "advanced",
+      "title": "Advanced features",
+      "file": "advanced.md",
+      "routes": ["/settings", "/webhooks", "/a2a", "/sessions"],
+      "keywords": ["advanced", "feature", "free", "edition", "license",
+                   "memory", "reality gate", "budget", "preflight",
+                   "plan gate", "interactive", "patch export", "night cycle",
+                   "messaging", "webhook", "a2a", "peer", "session",
+                   "semantic search", "reindex"]
+    },
+    {
+      "id": "troubleshooting",
+      "title": "Troubleshooting",
+      "file": "troubleshooting.md",
+      "routes": ["/logs", "/"],
+      "keywords": ["error", "broken", "not working", "fail", "failed", "stuck",
+                   "down", "crash", "database", "postgres", "connection",
+                   "restart", "rate limit", "429", "lock", "orphan", "timeout",
+                   "blocked", "cannot", "won't", "debug", "fix"]
+    },
+    {
+      "id": "assistant",
+      "title": "About this assistant",
+      "file": "assistant.md",
+      "routes": [],
+      "keywords": ["you", "assistant", "ask agent", "who are you", "what can you do",
+                   "help", "capabilities", "tools", "agent mode",
+                   "propose", "approve", "action"]
+    }
+  ]
+}

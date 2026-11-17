@@ -1,0 +1,127 @@
+# DevServer — Hardened Compose Overlay
+#
+# Production-ready overlay that adds resource limits, log rotation,
+# security hardening, and labelled named volumes on top of the base
+# docker-compose.yml.
+#
+# Usage:
+#   cd docker
+#   docker compose -f docker-compose.yml -f docker-compose.hardened.yml up -d --build
+#
+# Or for host-DB + hardened — note host-db.yml comes LAST:
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f docker-compose.hardened.yml \
+#     -f docker-compose.host-db.yml \
+#     up -d --build
+#
+# The order is not cosmetic. host-db.yml removes the bundled DB with
+# `postgres: !reset null`, while the `postgres:` block below re-declares that
+# service to add resource limits and log rotation. Merged the other way round
+# the re-declaration resurrects a postgres service with no image at all, and
+# compose rejects the entire project ("has neither an image nor a build context
+# specified"). Putting host-db.yml last means its removal is the final word.
+# scripts/compose-check.sh validates this combination.
+#
+# Backup disposition of each named volume: see docs/backup-restore.md.
+#
+# Tuning: override resource limits by exporting the matching _CPU / _MEM
+# env vars before running `docker compose up` — all limits below read
+# from the environment with conservative defaults.
+
+services:
+
+  postgres:
+    # Hard caps prevent a runaway query from starving the worker/web.
+    deploy:
+      resources:
+        limits:
+          cpus:   "${POSTGRES_CPU_LIMIT:-2.0}"
+          memory: "${POSTGRES_MEM_LIMIT:-2g}"
+        reservations:
+          cpus:   "${POSTGRES_CPU_RES:-0.25}"
+          memory: "${POSTGRES_MEM_RES:-512m}"
+    restart: unless-stopped
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "devserver.service=postgres"
+    # Postgres is chatty; set shm_size explicitly to avoid OOM on large sorts.
+    shm_size: 256m
+
+  web:
+    deploy:
+      resources:
+        limits:
+          cpus:   "${WEB_CPU_LIMIT:-1.5}"
+          memory: "${WEB_MEM_LIMIT:-1g}"
+        reservations:
+          cpus:   "${WEB_CPU_RES:-0.1}"
+          memory: "${WEB_MEM_RES:-128m}"
+    restart: unless-stopped
+    stop_grace_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+        labels: "devserver.service=web"
+    # No healthcheck override: the `web` image bakes in its own (curl against
+    # /setup). That image installs curl, not wget, so a wget probe here would
+    # mark a perfectly healthy web container unhealthy.
+
+  worker:
+    # Worker runs Claude CLI + git + node/python tools — give it headroom.
+    deploy:
+      resources:
+        limits:
+          cpus:   "${WORKER_CPU_LIMIT:-4.0}"
+          memory: "${WORKER_MEM_LIMIT:-4g}"
+        reservations:
+          cpus:   "${WORKER_CPU_RES:-0.5}"
+          memory: "${WORKER_MEM_RES:-512m}"
+    restart: unless-stopped
+    # Tasks can be mid-verify when a stop comes in; give them time to flush.
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "10"
+        labels: "devserver.service=worker"
+
+volumes:
+  postgres_data:
+    labels:
+      devserver.backup: "true"
+      devserver.backup.path: "/var/lib/postgresql/data"
+      devserver.backup.notes: "Use pg_dump via scripts/devserver-backup.sh — do NOT tar this volume while Postgres is running."
+  worktrees:
+    labels:
+      devserver.backup: "true"
+      devserver.backup.path: "/app/worktrees"
+      devserver.backup.notes: "Bare repos + checked-out branches. Safe to tar while worker is stopped."
+  worker_logs:
+    labels:
+      devserver.backup: "optional"
+      devserver.backup.path: "/app/logs"
+      devserver.backup.notes: "Task logs. Rotated by logging driver. Back up only if you need forensic history."
+  worker_config:
+    labels:
+      devserver.backup: "true"
+      devserver.backup.path: "/app/config"
+      devserver.backup.notes: "Writable .env saved by the Settings/Setup Database card (DEVSERVER_ENV_FILE). Tiny; tar anytime."
+  agent_clis:
+    labels:
+      devserver.backup: "false"
+      devserver.backup.path: "/opt/agents"
+      devserver.backup.notes: "Vendor agent CLIs fetched on first use. Reproducible from the network — never back this up, just let it refill. Tar it only to pre-seed an air-gapped host."

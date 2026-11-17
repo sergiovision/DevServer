@@ -33,7 +33,8 @@ import logging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services import llm_client, system_llm
+from services import app_settings, llm_client, system_llm
+from services.repo_kb import RepoMemory
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,14 @@ async def compact_task(
             "error": f"task {task_id} not found",
         }
 
-    task_key, title, status, description, acceptance, compact_count, repo_name, _repo_id = row
+    task_key, title, status, description, acceptance, compact_count, repo_name, repo_id = row
+
+    # Keep the verbatim transcript searchable before it is distilled into a
+    # lossy summary. Best-effort; never blocks compaction.
+    if repo_id is not None and await app_settings.get_bool_setting(
+        session, "memory_verbatim_transcripts", False
+    ):
+        await RepoMemory(session, repo_id).archive_transcript(task_id, task_key=task_key)
 
     # Collect the last N runs and stitch them in chronological order (newest first)
     run_rows = (
