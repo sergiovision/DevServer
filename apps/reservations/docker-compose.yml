@@ -1,0 +1,25 @@
+# Dedicated Postgres for the reservations PoC. Fully separate from DevServer's
+# database: own container, own volume, own PgQueuer tables.
+services:
+  postgres:
+    image: postgres:17
+    container_name: reservations-postgres
+    environment:
+      POSTGRES_USER: reservations
+      POSTGRES_PASSWORD: reservations
+      POSTGRES_DB: reservations
+    ports:
+      - "5440:5432"
+    volumes:
+      - reservations-pgdata:/var/lib/postgresql/data
+      # Applied once, on first start of an empty volume.
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    command: ["postgres", "-c", "max_connections=300"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reservations -d reservations"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  reservations-pgdata:
