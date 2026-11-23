@@ -152,13 +152,15 @@ def decide_post_completion(
         return Decision(False, "cancelled tasks never trigger an action")
     if finished_status not in SUCCESS_STATUSES | FAILURE_STATUSES:
         return Decision(False, f"status '{finished_status}' is not a completion")
+    # Self-targeting is a configuration error, not an outcome question: report
+    # it whichever way the task finished, so the operator sees the real cause
+    # instead of a trigger mismatch that hides it on the other outcome.
+    if action.kind == "task" and action.task_id == source_task_id:
+        return Decision(False, "a task cannot trigger itself")
     if not trigger_matches(action.trigger, finished_status):
         return Decision(False, f"trigger '{action.trigger}' does not match '{finished_status}'")
-    if action.kind == "task":
-        if action.task_id == source_task_id:
-            return Decision(False, "a task cannot trigger itself")
-        if action.task_id in ancestors:
-            return Decision(False, f"task {action.task_id} is already in this chain (loop)")
+    if action.kind == "task" and action.task_id in ancestors:
+        return Decision(False, f"task {action.task_id} is already in this chain (loop)")
     if source_task_id in ancestors or chain_is_cyclic(ancestors):
         return Decision(False, "trigger chain contains a loop")
     if len(ancestors) + 1 > MAX_CHAIN_DEPTH:
