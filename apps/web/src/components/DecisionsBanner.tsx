@@ -1,6 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+/**
+ * Open side-effect decision points (HITL gate) with Approve/Reject.
+ *
+ * Polls `/api/decisions`, a different resource from the sidebar's Needs You
+ * counts (`lib/needs-you.ts`), so it keeps its own — faster — poll; an agent
+ * is suspended until someone answers. It goes through `useResource`, so the
+ * poll pauses while the tab is hidden and reloads when connectivity returns.
+ */
+
+import { useCallback, useState } from 'react';
 import {
   CCard,
   CCardHeader,
@@ -10,6 +19,11 @@ import {
   CListGroup,
   CListGroupItem,
 } from '@coreui/react-pro';
+import { api, errorMessage } from '@/lib/api-client';
+import { useResource } from '@/lib/use-async';
+import { needsYouPoll } from '@/lib/needs-you';
+
+const DECISIONS_POLL_MS = 5000;
 
 interface DecisionPoint {
   id: number;
@@ -34,30 +48,22 @@ const KIND_COLOR: Record<string, string> = {
 };
 
 /**
- * Shows open side-effect decision points (HITL gate) with Approve/Reject.
  * Renders nothing when there are none, so it's invisible unless the
  * `side_effect_gate` feature is in use.
  */
 export function DecisionsBanner() {
-  const [decisions, setDecisions] = useState<DecisionPoint[]>([]);
   const [busyId, setBusyId] = useState<number | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch('/api/decisions', { cache: 'no-store' });
-      if (!res.ok) return;
-      const data = await res.json();
-      setDecisions(Array.isArray(data?.decisions) ? data.decisions : []);
-    } catch {
-      // worker may be down — stay quiet, the banner just won't show.
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Errors are deliberately silent: the worker may be down, and the banner
+  // simply does not show.
+  const { data, reload } = useResource(
+    async (signal) => {
+      const body = await api.get<{ decisions?: unknown }>('/api/decisions', { signal });
+      return Array.isArray(body?.decisions) ? (body.decisions as DecisionPoint[]) : [];
+    },
+    [],
+    { pollMs: DECISIONS_POLL_MS },
+  );
+  const decisions = data ?? [];
 
   const resolve = useCallback(
     async (id: number, decision: 'approve' | 'reject') => {
@@ -66,22 +72,18 @@ export function DecisionsBanner() {
       }
       setBusyId(id);
       try {
-        const res = await fetch(`/api/decisions/${id}/resolve`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ decision }),
-        });
-        const data = await res.json().catch(() => null);
-        if (!res.ok) {
-          alert(`Resolve failed: ${data?.error || res.statusText}`);
-          return;
-        }
-        await load();
+        await api.post(`/api/decisions/${id}/resolve`, { decision });
+        await reload();
+        // Resolving unblocks a task; refresh the shared pill instead of
+        // leaving it stale until the next tick (no second poll is started).
+        void needsYouPoll.refresh();
+      } catch (err) {
+        alert(`Resolve failed: ${errorMessage(err)}`);
       } finally {
         setBusyId(null);
       }
     },
-    [load],
+    [reload],
   );
 
   if (decisions.length === 0) return null;

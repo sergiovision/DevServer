@@ -289,6 +289,24 @@ def registry_payload() -> dict[str, dict]:
 # ── Result dataclass — normalised across vendors ────────────────────────────
 
 
+def _usage_count(usage: dict, key: str) -> int:
+    """A non-negative int from a usage block; malformed values count as 0."""
+    try:
+        return max(int(usage.get(key) or 0), 0)
+    except TypeError, ValueError, OverflowError:
+        return 0
+
+
+def _apply_claude_usage(result: AgentResult, usage: object) -> None:
+    """Copy Claude Code's ``usage`` block (``--output-format json``) onto *result*."""
+    if not isinstance(usage, dict):
+        return
+    result.input_tokens = _usage_count(usage, "input_tokens")
+    result.cache_read_tokens = _usage_count(usage, "cache_read_input_tokens")
+    result.cache_write_tokens = _usage_count(usage, "cache_creation_input_tokens")
+    result.output_tokens = _usage_count(usage, "output_tokens")
+
+
 @dataclass
 class AgentResult:
     """Normalised return shape from any backend invocation.
@@ -309,6 +327,13 @@ class AgentResult:
     subtype: str = ""
     errors: list[str] = field(default_factory=list)
     error: str | None = None  # populated on timeout / hard CLI failure
+    # Token usage as the CLI reported it (0 when the vendor reports none).
+    # Feeds the dashboard's tokens/s and tokens-per-task analytics via the
+    # ``cost_update`` event; never used for billing decisions.
+    input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    output_tokens: int = 0
 
     def to_dict(self) -> dict:
         """Return the legacy dict shape agent_runner already consumes."""
@@ -634,6 +659,7 @@ class ClaudeBackend(AgentBackend):
             errors = data.get("errors", [])
             if isinstance(errors, list):
                 res.errors = [str(e) for e in errors]
+            _apply_claude_usage(res, data.get("usage"))
         except json.JSONDecodeError, TypeError, ValueError:
             res.result = raw_output
             snippet = (raw_output or "").strip()[:500] or "<empty>"

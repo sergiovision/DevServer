@@ -58,7 +58,12 @@ async def run_attempt(
             ctx, backend, result, run_id=run_id, attempt=attempt, duration_ms=duration_ms
         )
     return await _verify_and_deliver(
-        ctx, result, run_id=run_id, attempt=attempt, duration_ms=duration_ms
+        ctx,
+        result,
+        run_id=run_id,
+        attempt=attempt,
+        duration_ms=duration_ms,
+        vendor=backend.vendor,
     )
 
 
@@ -176,7 +181,13 @@ async def _suspended_for_gate(ctx: TaskContext, *, run_id: int) -> bool:
 
 
 async def _verify_and_deliver(
-    ctx: TaskContext, result: AgentResult, *, run_id: int, attempt: int, duration_ms: int
+    ctx: TaskContext,
+    result: AgentResult,
+    *,
+    run_id: int,
+    attempt: int,
+    duration_ms: int,
+    vendor: str,
 ) -> AttemptResult:
     ctx.session_id = result.session_id
     # Subscription billing has no per-token cost; store 0, not the estimate.
@@ -204,7 +215,9 @@ async def _verify_and_deliver(
         ctx.task.id,
         run_id,
         "cost_update",
-        {"cost_usd": float(cost_usd), "turns": result.num_turns, "duration_ms": duration_ms},
+        _cost_update_payload(
+            result, cost_usd=float(cost_usd), duration_ms=duration_ms, vendor=vendor
+        ),
     )
 
     verify_failure = await _verify(ctx)
@@ -219,6 +232,31 @@ async def _verify_and_deliver(
     await store.finish_run(run_id, status="success", pr_url=handover.pr_url)
     success = Success(metrics, handover, result.result, preflight.files_changed)
     return AttemptResult(Verdict.SUCCEEDED, success=success)
+
+
+def _cost_update_payload(
+    result: AgentResult, *, cost_usd: float, duration_ms: int, vendor: str
+) -> dict[str, object]:
+    """The ``cost_update`` event body.
+
+    Token keys are present only when the CLI reported usage: the dashboard's
+    tokens/s analytics selects events by ``output_tokens``, so writing zeros
+    for silent vendors would drag their throughput toward 0.
+    """
+    payload: dict[str, object] = {
+        "cost_usd": cost_usd,
+        "turns": result.num_turns,
+        "duration_ms": duration_ms,
+        "vendor": vendor,
+    }
+    if result.output_tokens > 0:
+        payload.update(
+            input_tokens=result.input_tokens,
+            cache_read_tokens=result.cache_read_tokens,
+            cache_write_tokens=result.cache_write_tokens,
+            output_tokens=result.output_tokens,
+        )
+    return payload
 
 
 async def _verify(ctx: TaskContext) -> str | None:

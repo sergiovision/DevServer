@@ -1,12 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { proxyStream } from '@/lib/assistant-proxy';
+import { jsonError, type RouteContext } from '@/lib/route-utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
 
 /**
  * Approve or reject a side-effecting action the assistant proposed.
@@ -15,6 +12,10 @@ interface RouteContext {
  * streams its output, then resumes the agent conversation with the outcome.
  * This is the only assistant route that causes something to happen, which is
  * why `proxyStream` attaches INTERNAL_API_TOKEN.
+ *
+ * `[id]` is the worker's opaque action id (not numeric), so it is only
+ * URL-encoded, not parsed. The answer streams, so it goes through
+ * `proxyStream`, never a buffered JSON relay.
  */
 export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
@@ -31,10 +32,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
       ? (parsed as Record<string, unknown>).decision
       : undefined;
   if (decision !== 'approve' && decision !== 'reject') {
-    return NextResponse.json(
-      { error: 'a JSON body with decision "approve" or "reject" is required' },
-      { status: 400 },
-    );
+    return jsonError(400, 'a JSON body with decision "approve" or "reject" is required');
   }
   return proxyStream(
     request,

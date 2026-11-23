@@ -9,7 +9,7 @@
  * otherwise, and the second one is the operator's problem to fix.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { callWorker, readWorkerJson } from '@/lib/worker-client';
+import { callWorker, readWorkerJson, WORKER_UNREACHABLE_MESSAGE } from '@/lib/route-utils';
 import { WORKER_URL } from '@/lib/worker-url';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       {
         sessions: [],
-        error: 'Worker unreachable',
+        error: WORKER_UNREACHABLE_MESSAGE,
         hint: `Could not reach the worker at ${WORKER_URL}. Start it with ` +
           '`cd apps/worker && uv run uvicorn src.main:app --port 8000`.',
       },

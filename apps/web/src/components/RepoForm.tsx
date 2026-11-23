@@ -20,6 +20,7 @@ import type { Repo } from '@/lib/types';
 import { ModelCombobox } from '@/components/ModelCombobox';
 import { defaultModelFor } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
+import { api, errorMessage } from '@/lib/api-client';
 
 interface RepoFormProps {
   repo?: Repo;
@@ -68,12 +69,10 @@ export function RepoForm({ repo }: RepoFormProps) {
     setError('');
     setNotice('');
     try {
-      const res = await fetch(`/api/repos/${repo.id}/reindex`, { method: 'POST' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Reindex failed');
+      await api.post(`/api/repos/${repo.id}/reindex`);
       setNotice('Reindexing started — the repository memory is rebuilding in the background.');
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to reindex');
+      setError(errorMessage(err, 'Failed to reindex'));
     } finally {
       setReindexing(false);
     }
@@ -127,23 +126,13 @@ export function RepoForm({ repo }: RepoFormProps) {
       }
 
       const url = isEdit ? `/api/repos/${repo!.id}` : '/api/repos';
-      const method = isEdit ? 'PATCH' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to save');
-      }
+      if (isEdit) await api.patch(url, body);
+      else await api.post(url, body);
 
       router.push('/repos');
       router.refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(errorMessage(err, 'An error occurred'));
     } finally {
       setSaving(false);
     }
@@ -372,7 +361,7 @@ export function RepoForm({ repo }: RepoFormProps) {
                 className="ms-auto"
                 onClick={async () => {
                   if (confirm('Delete this repository?')) {
-                    await fetch(`/api/repos/${repo!.id}`, { method: 'DELETE' });
+                    await api.delete(`/api/repos/${repo!.id}`).catch(() => undefined);
                     router.push('/repos');
                   }
                 }}

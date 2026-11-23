@@ -1,5 +1,12 @@
 'use client';
 
+/**
+ * Create / edit form for a task. Pre-fills from templates, ideas and the
+ * Fill Task system-LLM call; field visibility follows `lib/task-types.ts`.
+ * The post-completion action is edited as a draft and validated on submit
+ * (`lib/post-completion-action.ts`), so a half-filled picker never saves.
+ */
+
 import React, { useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -25,16 +32,41 @@ import {
   vendorOptions,
 } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
+import { api, errorMessage } from '@/lib/api-client';
 import { TASK_TYPES, DEFAULT_TASK_TYPE, taskTypeEntry } from '@/lib/task-types';
 import { MaxTurnsInput } from '@/components/MaxTurnsInput';
 import { ModelCombobox } from '@/components/ModelCombobox';
 import { VendorModelPicker } from '@/components/VendorModelPicker';
+import { PostCompletionActionSelect } from '@/components/PostCompletionActionSelect';
+import {
+  actionToDraft,
+  draftToAction,
+  type PostCompletionDraft,
+} from '@/lib/post-completion-action';
 
 interface TaskFormProps {
   repos: Repo[];
   task?: Task;
   templates?: TaskTemplate[];
 }
+
+// What the Fill Task call (`POST /api/tasks/generate`) may suggest; any field
+// it omits keeps the value already in the form.
+type GeneratedTaskFields = Partial<
+  Pick<
+    Task,
+    | 'task_key'
+    | 'title'
+    | 'description'
+    | 'acceptance'
+    | 'git_flow'
+    | 'claude_mode'
+    | 'agent_vendor'
+    | 'claude_model'
+    | 'max_turns'
+    | 'skip_verify'
+  >
+>;
 
 // Remembers the repository used in the previously created task so the create
 // form can default to it (read/written only on the client).
@@ -86,6 +118,11 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     max_turns: (task?.max_turns ?? 50) as number | null,
     skip_verify: task?.skip_verify ?? true,
   });
+  // Kept apart from formData: a half-filled picker is not a valid action, so
+  // it is converted (and validated) only on submit.
+  const [postCompletion, setPostCompletion] = useState<PostCompletionDraft>(() =>
+    actionToDraft(task?.post_completion_action ?? null),
+  );
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [filling, setFilling] = useState(false);
@@ -141,9 +178,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/settings');
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<Record<string, unknown> | null>('/api/settings');
         const raw = data?.system_llm_vendor;
         const vendor =
           typeof raw === 'string' ? raw.replace(/^"|"$/g, '').trim() : '';
@@ -161,6 +196,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     if (!templateId) return;
     const t = templates.find((tpl) => tpl.id === parseInt(templateId));
     if (!t) return;
+    if (t.post_completion_action) setPostCompletion(actionToDraft(t.post_completion_action));
     setFormData((prev) => {
       const repo = repos.find((r) => r.id === parseInt(prev.repo_id));
       const nextType = (t.task_type ?? prev.task_type) as TaskType;
@@ -235,16 +271,9 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     setFilling(true);
     setFillError('');
     try {
-      const res = await fetch('/api/tasks/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: formData.description }),
+      const task = await api.post<GeneratedTaskFields>('/api/tasks/generate', {
+        description: formData.description,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || 'devtask skill failed');
-      }
-      const task = await res.json();
       setFormData((prev) => ({
         ...prev,
         task_key: task.task_key ?? prev.task_key,
@@ -263,7 +292,7 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
         skip_verify: task.skip_verify ?? prev.skip_verify,
       }));
     } catch (err) {
-      setFillError(err instanceof Error ? err.message : 'devtask skill failed');
+      setFillError(errorMessage(err, 'devtask skill failed'));
     } finally {
       setFilling(false);
     }
@@ -274,17 +303,10 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
     setRefreshing(true);
     setRefreshMsg(null);
     try {
-      const res = await fetch(`/api/repos/${formData.repo_id}/refresh-git`, {
-        method: 'POST',
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || 'Refresh failed');
-      }
-      const data = await res.json();
+      const data = await api.post<{ message: string }>(`/api/repos/${formData.repo_id}/refresh-git`);
       setRefreshMsg({ type: 'success', text: data.message });
     } catch (err) {
-      setRefreshMsg({ type: 'danger', text: err instanceof Error ? err.message : 'Refresh failed' });
+      setRefreshMsg({ type: 'danger', text: errorMessage(err, 'Refresh failed') });
     } finally {
       setRefreshing(false);
     }
@@ -292,11 +314,17 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const postCompletionAction = draftToAction(postCompletion);
+    if (!postCompletionAction.ok) {
+      setError(postCompletionAction.error);
+      return;
+    }
     setSaving(true);
     setError('');
 
     try {
       const body = {
+        post_completion_action: postCompletionAction.value,
         ...formData,
         // Repo-optional types (skill/research) may have no repository.
         repo_id: formData.repo_id ? parseInt(formData.repo_id) : null,
@@ -309,21 +337,9 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
         max_turns: formData.max_turns,
       };
 
-      const url = isEdit ? `/api/tasks/${task!.id}` : '/api/tasks';
-      const method = isEdit ? 'PATCH' : 'POST';
-
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to save task');
-      }
-
-      const data = await res.json();
+      const data = isEdit
+        ? await api.patch<{ id: number }>(`/api/tasks/${task!.id}`, body)
+        : await api.post<{ id: number }>('/api/tasks', body);
 
       // Remember the chosen repo so the next create form defaults to it.
       if (!isEdit) {
@@ -335,16 +351,14 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
       }
 
       if (!isEdit && ideaId) {
-        await fetch(`/api/ideas/${ideaId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tasked: true, task_id: data.id }),
-        }).catch((e) => console.error('Failed to mark idea tasked:', e));
+        await api
+          .patch(`/api/ideas/${ideaId}`, { tasked: true, task_id: data.id })
+          .catch((e) => console.error('Failed to mark idea tasked:', e));
       }
 
       router.push(`/tasks/${data.id}`);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      setError(errorMessage(err, 'An error occurred'));
     } finally {
       setSaving(false);
     }
@@ -623,6 +637,19 @@ export function TaskForm({ repos, task, templates = [] }: TaskFormProps) {
               />
             </div>
           )}
+
+          <div className="mb-3">
+            <CFormLabel>When this task finishes</CFormLabel>
+            <PostCompletionActionSelect
+              value={postCompletion}
+              onChange={setPostCompletion}
+              currentTaskId={task?.id}
+            />
+            <small className="text-body-secondary">
+              Optional follow-up: re-run another task or start a skill in the same repo. Cancelled
+              tasks never trigger it; automatic chains stop after 3 hops.
+            </small>
+          </div>
 
           <div className="d-flex gap-2">
             <CButton type="submit" color="primary" disabled={saving}>

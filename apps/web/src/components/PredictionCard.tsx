@@ -7,6 +7,7 @@ import {
   CCardHeader,
   CBadge,
 } from '@coreui/react-pro';
+import { api } from '@/lib/api-client';
 
 interface Similar {
   task_key: string;
@@ -76,12 +77,12 @@ export function PredictionCard({ taskId }: Props) {
     }
     (async () => {
       try {
-        const res = await fetch(`/api/tasks/${taskId}/prediction`);
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<{ prediction?: Prediction | null }>(
+          `/api/tasks/${taskId}/prediction`,
+        );
         if (!cancelled) {
-          setPred(data.prediction ?? null);
-          writePredictionCache(taskId, data.prediction ?? null);
+          setPred(data?.prediction ?? null);
+          writePredictionCache(taskId, data?.prediction ?? null);
         }
       } catch {
         /* best-effort — no card on error */

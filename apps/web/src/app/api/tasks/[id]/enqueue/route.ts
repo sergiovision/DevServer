@@ -2,15 +2,25 @@ import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { enqueueStoredTask } from '@/lib/tasks';
 import { apiErrorResponse } from '@/lib/api-errors';
+import { invalidId, parseRouteId, type RouteContext } from '@/lib/route-utils';
 import type { Task } from '@/lib/types';
 
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
-
-export async function POST(_request: NextRequest, context: RouteContext) {
+/**
+ * POST /api/tasks/<id>/enqueue
+ *
+ * Put a pending / failed / test task on the queue. Also the worker's
+ * callback for worker-initiated enqueues (`queue_bridge.enqueue_via_web`),
+ * since the web tier is the only queue producer.
+ *
+ * Any enqueue not marked `X-DevServer-Triggered` (set only by the worker's
+ * post-completion chain) is a fresh start: the stale `triggered_by_task_id`
+ * link is cleared so an old chain cannot trip the loop guard's depth cap.
+ */
+const TRIGGERED_ENQUEUE_HEADER = 'x-devserver-triggered';
+export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const taskId = parseInt(id);
+  const taskId = parseRouteId(id);
+  if (taskId === null) return invalidId('task id');
 
   try {
     const taskResult = await query<Task>(
@@ -31,6 +41,12 @@ export async function POST(_request: NextRequest, context: RouteContext) {
         { error: `Cannot enqueue task with status '${task.status}'` },
         { status: 400 },
       );
+    }
+
+    // Only when the column exists and is set: deployments that have not
+    // applied migration 004 must keep enqueueing.
+    if (task.triggered_by_task_id != null && request.headers.get(TRIGGERED_ENQUEUE_HEADER) !== '1') {
+      await query(`UPDATE tasks SET triggered_by_task_id = NULL WHERE id = $1`, [taskId]);
     }
 
     const jobId = await enqueueStoredTask(task);

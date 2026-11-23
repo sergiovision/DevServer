@@ -1,0 +1,143 @@
+/*
+ * cockpit.css — compact "cockpit" visual tokens layered over CoreUI.
+ *
+ * Purpose: the dashboard is an operator's control surface that stays open all
+ * day; CoreUI's defaults (4rem header, roomy sidebar, large card radius) spend
+ * vertical space on chrome instead of task data. This sheet tightens the shell
+ * metrics, flattens card corners to 6 px, gives code/IDs one monospace token,
+ * and introduces a single accent colour per theme. Flat styling only — no
+ * gradients, gloss or skeuomorphic effects.
+ *
+ * Load order: imported by app/layout.tsx *after* globals.css so equal-
+ * specificity rules here win. Everything is expressed through CoreUI
+ * variables (`--cui-*`) or the `--cockpit-*` tokens below, and the dark theme
+ * hooks the same `[data-coreui-theme="dark"]` attribute ThemeProvider sets on
+ * <html>, so theme switching needs no extra code.
+ *
+ * Tokens
+ *   --cockpit-header-height   shell header + sidebar brand row height (aligned)
+ *   --cockpit-sidebar-width   expanded sidebar width
+ *   --cockpit-nav-padding-y/x sidebar link padding
+ *   --cockpit-radius          card / panel corner radius (6 px)
+ *   --cockpit-font-mono       monospace stack for task keys, hashes, commands
+ *   --cockpit-accent          accent for active nav, focus rings, links-as-UI
+ *   --cockpit-accent-contrast text colour to put ON an accent fill
+ *
+ * Accent contrast (WCAG 2.x relative-luminance formula; AA = 4.5:1 for
+ * normal text, 3:1 for UI components/large text):
+ *   Light  #1d4ed8 on #ffffff (--cui-body-bg)       6.70:1  AA
+ *          #1d4ed8 on #f3f4f7 (--cui-tertiary-bg)   6.09:1  AA (active nav bg)
+ *          #ffffff on #1d4ed8 (accent fill)         6.70:1  AA
+ *   Dark   #fb7185 on #212631 (--cui-body-bg)       5.63:1  AA
+ *          #fb7185 on #2a303d (--cui-tertiary-bg)   4.91:1  AA (active nav bg)
+ *          #212631 on #fb7185 (accent fill)         5.63:1  AA
+ *   Not AA for small text: #fb7185 on #323a49 (--cui-secondary-bg) is 4.25:1 —
+ *   fine for borders/icons (>= 3:1), do not use it for body text there.
+ */
+
+:root,
+[data-coreui-theme="light"] {
+  --cockpit-header-height: 3.25rem;
+  --cockpit-sidebar-width: 200px;
+  --cockpit-nav-padding-y: 0.45rem;
+  --cockpit-nav-padding-x: 0.875rem;
+  --cockpit-radius: 6px;
+  --cockpit-font-mono: var(--cui-font-monospace, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  --cockpit-accent: #1d4ed8;
+  --cockpit-accent-contrast: #ffffff;
+}
+
+[data-coreui-theme="dark"] {
+  --cockpit-accent: #fb7185;
+  --cockpit-accent-contrast: #212631;
+}
+
+/* ── Shell metrics ─────────────────────────────────────────────────────── */
+
+.header {
+  --cui-header-padding-y: 0.25rem;
+  min-height: var(--cockpit-header-height);
+}
+
+/* Keep the sidebar brand row level with the header's bottom border. */
+.app-sidebar-header {
+  min-height: var(--cockpit-header-height);
+}
+
+.app-sidebar {
+  width: var(--cockpit-sidebar-width);
+}
+
+.app-sidebar-nav-title {
+  padding: 0.6rem var(--cockpit-nav-padding-x) 0.35rem;
+  font-size: 0.7rem;
+}
+
+.app-sidebar-nav-link {
+  gap: 0.6rem;
+  padding: var(--cockpit-nav-padding-y) var(--cockpit-nav-padding-x);
+  font-size: 0.875rem;
+}
+
+.app-sidebar-nav-link.active {
+  color: var(--cockpit-accent);
+  border-left-color: var(--cockpit-accent);
+}
+
+@media (min-width: 768px) {
+  .app-sidebar.collapsed .app-sidebar-nav-link.active {
+    border-right-color: var(--cockpit-accent);
+  }
+}
+
+.footer {
+  min-height: 2.5rem;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+}
+
+/* ── Cards ─────────────────────────────────────────────────────────────── */
+
+.card {
+  --cui-card-border-radius: var(--cockpit-radius);
+  --cui-card-inner-border-radius: calc(var(--cockpit-radius) - 1px);
+  border-radius: var(--cockpit-radius);
+}
+
+.card-header {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+}
+
+/* ── Monospace ─────────────────────────────────────────────────────────── */
+
+code,
+kbd,
+pre,
+samp,
+.font-monospace,
+.cockpit-mono {
+  font-family: var(--cockpit-font-mono);
+}
+
+.cockpit-mono {
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Accent ────────────────────────────────────────────────────────────── */
+
+.cockpit-accent {
+  color: var(--cockpit-accent);
+}
+
+.cockpit-accent-fill {
+  background-color: var(--cockpit-accent);
+  color: var(--cockpit-accent-contrast);
+}
+
+/* Keyboard focus stays visible on every theme (>= 3:1 against both bgs). */
+:focus-visible {
+  outline: 2px solid var(--cockpit-accent);
+  outline-offset: 2px;
+}

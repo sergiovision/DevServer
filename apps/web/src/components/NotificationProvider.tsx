@@ -1,6 +1,28 @@
 'use client';
 
+/**
+ * App-wide error toasts, raised automatically for every failed internal fetch.
+ *
+ * Why it exists: panels used to swallow HTTP failures silently. Patching
+ * `window.fetch` once here means any `/api/*` failure surfaces without each
+ * component wiring its own error UI.
+ *
+ * Invariants:
+ * - A 503 carrying a structured DB diagnostic always shows a sticky toast
+ *   (the connectivity banner does not cover a database outage).
+ * - Failures the connectivity banner already explains (network errors, a
+ *   502 "Worker unreachable" while the worker is down, gateway errors while
+ *   the server is down) are suppressed — see `shouldSuppressToast` in
+ *   `@/lib/connectivity`. One outage is one banner, not a toast per panel.
+ * - The banner's own probe is never toasted.
+ */
+
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import {
+  getConnectivityStatus,
+  isConnectivityProbeUrl,
+  shouldSuppressToast,
+} from '@/lib/connectivity';
 
 type NotificationType = 'error' | 'warning' | 'info';
 
@@ -112,7 +134,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           : (args[0] as Request).url;
 
       const isInternal =
-        rawUrl.startsWith('/') || rawUrl.startsWith(window.location.origin);
+        (rawUrl.startsWith('/') || rawUrl.startsWith(window.location.origin)) &&
+        !isConnectivityProbeUrl(rawUrl);
 
       try {
         const response = await originalFetch.current!(...args);
@@ -140,13 +163,23 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
               sticky: true,
               detail: dbInfo.hint || undefined,
             });
-          } else {
+          } else if (
+            !shouldSuppressToast(getConnectivityStatus(), {
+              status: response.status,
+              isNetworkError: false,
+            })
+          ) {
             notify(statusMessage(response.status), 'error');
           }
         }
         return response;
       } catch (err) {
-        if (isInternal) {
+        const aborted = err instanceof DOMException && err.name === 'AbortError';
+        if (
+          isInternal &&
+          !aborted &&
+          !shouldSuppressToast(getConnectivityStatus(), { status: 0, isNetworkError: true })
+        ) {
           notify('Network error — server unreachable', 'error');
         }
         throw err;

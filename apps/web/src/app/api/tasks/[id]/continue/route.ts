@@ -1,16 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { enqueueTask } from '@/lib/queue';
-import { WORKER_URL } from '@/lib/worker-url';
 import { apiErrorResponse } from '@/lib/api-errors';
+import {
+  callWorker,
+  invalidId,
+  parseRouteId,
+  readWorkerJson,
+  workerError,
+  workerUnreachable,
+  type RouteContext,
+} from '@/lib/route-utils';
 
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
-
+/**
+ * POST /api/tasks/<id>/continue   body: { model?, mode? }
+ *
+ * Resume a task in its existing agent session: the worker marks in-flight
+ * runs failed (keeping the session id) and sets the continuation flag, then
+ * this route re-enqueues the task. Enqueueing stays here because the web tier
+ * is the only queue producer.
+ */
 export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const taskId = parseInt(id);
+  const taskId = parseRouteId(id);
+  if (taskId === null) return invalidId('task id');
 
   try {
     const body = await request.json().catch(() => ({}));
@@ -38,20 +51,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
     }
 
     // 1. Tell worker to set continuation flag + cancel in-flight runs.
-    const workerRes = await fetch(
-      `${WORKER_URL}/internal/tasks/${encodeURIComponent(task.task_key)}/continue`,
+    const workerRes = await callWorker(
+      `/internal/tasks/${encodeURIComponent(task.task_key)}/continue`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: model ?? null, mode: mode ?? null }),
       },
     );
+    if (!workerRes) return workerUnreachable();
     if (!workerRes.ok) {
-      const detail = await workerRes.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: detail.detail || 'Worker continue failed' },
-        { status: workerRes.status },
-      );
+      return workerError(workerRes, await readWorkerJson(workerRes));
     }
 
     // 2. Re-enqueue the task.

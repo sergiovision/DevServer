@@ -1,46 +1,31 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-url';
+import { NextRequest } from 'next/server';
+import { invalidId, parseRouteId, proxyWorker, type RouteContext } from '@/lib/route-utils';
 
 export const dynamic = 'force-dynamic';
 
+// The decomposer calls the system LLM, often more than once per level.
+const EXPAND_TIMEOUT_MS = 300_000;
+
 /**
+ * POST /api/goals/<id>/expand   body: { max_depth?, enqueue? }
+ *
  * Expand one Goal Graph node one level. Proxies to the worker's
  * POST /internal/goals/{node_id}/expand, which runs the recursive
  * decomposer (atomicity check + plan-sketch).
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
-  const nodeId = parseInt(id, 10);
-  if (!Number.isInteger(nodeId)) {
-    return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
-  }
+  const nodeId = parseRouteId(id);
+  if (nodeId === null) return invalidId();
 
   const body = await request.json().catch(() => ({}));
 
-  try {
-    const res = await fetch(`${WORKER_URL}/internal/goals/${nodeId}/expand`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        max_depth: body?.max_depth ?? null,
-        enqueue: body?.enqueue ?? false,
-      }),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: data?.detail || 'expand failed' },
-        { status: res.status },
-      );
-    }
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json(
-      { error: 'worker unreachable — is the worker running?' },
-      { status: 502 },
-    );
-  }
+  return proxyWorker(`/internal/goals/${nodeId}/expand`, {
+    method: 'POST',
+    body: {
+      max_depth: body?.max_depth ?? null,
+      enqueue: body?.enqueue ?? false,
+    },
+    timeoutMs: EXPAND_TIMEOUT_MS,
+  });
 }

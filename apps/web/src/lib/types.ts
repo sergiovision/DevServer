@@ -1,3 +1,9 @@
+/**
+ * Row shapes shared by the API routes and the dashboard components — the
+ * TypeScript view of the PostgreSQL schema in database/migrations/.
+ */
+import type { PostCompletionAction } from './post-completion-action';
+
 export interface Repo {
   id: number;
   name: string;
@@ -84,6 +90,11 @@ export interface Task {
   // operator has decided on the plan the agent proposed.
   plan_approved_at?: string | null;
   plan_rejected_at?: string | null;
+  // Follow-up fired when the task finishes (migration 004; validated by
+  // lib/post-completion-action.ts, executed by the worker's post_completion).
+  post_completion_action?: PostCompletionAction | null;
+  // Loop guard: the task whose completion started this one.
+  triggered_by_task_id?: number | null;
   // Joined fields
   repo_name?: string;
   repo_clone_url?: string;
@@ -104,6 +115,7 @@ export interface TaskTemplate {
   backup_model: string | null;
   max_turns: number | null;
   skip_verify: boolean;
+  post_completion_action?: PostCompletionAction | null;
   created_at: string;
   updated_at: string;
 }

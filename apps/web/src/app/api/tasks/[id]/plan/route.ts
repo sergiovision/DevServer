@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiErrorResponse } from '@/lib/api-errors';
 import { decidePlan } from '@/lib/task-steering';
-import { parseRouteId } from '@/lib/route-params';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+import { invalidId, parseRouteId, type RouteContext } from '@/lib/route-utils';
 
 type Decision = 'approve' | 'reject';
 
@@ -22,9 +18,7 @@ function isDecision(value: unknown): value is Decision {
 export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
   const taskId = parseRouteId(id);
-  if (taskId === null) {
-    return NextResponse.json({ error: 'Invalid task id' }, { status: 400 });
-  }
+  if (taskId === null) return invalidId('task id');
 
   const body: unknown = await request.json().catch(() => null);
   const decision = (body as { decision?: unknown } | null)?.decision;

@@ -1,22 +1,21 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+/**
+ * Main navigation: the page list (shared with the command palette via
+ * `lib/nav-items.ts`) and the Needs You pill on Tasks.
+ *
+ * The pill reads the tab-wide shared poll (`lib/needs-you.ts`) instead of
+ * running its own interval, so it costs one request per tick no matter how
+ * many surfaces show the count.
+ */
+
+import React, { useEffect } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import CIcon from '@coreui/icons-react';
-import {
-  cilSpeedometer,
-  cilTask,
-  cilStorage,
-  cilSettings,
-  cilClock,
-  cilListRich,
-  cilDescription,
-  cilCopy,
-  cilBolt,
-  cilTerminal,
-  cilShareBoxed,
-} from '@coreui/icons';
+import { CBadge } from '@coreui/react-pro';
+import { NAV_ITEMS, isNavItemActive } from '@/lib/nav-items';
+import { needsYouHref, totalNeedsYou, useNeedsYou } from '@/lib/needs-you';
 
 interface SidebarProps {
   visible: boolean;
@@ -28,43 +27,14 @@ interface SidebarProps {
   collapsed?: boolean;
 }
 
-const baseNavItems = [
-  { name: 'Dashboard', href: '/', icon: cilSpeedometer },
-  { name: 'Tasks', href: '/tasks', icon: cilTask },
-  { name: 'Templates', href: '/templates', icon: cilCopy },
-  { name: 'Webhooks', href: '/webhooks', icon: cilBolt },
-  { name: 'Ideas', href: '/ideas', icon: cilListRich },
-  { name: 'Jobs', href: '/jobs', icon: cilClock },
-  { name: 'Repos', href: '/repos', icon: cilStorage },
-  { name: 'Settings', href: '/settings', icon: cilSettings },
-  { name: 'Agent Peers', href: '/a2a', icon: cilShareBoxed },
-  { name: 'Sessions', href: '/sessions', icon: cilTerminal },
-  { name: 'Logs', href: '/logs', icon: cilDescription },
-];
-
 export function Sidebar({ visible, onVisibleChange, collapsed = false }: SidebarProps) {
   const pathname = usePathname();
-  // "Needs you" pill: tasks awaiting a human decision (blocked = plan
-  // approval / budget / preflight). Polled so the sidebar is a pull surface.
-  const [needsYou, setNeedsYou] = useState(0);
-
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const res = await fetch('/api/tasks?status=blocked&limit=200');
-        if (res.ok && active) {
-          const rows = await res.json();
-          setNeedsYou(Array.isArray(rows) ? rows.length : 0);
-        }
-      } catch {
-        // leave last-known count on transient failure
-      }
-    };
-    load();
-    const id = setInterval(load, 15000);
-    return () => { active = false; clearInterval(id); };
-  }, []);
+  const router = useRouter();
+  const needsYouCounts = useNeedsYou();
+  const needsYou = totalNeedsYou(needsYouCounts);
+  const needsYouTitle = needsYouCounts
+    ? `${needsYouCounts.blocked} blocked, ${needsYouCounts.plans_awaiting_decision} plan(s) awaiting your decision`
+    : '';
 
   // Close drawer on Escape when open on mobile
   useEffect(() => {
@@ -116,11 +86,8 @@ export function Sidebar({ visible, onVisibleChange, collapsed = false }: Sidebar
         <nav className="app-sidebar-nav">
           <div className="app-sidebar-nav-title">Navigation</div>
           <ul className="app-sidebar-nav-list">
-            {baseNavItems.map((item) => {
-              const isActive =
-                item.href === '/'
-                  ? pathname === '/'
-                  : pathname.startsWith(item.href);
+            {NAV_ITEMS.map((item) => {
+              const isActive = isNavItemActive(item.href, pathname);
               return (
                 <li key={item.href} className="app-sidebar-nav-item">
                   <Link
@@ -133,13 +100,25 @@ export function Sidebar({ visible, onVisibleChange, collapsed = false }: Sidebar
                   >
                     <CIcon customClassName="app-sidebar-nav-icon" icon={item.icon} />
                     <span className="app-sidebar-nav-label">{item.name}</span>
-                    {item.name === 'Tasks' && needsYou > 0 && (
-                      <span
-                        className="badge rounded-pill bg-warning text-dark ms-auto app-sidebar-nav-badge"
-                        title={`${needsYou} task(s) awaiting your action`}
+                    {item.href === '/tasks' && needsYou > 0 && (
+                      // A badge inside the Tasks link, not a nested <a>:
+                      // clicking it goes to the filtered list instead.
+                      <CBadge
+                        color="warning"
+                        shape="rounded-pill"
+                        textColor="dark"
+                        className="ms-auto app-sidebar-nav-badge"
+                        title={`${needsYouTitle} — show them`}
+                        aria-label={`${needsYou} task(s) need you: ${needsYouTitle}`}
+                        onClick={(event: React.MouseEvent) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          handleLinkClick();
+                          router.push(needsYouHref(needsYouCounts));
+                        }}
                       >
                         {needsYou}
-                      </span>
+                      </CBadge>
                     )}
                   </Link>
                 </li>

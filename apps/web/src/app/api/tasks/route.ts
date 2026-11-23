@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
 import { insertTask } from '@/lib/tasks';
+import { sanitiseTaskFields } from '@/lib/injection-ingress';
+import { recordInjectionEvent } from '@/lib/injection-ingress-db';
+import { parsePostCompletionAction, toJsonbParam } from '@/lib/post-completion-action';
+import type { Task } from '@/lib/types';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -106,12 +110,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // ── Post-completion action (optional follow-up; lib/post-completion-action.ts) ──
+    const postCompletion = parsePostCompletionAction(body.post_completion_action);
+    if (!postCompletion.ok) {
+      return NextResponse.json({ error: postCompletion.error }, { status: 400 });
+    }
+
+    // Untrusted text is cleaned before it is stored (invisible characters
+    // removed, override attempts flagged) — never refused.
+    const scan = sanitiseTaskFields('api', {
+      title: String(title),
+      description: typeof description === 'string' ? description : null,
+      acceptance: typeof acceptance === 'string' ? acceptance : null,
+    });
+
     const created = await insertTask({
       repoId: repo_id || null,
       taskKey: task_key,
-      title,
-      description: description || null,
-      acceptance: acceptance || null,
+      title: scan.fields.title,
+      description: scan.fields.description || null,
+      acceptance: scan.fields.acceptance || null,
       priority,
       labels,
       mode,
@@ -125,6 +143,18 @@ export async function POST(request: NextRequest) {
       backupVendor: backup_vendor || null,
       backupModel: backup_model || null,
     });
+
+    await recordInjectionEvent(created.id, scan.event);
+
+    // ── Post-completion action: stored after the shared insert (lib/tasks.ts
+    // owns the INSERT column list), only when one was supplied.
+    if (postCompletion.value !== null) {
+      const stored = await query<Pick<Task, 'post_completion_action'>>(
+        `UPDATE tasks SET post_completion_action = $1::jsonb WHERE id = $2 RETURNING post_completion_action`,
+        [toJsonbParam(postCompletion.value), created.id],
+      );
+      created.post_completion_action = stored.rows[0]?.post_completion_action ?? null;
+    }
 
     return NextResponse.json(created, { status: 201 });
   } catch (err) {

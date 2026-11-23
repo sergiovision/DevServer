@@ -12,6 +12,7 @@ import {
 import { AgentLog } from './AgentLog';
 import type { Task, TaskEvent } from '@/lib/types';
 import { useAssistantPageContext } from './AssistantProvider';
+import { api } from '@/lib/api-client';
 
 interface AgentDetailViewProps {
   task: Task;
@@ -59,7 +60,8 @@ export function AgentDetailView({ task, events: initialEvents }: AgentDetailView
   }, [task.id]);
 
   const handleCancel = useCallback(async () => {
-    await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
+    // A failed cancel still refreshes: the page then shows the real status.
+    await api.post(`/api/tasks/${task.id}/cancel`).catch(() => undefined);
     router.refresh();
   }, [task.id, router]);
 

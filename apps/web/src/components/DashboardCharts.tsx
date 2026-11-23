@@ -1,7 +1,17 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+/**
+ * DashboardCharts — the analytics block on the dashboard: summary tiles,
+ * duration / turns / cost charts, token throughput and tokens-per-task
+ * charts, and a Statistics button that opens the same data as tables
+ * (AnalyticsStatisticsModal).
+ *
+ * All token math (rates, averages, zero-division) is done server-side by
+ * `lib/analytics-metrics.ts`; this component only draws the numbers it gets.
+ */
+import React, { useState } from 'react';
 import {
+  CButton,
   CCard,
   CCardBody,
   CCardHeader,
@@ -24,6 +34,11 @@ import {
   Filler,
 } from 'chart.js';
 import { Line, Bar, Doughnut } from 'react-chartjs-2';
+import { OVERALL_VENDOR, type TokensPerTask, type VendorThroughput } from '@/lib/analytics-metrics';
+import { AnalyticsStatisticsModal } from './AnalyticsStatisticsModal';
+import { EmptyState } from './EmptyState';
+import { api } from '@/lib/api-client';
+import { useResource } from '@/lib/use-async';
 
 // Register Chart.js modules
 ChartJS.register(
@@ -81,6 +96,11 @@ interface AnalyticsData {
   totals: Totals;
   vendor_totals: VendorTotal[];
   governance?: Governance;
+  // Token metrics; absent from an older server, empty until the worker
+  // reports token counts.
+  token_data_available?: boolean;
+  token_throughput?: VendorThroughput[];
+  tokens_per_task?: TokensPerTask;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -149,17 +169,14 @@ function chartOpts(legendDisplay = false) {
 // ── Component ───────────────────────────────────────────────────────────────
 
 export function DashboardCharts() {
-  const [data, setData] = useState<AnalyticsData | null>(null);
-  const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(7);
+  const [statisticsOpen, setStatisticsOpen] = useState(false);
 
-  useEffect(() => {
-    setLoading(true);
-    fetch(`/api/analytics?days=${days}`)
-      .then((r) => r.json())
-      .then((d) => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [days]);
+  // A failed load keeps whatever was shown before (or the empty state).
+  const { data, loading } = useResource<AnalyticsData | null>(
+    (signal) => api.get<AnalyticsData | null>(`/api/analytics?days=${days}`, { signal }),
+    [days],
+  );
 
   if (loading) {
     return (
@@ -175,8 +192,8 @@ export function DashboardCharts() {
   if (!data || data.daily.length === 0) {
     return (
       <CCard className="mb-4">
-        <CCardBody className="text-center py-4 text-body-secondary">
-          No analytics data yet. Complete some tasks to see charts.
+        <CCardBody>
+          <EmptyState title="No analytics data yet" hint="Complete some tasks to see charts." />
         </CCardBody>
       </CCard>
     );
@@ -255,6 +272,73 @@ export function DashboardCharts() {
   const totTurns = n(data.totals.total_turns);
   const successRate = totComp + totFail > 0 ? Math.round(totComp / (totComp + totFail) * 100) : 0;
 
+  // ── 4. Token throughput + tokens per task ─────────────────────────────────
+  const throughput = data.token_throughput ?? [];
+  const tokensPerTask = data.tokens_per_task ?? null;
+  const hasTokenData = (data.token_data_available ?? false) && throughput.length > 0;
+
+  // One bar per vendor, coloured by the vendor (same identity colours as the
+  // cost charts). A vendor with no active seconds has a null rate: Chart.js
+  // leaves a gap rather than drawing a misleading zero.
+  const throughputData = {
+    labels: throughput.map((row) => row.vendor),
+    datasets: [{
+      label: 'Output tokens / s',
+      data: throughput.map((row) => row.output_tokens_per_second),
+      backgroundColor: throughput.map((row) => VENDOR_COLORS[row.vendor] || 'rgba(128,128,128,0.8)'),
+      borderRadius: 4,
+      maxBarThickness: 48,
+    }],
+  };
+
+  const tokenRows = tokensPerTask ? [...tokensPerTask.by_vendor, tokensPerTask.overall] : [];
+  const tokensPerTaskData = {
+    labels: tokenRows.map((row) => (row.vendor === OVERALL_VENDOR ? 'All vendors' : row.vendor)),
+    datasets: [
+      {
+        label: 'Avg input tokens (incl. cache)',
+        data: tokenRows.map((row) => row.avg_input_tokens),
+        backgroundColor: 'rgba(66, 133, 244, 0.7)',
+        borderRadius: 4,
+        yAxisID: 'input',
+      },
+      {
+        label: 'Avg output tokens',
+        data: tokenRows.map((row) => row.avg_output_tokens),
+        backgroundColor: 'rgba(245, 158, 11, 0.8)',
+        borderRadius: 4,
+        yAxisID: 'output',
+      },
+    ],
+  };
+  // Two y-axes on purpose: input (prompt + cache) is typically 10-100x the
+  // output, so on one shared axis every output bar would flatten to zero and
+  // the chart could not show output at all. Each axis is titled so the two
+  // scales are never read against each other; the Statistics table carries
+  // the exact numbers.
+  const tokensPerTaskOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: true, position: 'top' as const } },
+    scales: {
+      x: { grid: { display: false } },
+      input: {
+        type: 'linear' as const,
+        position: 'left' as const,
+        beginAtZero: true,
+        title: { display: true, text: 'Input tokens' },
+        grid: { color: 'rgba(128,128,128,0.1)' },
+      },
+      output: {
+        type: 'linear' as const,
+        position: 'right' as const,
+        beginAtZero: true,
+        title: { display: true, text: 'Output tokens' },
+        grid: { drawOnChartArea: false },
+      },
+    },
+  };
+
 
   return (
     <>
@@ -262,18 +346,23 @@ export function DashboardCharts() {
       <CCard className="mb-4">
         <CCardHeader className="d-flex justify-content-between align-items-center">
           <strong>Analytics</strong>
-          <CFormSelect
-            style={{ width: 140 }}
-            value={days}
-            onChange={(e) => setDays(parseInt(e.target.value))}
-          >
-            <option value={1}>Last 1 day</option>
-            <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={60}>Last 60 days</option>
-            <option value={90}>Last 90 days</option>
-          </CFormSelect>
+          <div className="d-flex align-items-center gap-2">
+            <CButton color="secondary" variant="outline" size="sm" onClick={() => setStatisticsOpen(true)}>
+              Statistics
+            </CButton>
+            <CFormSelect
+              style={{ width: 140 }}
+              value={days}
+              onChange={(e) => setDays(parseInt(e.target.value))}
+            >
+              <option value={1}>Last 1 day</option>
+              <option value={7}>Last 7 days</option>
+              <option value={14}>Last 14 days</option>
+              <option value={30}>Last 30 days</option>
+              <option value={60}>Last 60 days</option>
+              <option value={90}>Last 90 days</option>
+            </CFormSelect>
+          </div>
         </CCardHeader>
         <CCardBody>
           <CRow className="text-center">
@@ -352,12 +441,58 @@ export function DashboardCharts() {
                   }}
                 />
               ) : (
-                <span className="text-body-secondary">No vendor data</span>
+                <EmptyState compact title="No vendor data" />
               )}
             </CCardBody>
           </CCard>
         </CCol>
       </CRow>
+
+      {/* Charts row 4: token throughput + tokens per task */}
+      <CRow className="mb-4">
+        {hasTokenData ? (
+          <>
+            <CCol lg={5}>
+              <CCard className="h-100">
+                <CCardHeader><strong>Output Tokens / s by Vendor</strong></CCardHeader>
+                <CCardBody style={{ height: 280 }}>
+                  <Bar data={throughputData} options={chartOpts()} />
+                </CCardBody>
+              </CCard>
+            </CCol>
+            <CCol lg={7}>
+              <CCard className="h-100">
+                <CCardHeader><strong>Avg Tokens per Task: Input vs Output</strong></CCardHeader>
+                <CCardBody style={{ height: 280 }}>
+                  <Bar data={tokensPerTaskData} options={tokensPerTaskOptions} />
+                </CCardBody>
+              </CCard>
+            </CCol>
+          </>
+        ) : (
+          <CCol>
+            <CCard>
+              <CCardHeader><strong>Token Usage</strong></CCardHeader>
+              <CCardBody>
+                <EmptyState
+                  compact
+                  title="No token data in this period"
+                  hint="Throughput and tokens-per-task charts appear once the worker reports token counts with each attempt."
+                />
+              </CCardBody>
+            </CCard>
+          </CCol>
+        )}
+      </CRow>
+
+      <AnalyticsStatisticsModal
+        visible={statisticsOpen}
+        onClose={() => setStatisticsOpen(false)}
+        days={days}
+        vendorTotals={data.vendor_totals}
+        throughput={throughput}
+        tokensPerTask={tokensPerTask}
+      />
     </>
   );
 }

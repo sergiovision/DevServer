@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { CAlert, CBadge, CButton, CCard, CCardBody, CCardHeader } from '@coreui/react-pro';
 import type { Task, TaskPlan, TaskRun } from '@/lib/types';
+import { api, errorMessage } from '@/lib/api-client';
 
 type PlanDecision = 'approve' | 'reject';
 
@@ -74,18 +75,10 @@ export function PlanCard({ task, runs }: PlanCardProps) {
     setSubmitting(decision);
     setError('');
     try {
-      const res = await fetch(`/api/tasks/${task.id}/plan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Could not record the decision');
-      }
+      await api.post(`/api/tasks/${task.id}/plan`, { decision });
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not record the decision');
+      setError(errorMessage(err, 'Could not record the decision'));
     } finally {
       setSubmitting(null);
     }

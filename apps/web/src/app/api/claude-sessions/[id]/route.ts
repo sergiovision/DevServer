@@ -11,16 +11,20 @@
  * transcript open and would lose both its history and its ability to
  * --resume. 503: the task lookup failed, so the worker refused to guess.
  * 500: nothing could be removed (the per-path errors are in the hint).
+ *
+ * `[id]` is a vendor session id (a UUID, not a row id), so it is only
+ * URL-encoded; the worker validates it.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { callWorker, readWorkerJson } from '@/lib/worker-client';
+import {
+  callWorker,
+  readWorkerJson,
+  WORKER_UNREACHABLE_MESSAGE,
+  type RouteContext,
+} from '@/lib/route-utils';
 import { WORKER_URL } from '@/lib/worker-url';
 
 export const dynamic = 'force-dynamic';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
 
 export async function DELETE(_req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
@@ -32,7 +36,7 @@ export async function DELETE(_req: NextRequest, { params }: RouteContext) {
   if (res === null) {
     return NextResponse.json(
       {
-        error: 'Worker unreachable',
+        error: WORKER_UNREACHABLE_MESSAGE,
         hint: `Could not reach the worker at ${WORKER_URL}. Nothing was deleted.`,
       },
       { status: 502 },

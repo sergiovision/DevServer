@@ -11,6 +11,7 @@ import {
   CForm,
   CFormTextarea,
 } from '@coreui/react-pro';
+import { api, errorMessage } from '@/lib/api-client';
 
 interface TaskNote {
   id: number;
@@ -40,12 +41,10 @@ export function TaskNotesPanel({ taskId }: TaskNotesPanelProps) {
 
   const loadNotes = useCallback(async () => {
     try {
-      const res = await fetch(`/api/tasks/${taskId}/notes`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not load notes');
-      setNotes(Array.isArray(data.notes) ? data.notes : []);
+      const data = await api.get<{ notes?: unknown }>(`/api/tasks/${taskId}/notes`);
+      setNotes(Array.isArray(data?.notes) ? (data.notes as TaskNote[]) : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load notes');
+      setError(errorMessage(err, 'Could not load notes'));
     }
   }, [taskId]);
 
@@ -59,22 +58,19 @@ export function TaskNotesPanel({ taskId }: TaskNotesPanelProps) {
     setError('');
     setNotice('');
     try {
-      const res = await fetch(`/api/tasks/${taskId}/notes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: draft }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not save the note');
+      const data = await api.post<{ will_be_delivered?: boolean } | null>(
+        `/api/tasks/${taskId}/notes`,
+        { body: draft },
+      );
       setDraft('');
       setNotice(
-        data.will_be_delivered
+        data?.will_be_delivered
           ? 'Saved. The agent will read it at the start of its next attempt.'
           : 'Saved for the record. This task is not running, so the agent will not read it.',
       );
       await loadNotes();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save the note');
+      setError(errorMessage(err, 'Could not save the note'));
     } finally {
       setPosting(false);
     }

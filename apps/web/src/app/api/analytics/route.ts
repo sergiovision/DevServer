@@ -1,6 +1,36 @@
+/**
+ * GET /api/analytics?days=N — dashboard analytics: daily rollups, per-vendor
+ * cost, governance KPIs and token metrics (throughput per vendor, tokens per
+ * task). Thin shell: SQL here, metric math in `lib/analytics-metrics.ts`.
+ *
+ * Token metrics read per-attempt `cost_update` task_events (no schema
+ * change: event payloads are free-form JSONB). Until the worker includes
+ * token counts in that payload the token sections are empty and
+ * `token_data_available` is false — the rest of the response is unaffected.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import {
+  computeTokensPerTask,
+  computeVendorThroughput,
+  type VendorTaskTokensRow,
+  type VendorThroughputRow,
+} from '@/lib/analytics-metrics';
+
+/**
+ * SQL for a numeric JSONB payload field that never throws: a malformed value
+ * (written by an older/foreign worker) counts as 0 instead of failing the
+ * whole dashboard with a cast error. `key` is always a constant below.
+ */
+function payloadNumber(key: string): string {
+  const field = `(e.payload->>'${key}')`;
+  return `CASE WHEN ${field} ~ '^[0-9]+(\\.[0-9]+)?$' THEN ${field}::numeric ELSE 0 END`;
+}
+
+// The vendor that actually ran the attempt when the payload says so (a
+// backup-vendor attempt), else the task's primary vendor.
+const ATTEMPT_VENDOR = "COALESCE(NULLIF(e.payload->>'vendor', ''), t.agent_vendor, 'anthropic')";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -120,6 +150,47 @@ export async function GET(request: NextRequest) {
       abstain_savings_usd: abstainCount * costPerPr,
     };
 
+    // 6. Token metrics from cost_update events that carry token counts.
+    const throughputResult = await query<VendorThroughputRow>(
+      `SELECT ${ATTEMPT_VENDOR} AS vendor,
+              COUNT(*) AS runs,
+              SUM(${payloadNumber('output_tokens')}) AS output_tokens,
+              SUM(${payloadNumber('duration_ms')}) AS active_ms
+       FROM task_events e
+       JOIN tasks t ON t.id = e.task_id
+       WHERE e.event_type = 'cost_update'
+         AND e.payload->>'output_tokens' IS NOT NULL
+         AND e.created_at >= CURRENT_DATE - $1 * INTERVAL '1 day'
+       GROUP BY 1`,
+      [days],
+    );
+    const tokensPerTaskResult = await query<VendorTaskTokensRow>(
+      `SELECT vendor,
+              COUNT(*) AS tasks,
+              SUM(input_tokens) AS input_tokens,
+              SUM(cache_read_tokens) AS cache_read_tokens,
+              SUM(cache_write_tokens) AS cache_write_tokens,
+              SUM(output_tokens) AS output_tokens
+       FROM (
+         SELECT e.task_id,
+                COALESCE(t.agent_vendor, 'anthropic') AS vendor,
+                SUM(${payloadNumber('input_tokens')}) AS input_tokens,
+                SUM(${payloadNumber('cache_read_tokens')}) AS cache_read_tokens,
+                SUM(${payloadNumber('cache_write_tokens')}) AS cache_write_tokens,
+                SUM(${payloadNumber('output_tokens')}) AS output_tokens
+         FROM task_events e
+         JOIN tasks t ON t.id = e.task_id
+         WHERE e.event_type = 'cost_update'
+           AND e.payload->>'output_tokens' IS NOT NULL
+           AND e.created_at >= CURRENT_DATE - $1 * INTERVAL '1 day'
+         GROUP BY e.task_id, t.agent_vendor
+       ) per_task
+       GROUP BY vendor`,
+      [days],
+    );
+    const tokenThroughput = computeVendorThroughput(throughputResult.rows);
+    const tokensPerTask = computeTokensPerTask(tokensPerTaskResult.rows);
+
     return NextResponse.json({
       days,
       daily: dailyResult.rows,
@@ -127,6 +198,9 @@ export async function GET(request: NextRequest) {
       totals,
       vendor_totals: vendorTotalsResult.rows,
       governance,
+      token_data_available: tokenThroughput.length > 0,
+      token_throughput: tokenThroughput,
+      tokens_per_task: tokensPerTask,
     });
   } catch (err) {
     return apiErrorResponse(err, 'GET /api/analytics');

@@ -1,6 +1,12 @@
+/**
+ * Task templates: list and create. A template pre-fills the task form,
+ * including its optional post-completion action (validated by the same
+ * `lib/post-completion-action.ts` the task routes use, stored as JSONB).
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import { parsePostCompletionAction, toJsonbParam } from '@/lib/post-completion-action';
 
 export async function GET() {
   try {
@@ -43,11 +49,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    const postCompletion = parsePostCompletionAction(body.post_completion_action);
+    if (!postCompletion.ok) {
+      return NextResponse.json({ error: postCompletion.error }, { status: 400 });
+    }
+
     const result = await query(
-      `INSERT INTO task_templates (name, description, acceptance, task_type, git_flow, claude_mode, agent_vendor, claude_model, backup_vendor, backup_model, max_turns, skip_verify)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `INSERT INTO task_templates (name, description, acceptance, task_type, git_flow, claude_mode, agent_vendor, claude_model, backup_vendor, backup_model, max_turns, skip_verify, post_completion_action)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
        RETURNING *`,
-      [name.trim(), description || null, acceptance || null, task_type, git_flow, claude_mode, agent_vendor, claude_model || null, backup_vendor || null, backup_model || null, max_turns, skip_verify],
+      [name.trim(), description || null, acceptance || null, task_type, git_flow, claude_mode, agent_vendor, claude_model || null, backup_vendor || null, backup_model || null, max_turns, skip_verify, toJsonbParam(postCompletion.value)],
     );
 
     return NextResponse.json(result.rows[0], { status: 201 });

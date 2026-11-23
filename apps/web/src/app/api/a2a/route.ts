@@ -31,6 +31,8 @@ import { publicOrigin } from '@/lib/a2a/origin';
 import { decidePlan } from '@/lib/task-steering';
 import { cancelTaskFully } from '@/lib/task-cancel';
 import { deliverPeerNote } from '@/lib/a2a/steer';
+import { sanitiseTaskFields } from '@/lib/injection-ingress';
+import { recordInjectionEvent } from '@/lib/injection-ingress-db';
 import {
   A2A_TERMINAL_STATES,
   JsonRpcRequest,
@@ -221,6 +223,13 @@ async function handleMessageSend(
       : text.split('\n')[0].slice(0, 200);
   const acceptance =
     typeof meta.acceptance === 'string' ? meta.acceptance.slice(0, 10_000) : null;
+  // A peer is an external system: clean its text before it is stored
+  // (invisible characters removed, override attempts flagged, never refused).
+  const scan = sanitiseTaskFields('a2a', {
+    title,
+    description: text.slice(0, 100_000),
+    acceptance,
+  });
 
   // Governance: the peer's ceilings are stamped onto the task, never negotiated
   // away by the caller. mode='interactive' routes through the plan gate so a
@@ -263,9 +272,9 @@ async function handleMessageSend(
       [
         repoId,
         taskKey,
-        title,
-        text.slice(0, 100_000),
-        acceptance,
+        scan.fields.title,
+        scan.fields.description,
+        scan.fields.acceptance,
         peer.priority,
         mode,
         taskType,
@@ -297,12 +306,13 @@ async function handleMessageSend(
         }),
       ],
     ).catch(() => {}); // audit failure must not fail the task
+    await recordInjectionEvent(taskId, scan.event);
 
     jobId = await enqueueTask({
       taskId,
       repoId,
       taskKey,
-      title,
+      title: scan.fields.title,
       priority: peer.priority,
       mode,
       // Subscription billing: the CLI reports cost_usd=0, so max_cost_usd is

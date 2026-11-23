@@ -131,9 +131,11 @@ A schedule binds a name + cron expression (`@hourly`, `@daily`, `every 30m`, `ev
 
 ## Ask Agent — an assistant that knows the product and the page you're on
 
-A button in the bottom-right of every screen (or `⌘/Ctrl + K`) opens a chat drawer that runs on your configured **System LLM** — so it costs whatever that model costs, and nothing else. It always knows which page you're looking at, and on a task or repo page it knows *which* task or repo, so "why is this stuck?" is answered about that one.
+A button in the bottom-right of every screen (or `⌘/Ctrl + J`) opens a chat drawer that runs on your configured **System LLM** — so it costs whatever that model costs, and nothing else. It always knows which page you're looking at, and on a task or repo page it knows *which* task or repo, so "why is this stuck?" is answered about that one.
 
-It is grounded in a curated handbook shipped in the repo (`docs/assistant/`) rather than the model's memory of DevServer, so it explains the actual screens, statuses, git flows and settings this version has. Answers stream token by token.
+It is grounded in a curated handbook shipped in the repo (`docs/assistant/`) rather than the model's memory of DevServer, so it explains the actual screens, statuses, git flows and settings this version has. Answers stream token by token. Enter sends (Shift+Enter for a new line), ↑ recalls earlier prompts, `/` opens a command menu and `@TASK-KEY`, `@repo:name` or `@idea:id` pull that entity into the question. The last 20 conversations stay in this browser (secrets masked) and can be reopened, renamed or exported as Markdown.
+
+`⌘/Ctrl + K` opens the command palette: jump to any page, find a task by key or title, or hand the query to Ask Agent. Press `?` for the full shortcut list.
 
 A combobox in the drawer's toolbar picks the **model** for the next turn, from whatever your System LLM vendor offers — reach for a bigger model on a hard question, drop back to a cheap one for the rest. The vendor itself stays a Settings decision, since changing it also changes credentials and billing. Your choice is remembered.
 

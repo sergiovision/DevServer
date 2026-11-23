@@ -17,6 +17,8 @@ import { DashboardCharts } from './DashboardCharts';
 import { DecisionsBanner } from './DecisionsBanner';
 import type { Task } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
+import { EmptyState } from '@/components/EmptyState';
+import { api } from '@/lib/api-client';
 
 interface DashboardProps {
   runningTasks: Task[];
@@ -28,11 +30,11 @@ export function Dashboard({ runningTasks, queuedTasks }: DashboardProps) {
   const [queued, setQueued] = useState(queuedTasks);
 
   const handlePauseQueue = useCallback(async () => {
-    await fetch('/api/queue/pause', { method: 'POST', body: JSON.stringify({ action: 'pause' }) });
+    await api.post('/api/queue/pause', { action: 'pause' }).catch(() => undefined);
   }, []);
 
   const handleResumeQueue = useCallback(async () => {
-    await fetch('/api/queue/pause', { method: 'POST', body: JSON.stringify({ action: 'resume' }) });
+    await api.post('/api/queue/pause', { action: 'resume' }).catch(() => undefined);
   }, []);
 
   return (
@@ -49,7 +51,7 @@ export function Dashboard({ runningTasks, queuedTasks }: DashboardProps) {
         </CCardHeader>
         <CCardBody>
           {running.length === 0 ? (
-            <p className="text-body-secondary mb-0">No agents currently running.</p>
+            <EmptyState compact title="No agents currently running" />
           ) : (
             running.map((task) => (
               <AgentCard key={task.id} task={task} />
@@ -76,7 +78,7 @@ export function Dashboard({ runningTasks, queuedTasks }: DashboardProps) {
         </CCardHeader>
         <CCardBody>
           {queued.length === 0 ? (
-            <p className="text-body-secondary mb-0">Queue is empty.</p>
+            <EmptyState compact title="Queue is empty" />
           ) : (
             <CListGroup>
               {queued.map((task) => (

@@ -16,6 +16,14 @@ import {
   CCol,
   CSpinner,
 } from '@coreui/react-pro';
+import { api, errorMessage, isApiError } from '@/lib/api-client';
+
+interface DbTestResult {
+  ok?: boolean;
+  version?: string;
+  target?: string;
+  error?: string;
+}
 
 // ─── Mode registry ───────────────────────────────────────────────────────────
 //
@@ -232,28 +240,32 @@ export function DatabaseConfigFields({ deployMode, values, onChange }: FieldsPro
         deployMode === 'docker'
           ? containerDbTarget(mode, values.PGHOST || '', values.PGPORT || '')
           : null;
-      const res = await fetch('/api/env/test-db', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host: values.PGHOST || '127.0.0.1',
-          port: parseInt(values.PGPORT || '5432', 10),
-          user: values.PGUSER || 'devserver',
-          password: values.PGPASSWORD || '',
-          database: values.PGDATABASE || 'devserver',
-          ...(target ? { container_host: target.host, container_port: parseInt(target.port, 10) } : {}),
-        }),
+      const data = await api.post<DbTestResult | null>('/api/env/test-db', {
+        host: values.PGHOST || '127.0.0.1',
+        port: parseInt(values.PGPORT || '5432', 10),
+        user: values.PGUSER || 'devserver',
+        password: values.PGPASSWORD || '',
+        database: values.PGDATABASE || 'devserver',
+        ...(target ? { container_host: target.host, container_port: parseInt(target.port, 10) } : {}),
       });
-      const data = await res.json();
-      if (data.ok) {
+      if (data?.ok) {
         const v = String(data.version || '').split(' ').slice(0, 2).join(' ');
         const via = data.target ? ` via ${data.target}` : '';
         setTestResult({ ok: true, msg: `Connected${via}${v ? ` — ${v}` : ''}` });
       } else {
-        setTestResult({ ok: false, msg: data.error || 'Connection failed' });
+        setTestResult({ ok: false, msg: data?.error || 'Connection failed' });
       }
-    } catch {
-      setTestResult({ ok: false, msg: 'Could not reach the worker to run the test.' });
+    } catch (err) {
+      // A non-2xx answer still carries the worker's `{ok: false, error}`
+      // verdict (ApiError.message); only a request that never got an answer
+      // means the worker could not be reached.
+      setTestResult({
+        ok: false,
+        msg:
+          isApiError(err) && !err.isNetworkError
+            ? errorMessage(err, 'Connection failed')
+            : 'Could not reach the worker to run the test.',
+      });
     } finally {
       setTesting(false);
     }
@@ -368,11 +380,11 @@ export function DatabaseSettingsCard({ deployMode = 'development' }: { deployMod
   const [msg, setMsg] = useState<{ color: string; text: string } | null>(null);
 
   useEffect(() => {
-    fetch('/api/env')
-      .then((r) => r.json())
+    api
+      .get<{ variables?: { key: string; value: string }[] } | null>('/api/env')
       .then((data) => {
         const vals: Record<string, string> = {};
-        if (data.variables) {
+        if (data?.variables) {
           for (const v of data.variables) {
             if (PG_KEYS.includes(v.key)) vals[v.key] = v.value;
           }
@@ -394,13 +406,14 @@ export function DatabaseSettingsCard({ deployMode = 'development' }: { deployMod
     try {
       const payload: Record<string, string> = {};
       for (const k of PG_KEYS) if (values[k] !== undefined) payload[k] = values[k];
-      const res = await fetch('/api/env', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variables: payload }),
+      await api.put('/api/env', { variables: payload }).catch(() => {
+        throw new Error('Failed to save');
       });
-      if (!res.ok) throw new Error('Failed to save');
-      await fetch('/api/env/apply', { method: 'POST' });
+      // The apply answer is deliberately ignored; only a network failure
+      // aborts the save.
+      await api.post('/api/env/apply').catch((err: unknown) => {
+        if (isApiError(err) && err.isNetworkError) throw err;
+      });
       setMsg({
         color: 'success',
         text: 'Saved. Database changes require a worker (and web) restart to take effect.',

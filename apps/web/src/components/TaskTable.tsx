@@ -15,6 +15,7 @@ import type { Task, TaskStatus, TaskType } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 import { asScopedColumns, asTableItems, fromTableItems } from '@/lib/smart-table';
 import { taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
+import { api } from '@/lib/api-client';
 
 interface TaskTableProps {
   tasks: Task[];
@@ -111,7 +112,8 @@ export function TaskTable({ tasks, showRetired, groupByRepo, selectedIds, onSele
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   const handleEnqueue = useCallback(async (taskId: number) => {
-    await fetch(`/api/tasks/${taskId}/enqueue`, { method: 'POST' });
+    // Refresh either way: the row then shows the task's real status.
+    await api.post(`/api/tasks/${taskId}/enqueue`).catch(() => undefined);
     router.refresh();
   }, [router]);
 

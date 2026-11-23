@@ -13,6 +13,7 @@ import {
 } from '@coreui/react-pro';
 import CIcon from '@coreui/icons-react';
 import { cilReload, cilMediaPlay, cilMediaStop, cilSync } from '@coreui/icons';
+import { api, isApiError } from '@/lib/api-client';
 
 interface WorkerStatus {
   running: boolean;
@@ -43,8 +44,11 @@ export function WorkerToolbar() {
 
   const refresh = useCallback(async () => {
     const [wRes, qRes] = await Promise.all([
-      fetch('/api/worker').then((r) => r.json()).catch(() => ({ running: false, status: null })),
-      fetch('/api/queue').then((r) => r.json()).catch(() => null),
+      api
+        .get<WorkerStatus | null>('/api/worker')
+        .catch(() => null)
+        .then((status): WorkerStatus => status ?? { running: false, status: null }),
+      api.get<QueueStats | null>('/api/queue').catch(() => null),
     ]);
     setWorker(wRes);
     setQueue(qRes);
@@ -61,20 +65,21 @@ export function WorkerToolbar() {
     setPendingAction(action);
     setActionMsg('');
     try {
-      const res = await fetch('/api/worker', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+      const data = await api.post<{ success?: boolean; error?: string } | null>('/api/worker', {
+        action,
       });
-      const data = await res.json();
-      if (data.success) {
+      if (data?.success) {
         setActionMsg('');
         await refresh();
       } else {
-        setActionMsg(`Failed: ${data.error}`);
+        setActionMsg(`Failed: ${data?.error}`);
       }
-    } catch {
-      setActionMsg('Request failed.');
+    } catch (err) {
+      // A route error (`{success: false, error}` on a 500) carries its message;
+      // only an unreachable server gets the generic text.
+      setActionMsg(
+        isApiError(err) && !err.isNetworkError ? `Failed: ${err.message}` : 'Request failed.',
+      );
     } finally {
       setLoading(false);
       setPendingAction(null);

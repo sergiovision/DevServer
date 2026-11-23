@@ -10,41 +10,37 @@ import {
   CButton,
 } from '@coreui/react-pro';
 import type { Task } from '@/lib/types';
+import { api } from '@/lib/api-client';
+import { useResource } from '@/lib/use-async';
 
 interface AgentCardProps {
   task: Task;
 }
 
 export function AgentCard({ task }: AgentCardProps) {
-  const [logLines, setLogLines] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Poll task log file every 3 seconds
-  useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/task-log/${encodeURIComponent(task.task_key)}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (active && Array.isArray(data.lines)) {
-            setLogLines(data.lines);
-          }
-        }
-      } catch { /* ignore */ }
-    };
-    poll();
-    const interval = setInterval(poll, 3000);
-    return () => { active = false; clearInterval(interval); };
-  }, [task.task_key]);
+  // Poll the task log file every 3 seconds. A failed poll keeps the last
+  // lines on screen (useResource keeps `data` when a reload errors).
+  const { data: logLines = [] } = useResource<string[]>(
+    async (signal) => {
+      const data = await api.get<{ lines?: unknown }>(
+        `/api/task-log/${encodeURIComponent(task.task_key)}`,
+        { signal },
+      );
+      return Array.isArray(data?.lines) ? (data.lines as string[]) : [];
+    },
+    [task.task_key],
+    { pollMs: 3000 },
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [logLines.length]);
 
   const handleCancel = async () => {
-    await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
+    await api.post(`/api/tasks/${task.id}/cancel`).catch(() => undefined);
   };
 
   return (

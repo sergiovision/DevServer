@@ -1,6 +1,13 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { query } from '@/lib/db';
-import { WORKER_URL } from '@/lib/worker-url';
+import { apiErrorResponse } from '@/lib/api-errors';
+import {
+  invalidId,
+  jsonError,
+  parseRouteId,
+  proxyWorker,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 /**
  * POST /api/tasks/<id>/compact
@@ -11,13 +18,14 @@ import { WORKER_URL } from '@/lib/worker-url';
  * tasks.compacted_context, and emits a context_compacted event.
  */
 
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+// Summarising through the system LLM can take far longer than a plain
+// worker call; the default proxy timeout would cut it off mid-summary.
+const COMPACTION_TIMEOUT_MS = 300_000;
 
 export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const taskId = parseInt(id);
+  const taskId = parseRouteId(id);
+  if (taskId === null) return invalidId('task id');
   try {
     const body = (await request.json().catch(() => ({}))) as {
       reason?: string;
@@ -28,30 +36,17 @@ export async function POST(request: NextRequest, context: RouteContext) {
       [taskId],
     );
     if (row.rows.length === 0) {
-      return NextResponse.json({ error: 'task not found' }, { status: 404 });
+      return jsonError(404, 'task not found');
     }
     const taskKey = row.rows[0].task_key;
 
-    const workerRes = await fetch(
-      `${WORKER_URL}/internal/tasks/${encodeURIComponent(taskKey)}/compact?reason=${
-        encodeURIComponent(body.reason || 'manual')
-      }`,
-      { method: 'POST' },
+    return await proxyWorker(
+      `/internal/tasks/${encodeURIComponent(taskKey)}/compact?reason=${encodeURIComponent(
+        body.reason || 'manual',
+      )}`,
+      { method: 'POST', timeoutMs: COMPACTION_TIMEOUT_MS },
     );
-    if (!workerRes.ok) {
-      const detail = await workerRes.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: detail.detail || 'compaction failed' },
-        { status: workerRes.status },
-      );
-    }
-    const out = await workerRes.json();
-    return NextResponse.json(out);
   } catch (err) {
-    console.error(`POST /api/tasks/${id}/compact error:`, err);
-    return NextResponse.json(
-      { error: 'internal server error' },
-      { status: 500 },
-    );
+    return apiErrorResponse(err, `POST /api/tasks/${id}/compact`);
   }
 }

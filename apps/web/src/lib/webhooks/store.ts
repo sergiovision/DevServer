@@ -7,6 +7,7 @@
 
 import { query } from '../db';
 import { enqueueStoredTask, insertTask, type NewTask } from '../tasks';
+import { recordInjectionEvent } from '../injection-ingress-db';
 import type { TaskTemplate } from '../types';
 import type { FiredTask, WebhookStore, WebhookTaskRequest, WebhookTrigger } from './fire';
 
@@ -66,6 +67,8 @@ async function buildNewTask(request: WebhookTaskRequest): Promise<NewTask> {
 
 async function createAndEnqueueTask(request: WebhookTaskRequest): Promise<FiredTask> {
   const task = await insertTask(await buildNewTask(request));
+  // Before enqueueing, so the finding precedes the run in the task timeline.
+  await recordInjectionEvent(task.id, request.injection);
   await enqueueStoredTask(task);
   return { taskId: task.id, taskKey: task.task_key };
 }

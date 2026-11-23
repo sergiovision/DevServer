@@ -14,6 +14,9 @@ import CIcon from '@coreui/icons-react';
 import { cilSun, cilMoon, cilMenu } from '@coreui/icons';
 import { Sidebar } from './Sidebar';
 import { AskAgentLauncher } from './AskAgentLauncher';
+import { CommandPalette } from './CommandPalette';
+import { ConnectivityBanner } from './ConnectivityBanner';
+import { UpdateNotice } from './UpdateNotice';
 import { useTheme } from './ThemeProvider';
 
 const COLLAPSE_KEY = 'devserver.sidebar.collapsed';
@@ -65,6 +68,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         collapsed={collapsed}
       />
       <div className="wrapper d-flex flex-column min-vh-100 flex-grow-1">
+        {/* Above the header so an outage is the first thing on screen. */}
+        <ConnectivityBanner />
         <CHeader position="sticky" className="mb-0 p-0">
           <CContainer fluid className="px-3">
             <button
@@ -136,6 +141,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="text-body-secondary small">
             v{process.env.NEXT_PUBLIC_VERSION}
           </div>
+          <div className="ms-3">
+            <UpdateNotice />
+          </div>
           <div className="ms-auto text-body-secondary small">
             DevServer &copy; {new Date().getFullYear()}
           </div>
@@ -144,6 +152,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Present on every dashboard page. The `/setup` early return above keeps
           it off the wizard without a second condition. */}
       <AskAgentLauncher />
+      {/* ⌘K palette, `?` shortcut list; needs AssistantProvider (layout.tsx). */}
+      <CommandPalette />
     </div>
   );
 }

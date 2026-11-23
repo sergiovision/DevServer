@@ -4,16 +4,20 @@
  * Proxy to the worker's transcript tail. Same byte-offset protocol the Logs
  * page uses: pass back the `next_offset` you were given and you get only what
  * was appended since.
+ *
+ * `[id]` is a vendor session id (a UUID, not a row id), so it is only
+ * URL-encoded; the worker validates it.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { callWorker, readWorkerJson } from '@/lib/worker-client';
+import {
+  callWorker,
+  readWorkerJson,
+  WORKER_UNREACHABLE_MESSAGE,
+  type RouteContext,
+} from '@/lib/route-utils';
 import { WORKER_URL } from '@/lib/worker-url';
 
 export const dynamic = 'force-dynamic';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
 
 export async function GET(req: NextRequest, { params }: RouteContext) {
   const { id } = await params;
@@ -29,7 +33,7 @@ export async function GET(req: NextRequest, { params }: RouteContext) {
       {
         events: [],
         next_offset: nextOffset,
-        error: 'Worker unreachable',
+        error: WORKER_UNREACHABLE_MESSAGE,
         hint: `Could not reach the worker at ${WORKER_URL}.`,
       },
       { status: 502 },

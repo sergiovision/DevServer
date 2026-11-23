@@ -21,6 +21,8 @@ import {
 } from '@coreui/react-pro';
 import CIcon from '@coreui/icons-react';
 import { cilArrowBottom, cilTrash, cilSync } from '@coreui/icons';
+import { EmptyState } from '@/components/EmptyState';
+import { api, errorMessage } from '@/lib/api-client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -55,9 +57,9 @@ function useLogTail(name: LogName, active: boolean) {
     async (reset = false) => {
       const since = reset ? 0 : offsetRef.current;
       try {
-        const res = await fetch(`/api/logs/${name}?since=${since}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: { lines: string[]; nextOffset: number } = await res.json();
+        const data = await api.get<{ lines: string[]; nextOffset: number }>(
+          `/api/logs/${name}?since=${since}`,
+        );
 
         offsetRef.current = data.nextOffset;
 
@@ -72,7 +74,7 @@ function useLogTail(name: LogName, active: boolean) {
         setState(prev => ({
           ...prev,
           loading: false,
-          error: err instanceof Error ? err.message : 'Failed to fetch log',
+          error: errorMessage(err, 'Failed to fetch log'),
         }));
       }
     },
@@ -201,9 +203,7 @@ function LogPanel({ name, active }: LogPanelProps) {
 
         {!loading && lines.length === 0 && !error && (
           <div className="d-flex align-items-center justify-content-center h-100">
-            <span className="text-body-secondary small">
-              No log output yet — file may not exist.
-            </span>
+            <EmptyState title="No log output yet" hint="The log file may not exist." />
           </div>
         )}
 

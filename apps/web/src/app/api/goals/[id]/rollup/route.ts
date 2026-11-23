@@ -1,39 +1,24 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-url';
+import { NextRequest } from 'next/server';
+import { invalidId, parseRouteId, proxyWorker, type RouteContext } from '@/lib/route-utils';
 
 export const dynamic = 'force-dynamic';
 
+// Summarising and scoring the children goes through the system LLM.
+const ROLLUP_TIMEOUT_MS = 300_000;
+
 /**
+ * POST /api/goals/<id>/rollup
+ *
  * Roll up a Goal Graph node's completed children into a parent summary +
  * 0–100 evaluator score. Proxies to POST /internal/goals/{node_id}/rollup.
  */
-export async function POST(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function POST(_request: NextRequest, { params }: RouteContext) {
   const { id } = await params;
-  const nodeId = parseInt(id, 10);
-  if (!Number.isInteger(nodeId)) {
-    return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
-  }
+  const nodeId = parseRouteId(id);
+  if (nodeId === null) return invalidId();
 
-  try {
-    const res = await fetch(`${WORKER_URL}/internal/goals/${nodeId}/rollup`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) {
-      return NextResponse.json(
-        { error: data?.detail || 'rollup not ready' },
-        { status: res.status },
-      );
-    }
-    return NextResponse.json(data);
-  } catch {
-    return NextResponse.json(
-      { error: 'worker unreachable — is the worker running?' },
-      { status: 502 },
-    );
-  }
+  return proxyWorker(`/internal/goals/${nodeId}/rollup`, {
+    method: 'POST',
+    timeoutMs: ROLLUP_TIMEOUT_MS,
+  });
 }

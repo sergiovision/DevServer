@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { apiErrorResponse } from '@/lib/api-errors';
-import { WORKER_URL } from '@/lib/worker-url';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+import {
+  callWorker,
+  invalidId,
+  parseRouteId,
+  readWorkerJson,
+  workerError,
+  workerUnreachable,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 /**
  * POST /api/repos/<id>/reindex
@@ -17,32 +20,30 @@ interface RouteContext {
  */
 export async function POST(_request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const repoId = parseInt(id);
+  const repoId = parseRouteId(id);
+  if (repoId === null) return invalidId('repo id');
 
-  try {
-    const results = await Promise.all(
-      (['code', 'doc'] as const).map(async (kind) => {
-        const res = await fetch(`${WORKER_URL}/internal/repos/${repoId}/corpus/ingest`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ kind, full: false }),
-        });
-        const data = await res.json().catch(() => ({}));
-        return { ok: res.ok, status: res.status, kind, data };
-      }),
-    );
+  const calls = await Promise.all(
+    (['code', 'doc'] as const).map(async (kind) => {
+      const res = await callWorker(`/internal/repos/${repoId}/corpus/ingest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kind, full: false }),
+      });
+      const data: Record<string, unknown> = res ? await readWorkerJson(res) : {};
+      return { res, kind, data };
+    }),
+  );
 
-    const failed = results.find((r) => !r.ok);
-    if (failed) {
-      const detail =
-        (failed.data as { detail?: string; error?: string }).detail ||
-        (failed.data as { detail?: string; error?: string }).error ||
-        'Reindex failed';
-      return NextResponse.json({ error: detail }, { status: failed.status });
-    }
+  if (calls.some((call) => call.res === null)) return workerUnreachable();
+  const failed = calls.find((call) => call.res !== null && !call.res.ok);
+  if (failed?.res) return workerError(failed.res, failed.data);
 
-    return NextResponse.json({ ok: true, results });
-  } catch (err) {
-    return apiErrorResponse(err, `POST /api/repos/${id}/reindex`);
-  }
+  const results = calls.map((call) => ({
+    ok: call.res?.ok ?? false,
+    status: call.res?.status ?? 0,
+    kind: call.kind,
+    data: call.data,
+  }));
+  return NextResponse.json({ ok: true, results });
 }

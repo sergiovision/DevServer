@@ -35,6 +35,7 @@ from routes.assistant import router as assistant_router
 from routes.enhanced_health import router as enhanced_health_router
 from routes.env_config import router as env_config_router
 from routes.health import router as health_router
+from routes.update_status import router as update_status_router
 from services import embeddings, night_cycle, telemetry
 from services.queue_consumer import start_consumer, stop_consumer
 from services.scheduler import start_scheduler, stop_scheduler
@@ -113,6 +114,7 @@ for module in (
     app.include_router(module.router)
 app.include_router(assistant_router)
 app.include_router(env_config_router)
+app.include_router(update_status_router)
 
 
 def run():

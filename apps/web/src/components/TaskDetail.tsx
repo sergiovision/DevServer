@@ -28,15 +28,23 @@ import { MaxTurnsInput } from './MaxTurnsInput';
 import { VendorModelPicker } from './VendorModelPicker';
 import { PatchesPanel } from './PatchesPanel';
 import { PlanCard } from './PlanCard';
+import { Linkified, LinkList } from './Linkified';
 import { TaskNotesPanel } from './TaskNotesPanel';
 import { MessagesPanel } from './MessagesPanel';
 import { PredictionCard } from './PredictionCard';
+import { PostCompletionActionCard } from './PostCompletionActionSelect';
 import { useAssistantPageContext } from './AssistantProvider';
 import type { Task, TaskRun, TaskEvent, TaskStatus, GhostJobInfo, GitFlow, AgentVendor, ClaudeMode } from '@/lib/types';
 import { STATUS_COLORS } from '@/lib/types';
 import { resolveVendorModel, vendorLabel } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
+import { api, errorMessage, isApiError } from '@/lib/api-client';
 import { taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
+
+// What the Fill Task call (`POST /api/tasks/generate`) may suggest.
+type GeneratedTaskFields = Partial<
+  Pick<Task, 'description' | 'acceptance' | 'claude_model' | 'max_turns' | 'claude_mode' | 'skip_verify'>
+>;
 
 interface TaskDetailProps {
   task: Task;
@@ -92,19 +100,14 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     setDescError('');
     setDescSaved(false);
     try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description: description || null, acceptance: acceptance || null }),
+      await api.patch(`/api/tasks/${task.id}`, {
+        description: description || null,
+        acceptance: acceptance || null,
       });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error || 'Save failed');
-      }
       setDescSaved(true);
       router.refresh();
     } catch (err: unknown) {
-      setDescError(err instanceof Error ? err.message : 'Save failed');
+      setDescError(errorMessage(err, 'Save failed'));
     } finally {
       setDescSaving(false);
     }
@@ -134,27 +137,19 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     setAgentError('');
     setAgentSaved(false);
     try {
-      const res = await fetch(`/api/tasks/${task.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          max_turns: agentMaxTurns,
-          agent_vendor: agentVendor,
-          claude_model: agentModel.trim() || null,
-          claude_mode: agentBilling,
-          git_flow: agentGitFlow,
-          backup_vendor: backupVendor !== agentVendor ? backupVendor : null,
-          backup_model: backupModel.trim() || null,
-        }),
+      await api.patch(`/api/tasks/${task.id}`, {
+        max_turns: agentMaxTurns,
+        agent_vendor: agentVendor,
+        claude_model: agentModel.trim() || null,
+        claude_mode: agentBilling,
+        git_flow: agentGitFlow,
+        backup_vendor: backupVendor !== agentVendor ? backupVendor : null,
+        backup_model: backupModel.trim() || null,
       });
-      if (!res.ok) {
-        const d = await res.json();
-        throw new Error(d.error || 'Save failed');
-      }
       setAgentSaved(true);
       router.refresh();
     } catch (err: unknown) {
-      setAgentError(err instanceof Error ? err.message : 'Save failed');
+      setAgentError(errorMessage(err, 'Save failed'));
     } finally {
       setAgentSaving(false);
     }
@@ -162,50 +157,46 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
 
   const handleDelete = useCallback(async () => {
     if (!confirm(`Delete task "${task.task_key}"? This cannot be undone.`)) return;
-    await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
+    // Fire-and-forget: the redirect happens whatever the delete answered.
+    await api.delete(`/api/tasks/${task.id}`).catch(() => undefined);
     router.push('/tasks');
   }, [task.id, task.task_key, router]);
 
   const handleFixGhost = useCallback(async () => {
-    await fetch('/api/worker', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'restart' }) });
+    await api.post('/api/worker', { action: 'restart' }).catch(() => undefined);
     router.refresh();
   }, [router]);
 
   const handleForceReopen = useCallback(async () => {
     if (!confirm('This will reset the task to pending, clear all locks, and restart the worker. Continue?')) return;
     // 1. Reset task status and clear job reference
-    await fetch(`/api/tasks/${task.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'pending', queue_job_id: null }),
-    });
+    await api.patch(`/api/tasks/${task.id}`, { status: 'pending', queue_job_id: null }).catch(() => undefined);
     // 2. Clean locks + restart worker
-    await fetch('/api/worker', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'restart' }),
-    });
+    await api.post('/api/worker', { action: 'restart' }).catch(() => undefined);
     router.refresh();
   }, [task.id, router]);
 
   const handleEnqueue = useCallback(async () => {
-    await fetch(`/api/tasks/${task.id}/enqueue`, { method: 'POST' });
+    await api.post(`/api/tasks/${task.id}/enqueue`).catch(() => undefined);
     router.refresh();
   }, [task.id, router]);
 
   const [cancelMsg, setCancelMsg] = useState<{ type: 'success' | 'danger'; text: string } | null>(null);
   const handleCancel = useCallback(async () => {
     setCancelMsg(null);
-    const res = await fetch(`/api/tasks/${task.id}/cancel`, { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      setCancelMsg({ type: 'danger', text: data.error || 'Cancel failed' });
-    } else if (data.agent_stopped) {
-      setCancelMsg({ type: 'success', text: 'Cancelled — the running agent was stopped.' });
-    } else if (data.worker_reachable === false) {
-      setCancelMsg({ type: 'danger', text: 'Cancelled in the database only — the worker is unreachable.' });
-    } else {
-      setCancelMsg({ type: 'success', text: 'Cancelled.' });
+    try {
+      const data = await api.post<{ agent_stopped?: boolean; worker_reachable?: boolean } | null>(
+        `/api/tasks/${task.id}/cancel`,
+      );
+      if (data?.agent_stopped) {
+        setCancelMsg({ type: 'success', text: 'Cancelled — the running agent was stopped.' });
+      } else if (data?.worker_reachable === false) {
+        setCancelMsg({ type: 'danger', text: 'Cancelled in the database only — the worker is unreachable.' });
+      } else {
+        setCancelMsg({ type: 'success', text: 'Cancelled.' });
+      }
+    } catch (err) {
+      setCancelMsg({ type: 'danger', text: errorMessage(err, 'Cancel failed') });
     }
     router.refresh();
   }, [task.id, router]);
@@ -215,14 +206,10 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     if (!confirm('Continue this task with the current primary model? The in-flight run will be stopped and a new session will resume from where it left off.')) return;
     setContinuing(true);
     try {
-      const res = await fetch(`/api/tasks/${task.id}/continue`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: null, mode: null }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        alert(d.error || 'Continue failed');
+      try {
+        await api.post(`/api/tasks/${task.id}/continue`, { model: null, mode: null });
+      } catch (err) {
+        alert(errorMessage(err, 'Continue failed'));
       }
       router.refresh();
     } finally {
@@ -240,18 +227,16 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
       return;
     setCompacting(true);
     try {
-      const res = await fetch(`/api/tasks/${task.id}/compact`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: 'manual_ui' }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        alert(data.error || 'Compaction failed');
-      } else {
-        alert(
-          `Compacted ${data.chars_in ?? '?'} chars → ${data.chars_out ?? '?'} chars. Use "Continue" to resume with the summary.`,
+      try {
+        const data = await api.post<{ chars_in?: number; chars_out?: number } | null>(
+          `/api/tasks/${task.id}/compact`,
+          { reason: 'manual_ui' },
         );
+        alert(
+          `Compacted ${data?.chars_in ?? '?'} chars → ${data?.chars_out ?? '?'} chars. Use "Continue" to resume with the summary.`,
+        );
+      } catch (err) {
+        alert(errorMessage(err, 'Compaction failed'));
       }
       router.refresh();
     } finally {
@@ -260,20 +245,12 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
   }, [task.id, router]);
 
   const handleRetire = useCallback(async () => {
-    await fetch(`/api/tasks/${task.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'retired' }),
-    });
+    await api.patch(`/api/tasks/${task.id}`, { status: 'retired' }).catch(() => undefined);
     router.refresh();
   }, [task.id, router]);
 
   const handleReopen = useCallback(async () => {
-    await fetch(`/api/tasks/${task.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: 'pending' }),
-    });
+    await api.patch(`/api/tasks/${task.id}`, { status: 'pending' }).catch(() => undefined);
     router.refresh();
   }, [task.id, router]);
 
@@ -284,15 +261,10 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     setRefreshing(true);
     setRefreshMsg(null);
     try {
-      const res = await fetch(`/api/repos/${task.repo_id}/refresh-git`, { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || 'Refresh failed');
-      }
-      const data = await res.json();
+      const data = await api.post<{ message: string }>(`/api/repos/${task.repo_id}/refresh-git`);
       setRefreshMsg({ type: 'success', text: data.message });
     } catch (err) {
-      setRefreshMsg({ type: 'danger', text: err instanceof Error ? err.message : 'Refresh failed' });
+      setRefreshMsg({ type: 'danger', text: errorMessage(err, 'Refresh failed') });
     } finally {
       setRefreshing(false);
     }
@@ -308,9 +280,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/settings');
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await api.get<Record<string, unknown> | null>('/api/settings');
         const raw = data?.system_llm_vendor;
         const vendor =
           typeof raw === 'string' ? raw.replace(/^"|"$/g, '').trim() : '';
@@ -329,34 +299,27 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
     setFilling(true);
     setFillError('');
     try {
-      const res = await fetch('/api/tasks/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        throw new Error(data?.error || 'devtask skill failed');
-      }
-      const generated = await res.json();
+      const generated = await api.post<GeneratedTaskFields>('/api/tasks/generate', { description });
       if (generated.description) setDescription(generated.description);
       if (generated.acceptance) setAcceptance(generated.acceptance);
       // Patch remaining fields on server (never overwrite title/key on existing tasks)
-      await fetch(`/api/tasks/${task.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      // The PATCH answer was never checked; only an unreachable server
+      // surfaces as a Fill error, exactly as when this was a bare fetch.
+      await api
+        .patch(`/api/tasks/${task.id}`, {
           description: generated.description || undefined,
           acceptance: generated.acceptance || undefined,
           claude_model: generated.claude_model,
           max_turns: generated.max_turns,
           claude_mode: generated.claude_mode || undefined,
           skip_verify: generated.skip_verify,
-        }),
-      });
+        })
+        .catch((err: unknown) => {
+          if (isApiError(err) && err.isNetworkError) throw err;
+        });
       router.refresh();
     } catch (err) {
-      setFillError(err instanceof Error ? err.message : 'devtask skill failed');
+      setFillError(errorMessage(err, 'devtask skill failed'));
     } finally {
       setFilling(false);
     }
@@ -375,7 +338,7 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
         </CAlert>
       )}
       <div className="mb-4">
-        <h2 className="mb-1">{task.task_key}: {task.title}</h2>
+        <h2 className="mb-1">{task.task_key}: <Linkified text={task.title} /></h2>
         <div className="mb-2">
           <CBadge color={STATUS_COLORS[task.status as TaskStatus]}>
             {task.status}
@@ -531,6 +494,9 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   rows={5}
                   placeholder="Detailed task description…"
                 />
+                {/* The description is edited in a textarea (no anchors possible), so
+                    its URLs are surfaced as a clickable list underneath. */}
+                <LinkList text={description} />
               </div>
               {typeEntry.showAcceptance && (
                 <div className="mb-3">
@@ -687,11 +653,9 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
                   label="Skip verification"
                   checked={task.skip_verify}
                   onChange={async (e) => {
-                    await fetch(`/api/tasks/${task.id}`, {
-                      method: 'PATCH',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ skip_verify: e.target.checked }),
-                    });
+                    await api
+                      .patch(`/api/tasks/${task.id}`, { skip_verify: e.target.checked })
+                      .catch(() => undefined);
                     router.refresh();
                   }}
                 />
@@ -707,6 +671,9 @@ export function TaskDetail({ task, runs, events, ghost }: TaskDetailProps) {
               </CButton>
             </CCardBody>
           </CCard>
+
+          {/* Follow-up fired when this task finishes (post_completion_action). */}
+          <PostCompletionActionCard task={task} />
 
           {/* Patch mode never pushes — the exported patches are the deliverable. */}
           {task.git_flow === 'patch' && (

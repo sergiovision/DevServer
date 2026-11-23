@@ -1,6 +1,8 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
+import { api } from '@/lib/api-client';
+import { useResource } from '@/lib/use-async';
 
 interface TaskLogProps {
   taskKey: string;
@@ -8,26 +10,20 @@ interface TaskLogProps {
 }
 
 export function TaskLog({ taskKey, maxHeight = '600px' }: TaskLogProps) {
-  const [logLines, setLogLines] = useState<string[]>([]);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      try {
-        const res = await fetch(`/api/task-log/${encodeURIComponent(taskKey)}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (active && Array.isArray(data.lines)) {
-            setLogLines(data.lines);
-          }
-        }
-      } catch { /* ignore */ }
-    };
-    poll();
-    const interval = setInterval(poll, 3000);
-    return () => { active = false; clearInterval(interval); };
-  }, [taskKey]);
+  // Poll every 3 seconds; a failed poll keeps the last lines on screen.
+  const { data: logLines = [] } = useResource<string[]>(
+    async (signal) => {
+      const data = await api.get<{ lines?: unknown }>(
+        `/api/task-log/${encodeURIComponent(taskKey)}`,
+        { signal },
+      );
+      return Array.isArray(data?.lines) ? (data.lines as string[]) : [];
+    },
+    [taskKey],
+    { pollMs: 3000 },
+  );
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });

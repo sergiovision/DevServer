@@ -8,6 +8,7 @@ import {
   CModalBody,
   CSpinner,
 } from '@coreui/react-pro';
+import { api, errorMessage } from '@/lib/api-client';
 
 interface RepoDiagramModalProps {
   repoId: number;
@@ -40,10 +41,10 @@ export function RepoDiagramModal({ repoId, repoName, visible, onClose }: RepoDia
       setError(null);
       setStats(null);
       try {
-        const res = await fetch(`/api/repos/${repoId}/diagram`);
-        const data: DiagramResponse = await res.json();
-        if (!res.ok || data.error) {
-          throw new Error(data.error || 'Diagram generation failed');
+        const data = await api.get<DiagramResponse | null>(`/api/repos/${repoId}/diagram`);
+        // A 200 can still carry `error` when the worker could not build the map.
+        if (!data || data.error) {
+          throw new Error(data?.error || 'Diagram generation failed');
         }
         if (cancelled) return;
         setStats(data.stats ?? null);
@@ -63,7 +64,7 @@ export function RepoDiagramModal({ repoId, repoName, visible, onClose }: RepoDia
           }
         }
       } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(errorMessage(err, String(err)));
       } finally {
         if (!cancelled) setLoading(false);
       }

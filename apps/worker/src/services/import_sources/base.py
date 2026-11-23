@@ -9,13 +9,22 @@ and the ``external_imports`` idempotency ledger live in the Next.js API layer.
 Credential resolution is per-call: every method accepts an optional ``repo``
 (the SQLAlchemy ``Repo`` row) whose ``confluence_*``-style override columns,
 when set, win over the global ``config.settings`` values.
+
+Every adapter returns its draft through :func:`sanitised_draft`: an external
+page is exactly the kind of text an attacker can plant instructions in, and
+the draft is what the operator previews and the web layer stores as the task
+description. Invisible characters are removed here; override phrases and
+comment imperatives are only recorded in ``metadata["injection_scan"]`` (see
+``services/injection_scan.py``) — an import is never refused for them.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
+
+from services.injection_scan import scan_fields
 
 
 @dataclass
@@ -43,6 +52,24 @@ class ImportDraft:
             "source_url": self.source_url,
             "metadata": self.metadata,
         }
+
+
+def sanitised_draft(draft: ImportDraft) -> ImportDraft:
+    """``draft`` with invisible characters stripped from title and body.
+
+    When anything was noticed, the shared ``injection_sanitised`` payload is
+    stored under ``metadata["injection_scan"]`` so the importing route can
+    surface it without rescanning.
+    """
+    scan = scan_fields({"title": draft.title, "markdown": draft.markdown})
+    if not scan.has_findings:
+        return draft
+    return replace(
+        draft,
+        title=scan.values["title"] or "",
+        markdown=scan.values["markdown"] or "",
+        metadata={**draft.metadata, "injection_scan": scan.to_payload()},
+    )
 
 
 class ImportSource(ABC):

@@ -29,6 +29,7 @@ import {
   CRow,
   CSpinner,
 } from '@coreui/react-pro';
+import { api, errorMessage, isApiError } from '@/lib/api-client';
 
 interface ImportSourceInfo {
   id: string;
@@ -77,6 +78,16 @@ export interface ImportModalProps {
   onImported?: () => void;
 }
 
+/**
+ * `.catch` handler for reads whose HTTP failures were always skipped silently:
+ * an HTTP error yields `null`, while an unreachable server still rejects so
+ * the caller's own network-failure handling runs.
+ */
+function ignoreHttpError(err: unknown): null {
+  if (isApiError(err) && err.isNetworkError) throw err;
+  return null;
+}
+
 const ACTION_COLOR: Record<ImportResultRow['action'], string> = {
   created: 'success',
   updated: 'info',
@@ -120,12 +131,12 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     if (!visible) return;
     (async () => {
       try {
-        const [srcRes, repoRes] = await Promise.all([
-          fetch('/api/import/sources', { cache: 'no-store' }),
-          fetch('/api/repos', { cache: 'no-store' }),
+        const [sourceList, repoList] = await Promise.all([
+          api.get<ImportSourceInfo[] | null>('/api/import/sources', { cache: 'no-store' }).catch(ignoreHttpError),
+          api.get<RepoRow[] | null>('/api/repos', { cache: 'no-store' }).catch(ignoreHttpError),
         ]);
-        if (srcRes.ok) setSources(await srcRes.json());
-        if (repoRes.ok) setRepos(await repoRes.json());
+        if (sourceList) setSources(sourceList);
+        if (repoList) setRepos(repoList);
       } catch {
         setError('Failed to load import sources');
       }
@@ -137,9 +148,11 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     if (!visible) return;
     (async () => {
       try {
-        const res = await fetch(`/api/import/confluence/scopes${repoQs}`, { cache: 'no-store' });
-        const data = await res.json();
-        setScopes(res.ok ? data.scopes || [] : []);
+        const data = await api.get<{ scopes?: { key: string; name: string }[] }>(
+          `/api/import/confluence/scopes${repoQs}`,
+          { cache: 'no-store' },
+        );
+        setScopes(data.scopes || []);
       } catch {
         setScopes([]);
       }
@@ -156,12 +169,14 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
       const params = new URLSearchParams({ q: queryText, limit: '25' });
       if (scope) params.set('scope', scope);
       if (repoId) params.set('repo_id', String(repoId));
-      const res = await fetch(`/api/import/confluence/search?${params}`, { cache: 'no-store' });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.detail || data?.error || `HTTP ${res.status}`);
+      const data = await api.get<{ items?: SearchItem[] }>(`/api/import/confluence/search?${params}`, {
+        cache: 'no-store',
+      });
       setItems(data.items || []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // A worker `detail` string wins over the route's `error`, as before.
+      if (isApiError(e) && typeof e.detail === 'string' && e.detail) setError(e.detail);
+      else setError(e instanceof Error ? e.message : String(e));
     } finally {
       setSearching(false);
     }
@@ -172,11 +187,14 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     setPreview(null);
     try {
       const params = repoId ? `?repo_id=${repoId}` : '';
-      const res = await fetch(`/api/import/confluence/item/${encodeURIComponent(id)}${params}`, {
-        cache: 'no-store',
-      });
-      const data = await res.json();
-      if (res.ok) setPreview(data);
+      // A failed preview just leaves the pane empty; an unreachable server
+      // still rejects, exactly as the bare fetch did.
+      const data = await api
+        .get<Draft | null>(`/api/import/confluence/item/${encodeURIComponent(id)}${params}`, {
+          cache: 'no-store',
+        })
+        .catch(ignoreHttpError);
+      if (data) setPreview(data);
     } finally {
       setPreviewing(false);
     }
@@ -196,26 +214,24 @@ export function ImportModal({ visible, onClose, defaultTarget, onImported }: Imp
     setError('');
     setResults(null);
     try {
-      const res = await fetch('/api/import/confluence', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const data = await api.post<{ results?: ImportResultRow[]; errors?: unknown[] }>(
+        '/api/import/confluence',
+        {
           ids: Array.from(selected),
           repo_id: repoId || null,
           target_type: targetType,
           task: { priority, enqueue },
           idea: { parent_id: null },
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || data?.detail || `HTTP ${res.status}`);
+        },
+      );
       setResults(data.results || []);
-      if ((data.errors || []).length > 0) {
-        setError(`${data.errors.length} page(s) failed to fetch`);
+      const failures = data.errors || [];
+      if (failures.length > 0) {
+        setError(`${failures.length} page(s) failed to fetch`);
       }
       onImported?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e, String(e)));
     } finally {
       setImporting(false);
     }

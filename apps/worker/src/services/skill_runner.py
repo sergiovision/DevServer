@@ -18,7 +18,15 @@ from pathlib import Path
 
 from config import settings
 from models.base import async_session
-from services import agent_backends, git_ops, repo_lock, side_effect_gate, skills, task_notes
+from services import (
+    agent_backends,
+    git_ops,
+    post_completion,
+    repo_lock,
+    side_effect_gate,
+    skills,
+    task_notes,
+)
 from services.agent_backends import AgentResult
 from services.decomposer import _domain_hint
 from services.notify import notify
@@ -68,15 +76,20 @@ async def run_lightweight_task(
 
     if repo is None:
         workspace = _Workspace(artifact_dir, artifact_dir, repo_note="")
-        return await _run(task, workspace, claude_mode, turns, session_id)
+        succeeded = await _run(task, workspace, claude_mode, turns, session_id)
+    else:
+        async with repo_lock.hold(repo.name, owner=task.key):
+            workspace = await _checkout(task, repo, artifact_dir)
+            try:
+                succeeded = await _run(task, workspace, claude_mode, turns, session_id)
+            finally:
+                if not repo.is_local:
+                    await git_ops.reset_worktree(repo.name, repo.default_branch)
 
-    async with repo_lock.hold(repo.name, owner=task.key):
-        workspace = await _checkout(task, repo, artifact_dir)
-        try:
-            return await _run(task, workspace, claude_mode, turns, session_id)
-        finally:
-            if not repo.is_local:
-                await git_ops.reset_worktree(repo.name, repo.default_branch)
+    # Outside the repo lock so a follow-up in the same repo is not blocked by
+    # its own trigger. Never raises; a task without an action is one query.
+    await post_completion.after_completion(task.id)
+    return succeeded
 
 
 async def _checkout(task: TaskSpec, repo: RepoSpec, artifact_dir: Path) -> _Workspace:

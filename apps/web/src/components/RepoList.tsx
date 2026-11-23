@@ -14,6 +14,7 @@ import {
 } from '@coreui/react-pro';
 import type { Repo } from '@/lib/types';
 import { RepoDiagramModal } from './RepoDiagramModal';
+import { EmptyState } from './EmptyState';
 
 interface RepoListProps {
   repos: Repo[];
@@ -52,8 +53,11 @@ export function RepoList({ repos }: RepoListProps) {
       <CTableBody>
         {repos.length === 0 ? (
           <CTableRow>
-            <CTableDataCell colSpan={8} className="text-center text-body-secondary">
-              No repositories configured.
+            <CTableDataCell colSpan={8}>
+              <EmptyState
+                title="No repositories configured"
+                hint="Add a Gitea, GitHub or local repository so tasks have somewhere to run."
+              />
             </CTableDataCell>
           </CTableRow>
         ) : (

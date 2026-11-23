@@ -80,9 +80,9 @@ async def test_verify_failure_then_retry(scenario: Scenario, git_repo: Path) -> 
         "cost_update",
         "pr_preflight_pass",
     ]
-    # The resumed attempt is told why the previous one failed.
+    # The resumed attempt is told why the previous one failed, fenced as data.
     retry_prompt = scenario.calls[1]["prompt"]
-    assert retry_prompt.startswith("## Previous Attempt Failed")
+    assert "<untrusted_evidence>\n## Previous Attempt Failed" in retry_prompt
 
 
 async def test_primary_failure_falls_over_to_backup_model(

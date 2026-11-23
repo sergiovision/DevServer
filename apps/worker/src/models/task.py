@@ -2,8 +2,10 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import ARRAY, Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from services.agent_backends import DEFAULT_BACKUP_MODEL
@@ -62,6 +64,15 @@ class Task(Base):
     # Reality gate score and, when the abstain gate stopped the task, why.
     reality_score: Mapped[int | None] = mapped_column(Integer, default=None)
     abstain_reason: Mapped[str | None] = mapped_column(Text, default=None)
+    # Follow-up fired after a terminal status (migration 004,
+    # services/post_completion.py). Deferred: no ORM query selects them, so a
+    # database that has not run 004 yet keeps working everywhere except the
+    # post-completion hook itself, which reads them with plain SQL.
+    post_completion_action: Mapped[dict[str, Any] | None] = mapped_column(JSONB, deferred=True)
+    # Loop guard: the task whose completion started this one.
+    triggered_by_task_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("tasks.id", ondelete="SET NULL"), deferred=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

@@ -12,6 +12,8 @@ import {
   CListGroup,
   CListGroupItem,
 } from '@coreui/react-pro';
+import { EmptyState } from '@/components/EmptyState';
+import { api, errorMessage, isApiError } from '@/lib/api-client';
 
 interface Schedule {
   id: number;
@@ -39,6 +41,16 @@ interface TaskOption {
   status: string;
 }
 
+/**
+ * `.catch` handler for list reads: an HTTP error yields `null` (the list keeps
+ * its previous contents, as when the old code skipped `!res.ok`), while an
+ * unreachable server still rejects the load.
+ */
+function ignoreHttpError(err: unknown): null {
+  if (isApiError(err) && err.isNetworkError) throw err;
+  return null;
+}
+
 function fmt(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -57,14 +69,16 @@ export function SchedulesPanel() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const [sRes, skRes, tRes] = await Promise.all([
-      fetch('/api/schedules', { cache: 'no-store' }),
-      fetch('/api/skills', { cache: 'no-store' }),
-      fetch('/api/tasks', { cache: 'no-store' }),
+    // A failing list leaves its previous contents in place; only an
+    // unreachable server rejects the whole load.
+    const [scheduleList, skillList, taskList] = await Promise.all([
+      api.get<{ schedules?: Schedule[] } | null>('/api/schedules', { cache: 'no-store' }).catch(ignoreHttpError),
+      api.get<{ skills?: Skill[] } | null>('/api/skills', { cache: 'no-store' }).catch(ignoreHttpError),
+      api.get<TaskOption[] | null>('/api/tasks', { cache: 'no-store' }).catch(ignoreHttpError),
     ]);
-    if (sRes.ok) setSchedules((await sRes.json()).schedules ?? []);
-    if (skRes.ok) setSkills((await skRes.json()).skills ?? []);
-    if (tRes.ok) setTasks(await tRes.json());
+    if (scheduleList) setSchedules(scheduleList.schedules ?? []);
+    if (skillList) setSkills(skillList.skills ?? []);
+    if (taskList) setTasks(taskList);
   }, []);
 
   useEffect(() => {
@@ -75,18 +89,14 @@ export function SchedulesPanel() {
     if (!name.trim() || !taskId) return;
     setBusy(true);
     try {
-      const res = await fetch('/api/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      try {
+        await api.post('/api/schedules', {
           name: name.trim(),
           cron_expr: cron.trim() || '@daily',
           task_id: parseInt(taskId, 10),
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => null);
-        alert(`Create failed: ${d?.error || res.statusText}`);
+        });
+      } catch (err) {
+        alert(`Create failed: ${errorMessage(err)}`);
         return;
       }
       setName('');
@@ -99,11 +109,8 @@ export function SchedulesPanel() {
 
   const toggle = useCallback(
     async (s: Schedule) => {
-      await fetch(`/api/schedules/${s.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: !s.enabled }),
-      });
+      // Fire-and-forget: the reload shows the real state either way.
+      await api.patch(`/api/schedules/${s.id}`, { enabled: !s.enabled }).catch(() => undefined);
       await load();
     },
     [load],
@@ -111,10 +118,10 @@ export function SchedulesPanel() {
 
   const runNow = useCallback(
     async (s: Schedule) => {
-      const res = await fetch(`/api/schedules/${s.id}/run`, { method: 'POST' });
-      if (!res.ok) {
-        const d = await res.json().catch(() => null);
-        alert(`Run failed: ${d?.error || res.statusText}`);
+      try {
+        await api.post(`/api/schedules/${s.id}/run`);
+      } catch (err) {
+        alert(`Run failed: ${errorMessage(err)}`);
       }
       await load();
     },
@@ -124,16 +131,19 @@ export function SchedulesPanel() {
   const remove = useCallback(
     async (s: Schedule) => {
       if (!window.confirm(`Delete schedule "${s.name}"?`)) return;
-      await fetch(`/api/schedules/${s.id}`, { method: 'DELETE' });
+      await api.delete(`/api/schedules/${s.id}`).catch(() => undefined);
       await load();
     },
     [load],
   );
 
   const syncSkills = useCallback(async () => {
-    const res = await fetch('/api/skills', { method: 'POST' });
-    const d = await res.json().catch(() => null);
-    alert(res.ok ? `Synced ${d?.count ?? 0} skills.` : `Sync failed: ${d?.error}`);
+    try {
+      const d = await api.post<{ count?: number } | null>('/api/skills');
+      alert(`Synced ${d?.count ?? 0} skills.`);
+    } catch (err) {
+      alert(`Sync failed: ${errorMessage(err)}`);
+    }
     await load();
   }, [load]);
 
@@ -173,10 +183,11 @@ export function SchedulesPanel() {
         </div>
 
         {schedules.length === 0 ? (
-          <p className="text-body-secondary small mb-0">
-            No schedules yet. A schedule re-runs an existing task on a cron — the task is
-            reset to pending and enqueued on every fire.
-          </p>
+          <EmptyState
+            compact
+            title="No schedules yet"
+            hint="A schedule re-runs an existing task on a cron — the task is reset to pending and enqueued on every fire."
+          />
         ) : (
           <CListGroup>
             {schedules.map((s) => (

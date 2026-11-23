@@ -14,6 +14,19 @@
   way as for tasks: *Max* runs the vendor's CLI under your subscription login,
   *API Platform* uses the API key. GLM always uses its key.
 
+## Update notice
+
+The footer says when a newer DevServer release is published on GitHub and
+shows the command to update (Docker: `git pull && ./scripts/start.sh --docker`;
+macOS/Linux: `git pull && ./scripts/restart.sh --prod`; Windows:
+`git pull; ./scripts/restart.ps1`). The worker checks at most every 6 hours and
+stays silent if GitHub cannot be reached. Two `settings` keys:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `update_notify_enabled` | `true` (in code) | `false` turns the check off entirely — no network call (air-gapped hosts). |
+| `update_dismissed_build` | unset | The release (`"1.0.21"`) the operator dismissed; only that release is hidden, a later one shows again. Written by the notice's Dismiss button. |
+
 ## Environment (`.env`) editor
 
 Edits the worker's `.env` in place. The keys you are most likely to want:

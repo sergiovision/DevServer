@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import { invalidId, jsonError, parseRouteId, type RouteContext } from '@/lib/route-utils';
+
+/**
+ * PATCH  /api/ideas/<id>   body: any subset of the UPDATABLE columns
+ * DELETE /api/ideas/<id>
+ *
+ * Edit or remove one Ideas / Goal Graph node. Only allow-listed columns can be
+ * written, so the dynamic SET clause never takes a column name from the body.
+ */
 
 const UPDATABLE = new Set([
   'parent_id',
@@ -13,16 +22,11 @@ const UPDATABLE = new Set([
   'node_status',
 ]);
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function PATCH(request: NextRequest, { params }: RouteContext) {
   try {
     const { id } = await params;
-    const ideaId = parseInt(id, 10);
-    if (!Number.isInteger(ideaId)) {
-      return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
-    }
+    const ideaId = parseRouteId(id);
+    if (ideaId === null) return invalidId();
 
     const body = await request.json();
     const fields: string[] = [];
@@ -35,14 +39,14 @@ export async function PATCH(
     }
 
     if (fields.length === 0) {
-      return NextResponse.json({ error: 'No updatable fields provided' }, { status: 400 });
+      return jsonError(400, 'No updatable fields provided');
     }
 
     values.push(ideaId);
     const sql = `UPDATE ideas SET ${fields.join(', ')} WHERE id = $${i} RETURNING *`;
     const result = await query(sql, values);
     if (result.rows.length === 0) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      return jsonError(404, 'Not found');
     }
     return NextResponse.json(result.rows[0]);
   } catch (err) {
@@ -50,19 +54,14 @@ export async function PATCH(
   }
 }
 
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function DELETE(_request: NextRequest, { params }: RouteContext) {
   try {
     const { id } = await params;
-    const ideaId = parseInt(id, 10);
-    if (!Number.isInteger(ideaId)) {
-      return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
-    }
+    const ideaId = parseRouteId(id);
+    if (ideaId === null) return invalidId();
     const result = await query('DELETE FROM ideas WHERE id = $1 RETURNING id', [ideaId]);
     if (result.rows.length === 0) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+      return jsonError(404, 'Not found');
     }
     return NextResponse.json({ ok: true });
   } catch (err) {

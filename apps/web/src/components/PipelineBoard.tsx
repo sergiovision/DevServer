@@ -1,5 +1,14 @@
 'use client';
 
+/**
+ * PipelineBoard — the `/tasks` board view: one lane per lifecycle stage,
+ * live-refreshed from the WebSocket task_event stream.
+ *
+ * Board-local filters (repo, vendor, needs-you, retired) live here; the
+ * toolbar search and `?status=` filter come from TasksView as props and are
+ * applied with the same pure matchers as the grid (lib/task-search), so both
+ * views always show the same tasks for the same query.
+ */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -12,10 +21,20 @@ import {
 } from '@coreui/react-pro';
 import type { Task, TaskStatus, AgentVendor } from '@/lib/types';
 import { PRIORITY_COLORS, PRIORITY_LABELS } from '@/lib/types';
+import { taskMatchesStatus, taskMatchesTerms } from '@/lib/task-search';
+import { EmptyState } from '@/components/EmptyState';
+import { api } from '@/lib/api-client';
 
 interface PipelineBoardProps {
   tasks: Task[];
+  /** Parsed toolbar search terms (lib/task-search); every term must match. */
+  searchTerms?: readonly string[];
+  /** `?status=` filter from the URL; empty = all statuses. */
+  statusFilter?: readonly TaskStatus[];
 }
+
+const NO_TERMS: readonly string[] = [];
+const NO_STATUSES: readonly TaskStatus[] = [];
 
 // Lanes map DevServer's real lifecycle (not Devin's generic three). The
 // terminal-success status the worker actually sets is ``test`` (see
@@ -61,7 +80,8 @@ function TaskCard({ task, onAction }: { task: Task; onAction: () => void }) {
     async (path: string) => {
       setBusy(true);
       try {
-        await fetch(path, { method: 'POST' });
+        // Refetch either way: the card then shows the task's real state.
+        await api.post(path).catch(() => undefined);
         onAction();
       } finally {
         setBusy(false);
@@ -145,7 +165,11 @@ function TaskCard({ task, onAction }: { task: Task; onAction: () => void }) {
   );
 }
 
-export function PipelineBoard({ tasks: initialTasks }: PipelineBoardProps) {
+export function PipelineBoard({
+  tasks: initialTasks,
+  searchTerms = NO_TERMS,
+  statusFilter = NO_STATUSES,
+}: PipelineBoardProps) {
   const [tasks, setTasks] = useState<Task[]>(initialTasks);
   const [showRetired, setShowRetired] = useState(false);
   const [repoFilter, setRepoFilter] = useState('');
@@ -155,8 +179,8 @@ export function PipelineBoard({ tasks: initialTasks }: PipelineBoardProps) {
 
   const fetchTasks = useCallback(async () => {
     try {
-      const res = await fetch('/api/tasks?limit=500');
-      if (res.ok) setTasks(await res.json());
+      const list = await api.get<Task[] | null>('/api/tasks?limit=500');
+      if (list) setTasks(list);
     } catch {
       // keep last-known state on transient failure
     }
@@ -212,9 +236,10 @@ export function PipelineBoard({ tasks: initialTasks }: PipelineBoardProps) {
       if (repoFilter && t.repo_name !== repoFilter) return false;
       if (vendorFilter && t.agent_vendor !== vendorFilter) return false;
       if (needsYouOnly && t.status !== 'blocked') return false;
-      return true;
+      if (!taskMatchesStatus(t, statusFilter)) return false;
+      return taskMatchesTerms(t, searchTerms);
     });
-  }, [tasks, showRetired, repoFilter, vendorFilter, needsYouOnly]);
+  }, [tasks, showRetired, repoFilter, vendorFilter, needsYouOnly, statusFilter, searchTerms]);
 
   const byLane = useMemo(() => {
     const map: Record<string, Task[]> = {};
@@ -279,7 +304,7 @@ export function PipelineBoard({ tasks: initialTasks }: PipelineBoardProps) {
             </div>
             <div className="text-body-secondary small mb-2">{lane.hint}</div>
             {byLane[lane.key].length === 0 ? (
-              <div className="text-body-secondary small fst-italic">—</div>
+              <EmptyState compact title="No tasks" />
             ) : (
               byLane[lane.key].map((task) => (
                 <TaskCard key={task.id} task={task} onAction={fetchTasks} />

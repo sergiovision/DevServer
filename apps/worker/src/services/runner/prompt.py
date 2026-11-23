@@ -5,11 +5,22 @@ evidence blocks, the approved plan and the house rules. A resumed session
 already holds all of that in its history, so it only gets the next message —
 the failure to fix, or a nudge to continue. Re-sending ~5K tokens of static
 context on every retry was the main cause of vendor rate limits.
+
+Text the worker did not write — the task description and acceptance criteria
+(authored by whoever created the task: an operator, a webhook payload, an A2A
+peer, an imported page) and failure evidence (a previous run's output) — is
+fenced in ``<untrusted_task>`` / ``<untrusted_evidence>`` tags with its content
+entity-escaped, after a one-line rule that fenced text is data. Escaping is
+what makes the fence hold: a literal ``</untrusted_task>`` inside a description
+arrives as ``&lt;/untrusted_task&gt;`` and cannot close the tag. Operator notes
+stay unfenced on purpose — they are the operator's own steering and are meant
+to amend the task.
 """
 
 from __future__ import annotations
 
 from services import compaction
+from services.injection_scan import UNTRUSTED_RULE, wrap_untrusted
 
 from .context import TaskContext
 
@@ -138,13 +149,16 @@ def build_prompt(ctx: TaskContext, *, notes_block: str = "") -> str:
     if ctx.gate_prompt:
         parts.append(ctx.gate_prompt)
     if ctx.error_context:
-        parts.extend(["", ctx.error_context])
+        parts.extend(["", wrap_untrusted("untrusted_evidence", ctx.error_context)])
     return "\n".join(parts)
 
 
 def _resume_prompt(ctx: TaskContext, *, notes_block: str) -> str:
     if ctx.error_context:
-        message = ctx.error_context
+        # A resumed session saw the rule in its first prompt, but restating one
+        # line is cheap insurance for the fenced block that follows.
+        evidence = wrap_untrusted("untrusted_evidence", ctx.error_context)
+        message = f"{UNTRUSTED_RULE}\n{evidence}"
     elif ctx.git_flow == "untracked":
         message = (
             "Continue with the previous task. Resume where you left off "
@@ -166,16 +180,22 @@ def _header(ctx: TaskContext) -> list[str]:
         f"You are {role}: {ctx.repo.name}",
         f"Branch: {ctx.branch_name}",
         f"Task: {task.key} - {task.title}",
+        UNTRUSTED_RULE,
         "",
         "## Task Description",
-        task.description or "(no description provided)",
+        _fenced_task_text(task.description, "(no description provided)"),
     ]
     if task.task_type not in ("skill", "research"):
         heading = (
             "## Tests that must pass" if task.task_type == "test" else "## Acceptance Criteria"
         )
-        parts += ["", heading, task.acceptance or "(none specified)"]
+        parts += ["", heading, _fenced_task_text(task.acceptance, "(none specified)")]
     return parts
+
+
+def _fenced_task_text(text: str | None, placeholder: str) -> str:
+    """Author-supplied task text, fenced; the worker's own placeholder is not."""
+    return wrap_untrusted("untrusted_task", text) if text else placeholder
 
 
 def _context_blocks(ctx: TaskContext) -> list[str]:

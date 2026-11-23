@@ -37,10 +37,12 @@ apps/worker/         FastAPI worker + PgQueuer consumer
   tests/             pytest: unit/ (pure) + runner/ (real Postgres + git)
   scripts/           one-off maintenance (reembed_memory.py)
 apps/mcp-memory/     stdio MCP server: task-control lane for an interactive CLI
-database/migrations/ 001_initial.sql, 002_external_import.sql, 003_a2a.sql (idempotent)
+database/migrations/ 001_initial.sql, 002_external_import.sql, 003_a2a.sql,
+                     004_post_completion_action.sql (all idempotent)
 config/.env.example  env template — copy to repo-root .env
 docker/              Dockerfile, compose files, first-start bootstrap
-scripts/             lifecycle, setup, migration, backup, service scripts
+scripts/             lifecycle, setup, migration, backup, service scripts,
+                     feature-coverage.mjs (docs/feature-catalogue.md ↔ test tags)
 skills/, .claude/skills/  devplan / devtask skills
 ```
 
@@ -297,6 +299,21 @@ what used to blow vendor rate limits.
   similar-task when embeddings are available); `GET /api/tasks/[id]/prediction`
   → `components/PredictionCard.tsx`.
 
+- **Prompt hygiene** — `services/injection_scan.py` ↔ `lib/injection-scan.ts`
+  (keep in sync; shared fixture `apps/worker/tests/fixtures/injection_cases.json`)
+  strip invisible/bidi characters and flag override phrases at ingress
+  (`POST /api/tasks`, webhooks, A2A, imports) → event `injection_sanitised`;
+  never refuses. `runner/prompt.build_prompt` fences description, acceptance
+  and failure evidence in entity-escaped `<untrusted_task>` /
+  `<untrusted_evidence>` tags.
+- **Action on completion** — `tasks.post_completion_action` (004) =
+  `{kind: task|skill, task_id?|skill_name?, trigger}`;
+  `services/post_completion.after_completion` runs after `finalise` and after
+  `skill_runner` (outside the repo lock): `task` resets the target to pending,
+  `skill` creates a skill task; both enqueue via `queue_bridge`. Never self,
+  chain depth ≤ 3 via `triggered_by_task_id`, `cancelled` never fires. Event
+  `post_completion_action`. Web validator `lib/post-completion-action.ts`.
+
 All events flow through `task_events` → NOTIFY → WebSocket with no extra
 plumbing; add new event types the same way (`runner/store.emit_event`).
 
@@ -405,7 +422,9 @@ Floating chat drawer on every page, backed by the System LLM. Path: browser
 `services/llm_stream.py`. Knowledge is the curated `docs/assistant/` set
 selected by `services/assistant_kb.py` — not RAG over README/CLAUDE.md. Pages
 register on-screen entities with `useAssistantPageContext(...)`. Sessions are
-in-memory on the worker; the system-LLM read falls back to `.env` when
+in-memory on the worker; the transcript is kept browser-side
+(`lib/ask-agent-history.ts`, masked, never the session id) and resent as
+`history` when a conversation is reopened; the system-LLM read falls back to `.env` when
 Postgres is down.
 
 Two engines:
@@ -433,6 +452,36 @@ web `/api/claude-sessions/**`, `/api/codex-sessions/**`,
 `components/SessionsView.tsx`. Text is capped then redacted via
 `services/secret_rules.py`. In Docker, bind-mount `~/.claude` / `~/.codex`
 read-only and set `CLAUDE_HOME` / `CODEX_HOME`.
+
+### Dashboard shell (Quick-Wins Wave 1)
+- **Request plumbing** — components call `lib/api-client.ts` (`api.get/post/…`,
+  typed `ApiError`) and `lib/use-async.ts` (`useAsyncAction`, `useResource`:
+  stale responses dropped, poll paused while hidden, reload on connectivity
+  restored). Route handlers use `lib/route-utils.ts` (`parseRouteId` +
+  `invalidId()` → 400, `jsonError`, `proxyWorker` → worker detail forwarded,
+  unreachable → 502).
+- **Command palette** — ⌘/Ctrl+K (`components/CommandPalette.tsx`, ranking in
+  `lib/command-palette.ts`, shortcut table `lib/shortcuts.ts`, nav list
+  `lib/nav-items.ts`); ⌘/Ctrl+J toggles Ask Agent; `?` lists shortcuts.
+- **Needs You pill** — `GET /api/needs-you` (blocked + undecided plans);
+  `lib/needs-you.ts` is one shared poll per tab.
+- **Connectivity banner** — `lib/connectivity.ts` state machine,
+  `GET /api/health/connectivity`, `components/ConnectivityBanner.tsx`;
+  `NotificationProvider` suppresses toasts the banner explains.
+- **Update notice** — worker `services/release_check.py`
+  (`GET /internal/update/status`, GitHub releases, 6 h cache, failure →
+  unknown), web `/api/version/update[/dismiss]`, `components/UpdateNotice.tsx`.
+  Settings `update_notify_enabled` (default true), `update_dismissed_build`.
+- **Tasks search / linkify / EmptyState** — `lib/task-search.ts` (≤ 8 terms,
+  all must match), `lib/linkify.ts` (http(s) only), `components/EmptyState.tsx`.
+- **Analytics** — tokens/s per vendor and tokens per task from `cost_update`
+  event payloads (`lib/analytics-metrics.ts`), `AnalyticsStatisticsModal.tsx`.
+- **Ask Agent history** — `lib/ask-agent-history.ts` (20 conversations in
+  localStorage, secrets masked, no session id) and `lib/ask-agent-composer.ts`.
+- **Cockpit tokens** — `src/app/cockpit.css`, imported after `globals.css`.
+- **Feature catalogue** — `docs/feature-catalogue.md`; tests carry
+  `// Feature: F-…` / `# Feature: F-…`; `node scripts/feature-coverage.mjs`
+  (CI, non-blocking).
 
 ### Night cycle
 `services/night_cycle.py`, worker `/internal/night-cycle/{start,stop,status}`,

@@ -1,28 +1,28 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-url';
+import { NextRequest } from 'next/server';
+import { jsonError, proxyWorker } from '@/lib/route-utils';
+
+/**
+ * POST /api/tasks/generate   body: { description: string }
+ *
+ * "Fill Task": the worker's devtask skill turns a plain-text description into
+ * task fields through the system LLM. A pure relay of
+ * /internal/generate-task; the worker's error detail is forwarded as-is.
+ */
+
+// An LLM call (possibly through a vendor CLI in `max` mode) easily outlives
+// the default proxy timeout.
+const GENERATE_TIMEOUT_MS = 600_000;
 
 export async function POST(req: NextRequest) {
-  try {
-    const { description } = await req.json();
-    if (!description?.trim()) {
-      return NextResponse.json({ error: 'Description is required' }, { status: 400 });
-    }
-
-    const res = await fetch(`${WORKER_URL}/internal/generate-task`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ description }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => null);
-      const msg = data?.detail || 'devtask skill failed';
-      return NextResponse.json({ error: msg }, { status: res.status });
-    }
-
-    const task = await res.json();
-    return NextResponse.json(task);
-  } catch {
-    return NextResponse.json({ error: 'devtask skill failed or not available' }, { status: 500 });
+  const payload = (await req.json().catch(() => null)) as { description?: unknown } | null;
+  const description = payload?.description;
+  if (typeof description !== 'string' || !description.trim()) {
+    return jsonError(400, 'Description is required');
   }
+
+  return proxyWorker('/internal/generate-task', {
+    method: 'POST',
+    body: { description },
+    timeoutMs: GENERATE_TIMEOUT_MS,
+  });
 }

@@ -41,7 +41,12 @@ export async function readWorkerJson(res: Response): Promise<Record<string, unkn
   return {};
 }
 
-/** Relay a failed worker response with its status and a readable message. */
+/**
+ * Relay a failed worker response with its status and a readable message.
+ *
+ * @deprecated Superseded by `workerError` / `proxyWorker` in `route-utils.ts`,
+ * which every route now uses; kept only so out-of-tree callers keep compiling.
+ */
 export function workerErrorResponse(
   res: Response,
   body: Record<string, unknown>,
@@ -50,7 +55,12 @@ export function workerErrorResponse(
   return NextResponse.json({ error: String(message) }, { status: res.status });
 }
 
-/** The response for "the worker did not answer at all". */
+/**
+ * The response for "the worker did not answer at all".
+ *
+ * @deprecated Superseded by `workerUnreachable()` in `route-utils.ts` (same
+ * 502, app-wide "Worker unreachable" wording).
+ */
 export function workerUnreachableResponse(): NextResponse {
   return NextResponse.json({ error: 'worker unreachable' }, { status: 502 });
 }

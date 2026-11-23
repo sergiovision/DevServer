@@ -1,19 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import { invalidId, jsonError, parseRouteId, type RouteContext } from '@/lib/route-utils';
 
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+/**
+ * GET / PATCH / DELETE /api/repos/<id>
+ *
+ * One repository row. PATCH writes only the allow-listed columns, so the
+ * dynamic SET clause never takes a column name from the request body.
+ */
 
 export async function GET(_request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const repoId = parseInt(id);
+  const repoId = parseRouteId(id);
+  if (repoId === null) return invalidId('repo id');
 
   try {
     const result = await query('SELECT * FROM repos WHERE id = $1', [repoId]);
     if (result.rows.length === 0) {
-      return NextResponse.json({ error: 'Repo not found' }, { status: 404 });
+      return jsonError(404, 'Repo not found');
     }
     return NextResponse.json(result.rows[0]);
   } catch (err) {
@@ -23,7 +28,8 @@ export async function GET(_request: NextRequest, context: RouteContext) {
 
 export async function PATCH(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const repoId = parseInt(id);
+  const repoId = parseRouteId(id);
+  if (repoId === null) return invalidId('repo id');
 
   try {
     const body = await request.json();
@@ -46,7 +52,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     }
 
     if (sets.length === 0) {
-      return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
+      return jsonError(400, 'No valid fields to update');
     }
 
     sets.push(`updated_at = NOW()`);
@@ -58,7 +64,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     );
 
     if (result.rows.length === 0) {
-      return NextResponse.json({ error: 'Repo not found' }, { status: 404 });
+      return jsonError(404, 'Repo not found');
     }
 
     return NextResponse.json(result.rows[0]);
@@ -69,12 +75,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
 export async function DELETE(_request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const repoId = parseInt(id);
+  const repoId = parseRouteId(id);
+  if (repoId === null) return invalidId('repo id');
 
   try {
     const result = await query('DELETE FROM repos WHERE id = $1 RETURNING id', [repoId]);
     if (result.rows.length === 0) {
-      return NextResponse.json({ error: 'Repo not found' }, { status: 404 });
+      return jsonError(404, 'Repo not found');
     }
     return NextResponse.json({ deleted: true, id: repoId });
   } catch (err) {

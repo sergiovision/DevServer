@@ -78,6 +78,67 @@ match result.verdict:
 
 Illegal transitions become impossible to write instead of merely unlikely.
 
+### Prompt hygiene: untrusted text is fenced (B1)
+
+Task text comes from people and systems DevServer does not control (webhook
+payloads, A2A peers, imported pages). Two layers keep it from steering the
+agent, and neither ever refuses a task:
+
+* **Ingress scan** — `services/injection_scan.py` and its TS twin
+  `apps/web/src/lib/injection-scan.ts` (kept in sync by the shared cases in
+  `apps/worker/tests/fixtures/injection_cases.json`) strip zero-width, bidi
+  and Unicode-tag characters and *flag* override phrases ("ignore all previous
+  instructions", "you are now …", "system prompt:") and imperatives hidden in
+  `<!-- … -->`. The web tier runs it in `POST /api/tasks`, webhook firing and
+  A2A task creation via `lib/injection-ingress.ts` and records an
+  `injection_sanitised` task event when anything was found; import adapters
+  return drafts through `import_sources.base.sanitised_draft`, which stores the
+  same payload under `metadata.injection_scan`.
+* **Prompt fence** — `runner/prompt.build_prompt` puts the description and
+  acceptance criteria in `<untrusted_task>` and failure evidence in
+  `<untrusted_evidence>`, entity-escaped (`& < >`) so a literal
+  `</untrusted_task>` cannot close the fence, after a one-line rule that fenced
+  text is data. Resume prompts stay delta-only: the rule plus the fenced
+  failure. Operator notes are deliberately not fenced — they are meant to
+  amend the task.
+
+### Action on completion (B2)
+
+`tasks.post_completion_action` (JSONB, migration 004; templates carry it too
+and the task form copies it) names one follow-up:
+`{kind: 'task', task_id, trigger}` re-runs another task,
+`{kind: 'skill', skill_name, trigger}` creates a new `skill` task in the same
+repo; `trigger` is `on_success` | `on_failure` | `always`. There is no
+`script` kind. The web tier validates every write with
+`lib/post-completion-action.ts` (`PATCH` / `POST /api/tasks`, the template
+routes); a malformed value is a 400.
+
+`phases.finalise` calls `services/post_completion.after_completion(task_id)`
+after the terminal status is written. It reads the row inline (no action → no
+work, no event) and detaches the rest, so the follow-up never delays or fails
+the source and is enqueued after the repo lock is released. The pure
+`decide_post_completion(action, status, task_id, ancestors)` decides:
+`test`/`done` are success, `failed`/`blocked` failure; `cancelled`, and a task
+parked by the side-effect gate, never fire. Loop guard: a task never targets
+itself or a task already in its chain, and the `triggered_by_task_id` chain
+stops after 3 automatic hops. A `task` target is reset to `pending` only when it
+is not queued/running/verifying (one guarded `UPDATE`); both kinds set
+`triggered_by_task_id` and go through `queue_bridge.enqueue_via_web`. Every
+outcome — fired, skipped and why, error — is a `post_completion_action` event
+on the source task. Lightweight tasks (`skill` / `research`) bypass
+`finalise`; `skill_runner.run_lightweight_task` makes the same call once the
+repo lock is released.
+
+The chain link survives only enqueues the worker marks as triggered
+(`enqueue_via_web(..., triggered=True)` → `X-DevServer-Triggered: 1`). Any
+other enqueue — the dashboard's Run, MCP `task_run`, a schedule — is a fresh
+start, and `POST /api/tasks/[id]/enqueue` clears `triggered_by_task_id` so an
+old chain never counts against the depth cap.
+
+Upgrading: the Docker bootstrap only migrates an empty database, so an
+existing install needs `./scripts/migrate.sh` for 004. Until then the hook
+logs one warning per finished task and does nothing.
+
 ## 4. Concurrency and failure model
 
 | Risk | Mechanism |

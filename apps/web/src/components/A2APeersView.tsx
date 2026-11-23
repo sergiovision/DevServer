@@ -18,6 +18,8 @@ import {
   CTableHeaderCell,
   CTableRow,
 } from '@coreui/react-pro';
+import { api, errorMessage } from '@/lib/api-client';
+import { EmptyState } from '@/components/EmptyState';
 
 interface Peer {
   id: number;
@@ -83,36 +85,28 @@ export function A2APeersView({ peers, repos }: Props) {
     setCreating(true);
     setError(null);
     try {
-      const res = await fetch('/api/a2a-peers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...form,
-          max_cost_usd: form.max_cost_usd ? Number(form.max_cost_usd) : null,
-          max_wall_seconds: form.max_wall_seconds ? Number(form.max_wall_seconds) : null,
-        }),
+      const data = await api.post<{ peer: Peer; token: string }>('/api/a2a-peers', {
+        ...form,
+        max_cost_usd: form.max_cost_usd ? Number(form.max_cost_usd) : null,
+        max_wall_seconds: form.max_wall_seconds ? Number(form.max_wall_seconds) : null,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'create failed');
       setItems([data.peer, ...items]);
       setIssued({ name: data.peer.name, token: data.token });
       setForm({ ...form, name: '' });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorMessage(e, String(e)));
     } finally {
       setCreating(false);
     }
   }
 
   async function toggle(id: number, enabled: boolean) {
-    const res = await fetch(`/api/a2a-peers/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    if (res.ok) {
-      setItems(items.map((p) => (p.id === id ? { ...p, enabled } : p)));
+    try {
+      await api.patch(`/api/a2a-peers/${id}`, { enabled });
+    } catch {
+      return; // the switch stays where the server has it
     }
+    setItems(items.map((p) => (p.id === id ? { ...p, enabled } : p)));
   }
 
   async function remove(id: number, name: string) {
@@ -123,8 +117,12 @@ export function A2APeersView({ peers, repos }: Props) {
     ) {
       return;
     }
-    const res = await fetch(`/api/a2a-peers/${id}`, { method: 'DELETE' });
-    if (res.ok) setItems(items.filter((p) => p.id !== id));
+    try {
+      await api.delete(`/api/a2a-peers/${id}`);
+    } catch {
+      return; // the row stays: the peer was not revoked
+    }
+    setItems(items.filter((p) => p.id !== id));
   }
 
   return (
@@ -283,10 +281,10 @@ export function A2APeersView({ peers, repos }: Props) {
         </CCardHeader>
         <CCardBody className="p-0">
           {items.length === 0 ? (
-            <div className="p-4 text-muted small">
-              No peers yet. Issue a credential above to let an external agent
-              discover this DevServer and delegate tasks to it over A2A.
-            </div>
+            <EmptyState
+              title="No peers yet"
+              hint="Issue a credential above to let an external agent discover this DevServer and delegate tasks to it over A2A."
+            />
           ) : (
             <CTable hover className="mb-0">
               <CTableHead>

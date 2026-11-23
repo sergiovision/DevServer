@@ -19,6 +19,7 @@ import {
   CSpinner,
   CBadge,
 } from '@coreui/react-pro';
+import { api, isApiError } from '@/lib/api-client';
 
 interface EnvVar {
   key: string;
@@ -52,9 +53,13 @@ export function EnvSettingsForm() {
 
   // Load env vars on mount
   useEffect(() => {
-    fetch('/api/env')
-      .then((r) => r.json())
+    api
+      .get<{ error?: string; variables?: EnvVar[]; env_path?: string }>('/api/env')
       .then((data) => {
+        if (!data) {
+          setError('Failed to load environment configuration');
+          return;
+        }
         if (data.error) {
           setError(data.error);
           return;
@@ -67,7 +72,14 @@ export function EnvSettingsForm() {
         }
         setDraft(d);
       })
-      .catch(() => setError('Failed to load environment configuration'))
+      // A route error carries its own message; unreachable keeps the generic one.
+      .catch((err: unknown) =>
+        setError(
+          isApiError(err) && !err.isNetworkError
+            ? err.message
+            : 'Failed to load environment configuration',
+        ),
+      )
       .finally(() => setLoading(false));
   }, []);
 
@@ -105,12 +117,7 @@ export function EnvSettingsForm() {
         setSaving(false);
         return;
       }
-      const res = await fetch('/api/env', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variables: changed }),
-      });
-      if (!res.ok) throw new Error('Save failed');
+      await api.put('/api/env', { variables: changed });
       setSaved(true);
       setDirty(false);
       // Update original values to track future dirtiness
@@ -131,8 +138,7 @@ export function EnvSettingsForm() {
     setApplying(true);
     setError('');
     try {
-      const res = await fetch('/api/env/apply', { method: 'POST' });
-      if (!res.ok) throw new Error('Apply failed');
+      await api.post('/api/env/apply');
       setApplied(true);
       setTimeout(() => setApplied(false), 5000);
     } catch {

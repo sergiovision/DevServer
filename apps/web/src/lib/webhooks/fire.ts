@@ -10,6 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import { renderTemplate } from './template';
 import { verifySignature } from './signature';
+import { sanitiseTaskFields, type InjectionSanitisedPayload } from '../injection-ingress';
 
 /** A row of `webhook_triggers`, as much of it as firing needs. */
 export interface WebhookTrigger {
@@ -31,6 +32,8 @@ export interface WebhookTaskRequest {
   taskKey: string;
   title: string;
   description: string;
+  /** Findings from sanitising title/description; the store records them as a task event. */
+  injection: InjectionSanitisedPayload | null;
 }
 
 export interface FiredTask {
@@ -142,7 +145,17 @@ export async function fireWebhook(
   const suffix = (options.randomSuffix ?? defaultRandomSuffix)();
   const taskKey = webhookTaskKey(trigger.task_key_prefix, now, suffix);
 
-  const task = await store.createAndEnqueueTask({ trigger, taskKey, title, description });
+  // The payload is attacker-reachable text (an issue body, a commit message):
+  // strip invisible characters and flag override attempts before storing it.
+  const scan = sanitiseTaskFields('webhook', { title, description });
+
+  const task = await store.createAndEnqueueTask({
+    trigger,
+    taskKey,
+    title: scan.fields.title,
+    description: scan.fields.description,
+    injection: scan.event,
+  });
   await store.recordFiring(trigger, task);
   return { ok: true, taskId: task.taskId, taskKey: task.taskKey };
 }

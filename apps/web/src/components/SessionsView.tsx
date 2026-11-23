@@ -35,6 +35,8 @@ import {
 import CIcon from '@coreui/icons-react';
 import { cilArrowBottom, cilCheckAlt, cilCopy, cilSync, cilTrash, cilTerminal } from '@coreui/icons';
 import { AskAgentMarkdown } from './AskAgentMarkdown';
+import { EmptyState } from '@/components/EmptyState';
+import { api, errorMessage, isApiError } from '@/lib/api-client';
 
 // ─── Types (mirror services/claude_sessions.py) ──────────────────────────
 
@@ -90,6 +92,35 @@ interface Ev {
 interface ApiError {
   error: string;
   hint?: string;
+}
+
+/**
+ * The panel's `{error, hint}` from a failed api call. The session routes
+ * answer `{error, hint}` (no `detail`), so the client keeps that whole body in
+ * `ApiError.detail`; an unreachable server gets the caller's own hint.
+ */
+function panelError(err: unknown, unreachableHint: string, fallback = 'Request failed'): ApiError {
+  if (isApiError(err) && !err.isNetworkError) {
+    const body = err.detail;
+    const hint =
+      body && typeof body === 'object' ? (body as Record<string, unknown>).hint : undefined;
+    return { error: err.message, hint: typeof hint === 'string' ? hint : undefined };
+  }
+  return { error: errorMessage(err, fallback), hint: unreachableHint };
+}
+
+interface SessionListBody {
+  sessions?: unknown;
+  home_exists?: boolean;
+  claude_home?: string;
+  codex_home?: string;
+}
+
+interface TailBody {
+  reset?: boolean;
+  next_offset?: number;
+  truncated_head?: boolean;
+  events?: unknown;
 }
 
 const LIST_POLL_MS = 5000;
@@ -184,34 +215,28 @@ function useSessionList(provider: SessionProvider) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch(`/api/${provider}-sessions?limit=80`);
-      const body = await res.json();
-      if (!res.ok) {
-        setError({ error: body?.error ?? `HTTP ${res.status}`, hint: body?.hint });
-        setData({ provider, rows: [] });
-      } else {
-        setData({
-          provider,
-          rows: Array.isArray(body.sessions) ? body.sessions : [],
-        });
-        setError(
-          body.home_exists === false
-            ? {
-                error: `${provider === 'claude' ? 'Claude' : 'Codex'} state directory not found`,
-                hint: provider === 'claude'
-                  ? `Looked in ${body.claude_home}. In Docker, bind-mount the host's ` +
-                    '~/.claude read-only and set CLAUDE_HOME to the mount point.'
-                  : `Looked in ${body.codex_home}. In Docker, bind-mount the host's ` +
-                    '~/.codex read-only and set CODEX_HOME to the mount point.',
-              }
-            : null,
-        );
-      }
-    } catch (err) {
-      setError({
-        error: err instanceof Error ? err.message : 'Request failed',
-        hint: 'The Next.js server could not be reached.',
+      const body =
+        (await api.get<SessionListBody | null>(`/api/${provider}-sessions?limit=80`)) ?? {};
+      setData({
+        provider,
+        rows: Array.isArray(body.sessions) ? (body.sessions as SessionRow[]) : [],
       });
+      setError(
+        body.home_exists === false
+          ? {
+              error: `${provider === 'claude' ? 'Claude' : 'Codex'} state directory not found`,
+              hint: provider === 'claude'
+                ? `Looked in ${body.claude_home}. In Docker, bind-mount the host's ` +
+                  '~/.claude read-only and set CLAUDE_HOME to the mount point.'
+                : `Looked in ${body.codex_home}. In Docker, bind-mount the host's ` +
+                  '~/.codex read-only and set CODEX_HOME to the mount point.',
+            }
+          : null,
+      );
+    } catch (err) {
+      setError(panelError(err, 'The Next.js server could not be reached.'));
+      // A route error clears the list; an unreachable server keeps it.
+      if (isApiError(err) && !err.isNetworkError) setData({ provider, rows: [] });
     } finally {
       setLoading(false);
     }
@@ -275,16 +300,12 @@ function useTranscript(sessionId: string | null, provider: SessionProvider) {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
       try {
-        const res = await fetch(
-          `/api/${provider}-sessions/${sessionId}/tail?since=${offsetRef.current}`,
-          { signal: controller.signal },
-        );
-        const data = await res.json();
+        const data =
+          (await api.get<TailBody | null>(
+            `/api/${provider}-sessions/${sessionId}/tail?since=${offsetRef.current}`,
+            { signal: controller.signal },
+          )) ?? {};
         if (stale()) return;
-        if (!res.ok) {
-          setError({ error: data?.error ?? `HTTP ${res.status}`, hint: data?.hint });
-          return;
-        }
 
         // The worker restarts us at 0 when the file shrank (rotated/restarted).
         if (data.reset) {
@@ -294,7 +315,7 @@ function useTranscript(sessionId: string | null, provider: SessionProvider) {
         offsetRef.current = data.next_offset ?? offsetRef.current;
         if (data.truncated_head) setTruncatedHead(true);
 
-        const incoming: Ev[] = Array.isArray(data.events) ? data.events : [];
+        const incoming: Ev[] = Array.isArray(data.events) ? (data.events as Ev[]) : [];
         const fresh = incoming.filter((e) => {
           if (e.type !== 'usage' || !e.msg_id) return true;
           if (seenUsageRef.current.has(e.msg_id)) return false;
@@ -309,10 +330,7 @@ function useTranscript(sessionId: string | null, provider: SessionProvider) {
         }
       } catch (err) {
         if (stale()) return; // aborted by a session switch / refresh / unmount
-        setError({
-          error: err instanceof Error ? err.message : 'Request failed',
-          hint: 'The Next.js server could not be reached.',
-        });
+        setError(panelError(err, 'The Next.js server could not be reached.'));
       } finally {
         // A stale request must not release the new generation's slot.
         if (!stale()) {
@@ -374,7 +392,7 @@ function SessionList({
 
       <div className="flex-grow-1" style={{ overflowY: 'auto', minHeight: 0 }}>
         {sessions.length === 0 && (
-          <div className="text-body-secondary small p-2">No sessions match.</div>
+          <EmptyState compact className="px-2" title="No sessions match" />
         )}
         {sessions.map((s) => {
           const isActive = s.session_id === selected;
@@ -917,15 +935,11 @@ export function SessionsView() {
 
     setDeleting(true);
     try {
-      const res = await fetch(`/api/claude-sessions/${current.session_id}`, {
-        method: 'DELETE',
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setActionError({ error: data?.error ?? `HTTP ${res.status}`, hint: data?.hint });
-        return;
-      }
-      const errs: string[] = Array.isArray(data?.errors) ? data.errors : [];
+      const data =
+        (await api.delete<{ errors?: unknown } | null>(
+          `/api/claude-sessions/${current.session_id}`,
+        )) ?? {};
+      const errs: string[] = Array.isArray(data.errors) ? (data.errors as string[]) : [];
       setActionError(
         errs.length > 0
           ? { error: 'Session partly deleted', hint: `Could not remove: ${errs.join('; ')}` }
@@ -936,10 +950,7 @@ export function SessionsView() {
       setSelected(null);
       await reload();
     } catch (err) {
-      setActionError({
-        error: err instanceof Error ? err.message : 'Delete failed',
-        hint: 'Nothing was deleted.',
-      });
+      setActionError(panelError(err, 'Nothing was deleted.', 'Delete failed'));
     } finally {
       setDeleting(false);
     }

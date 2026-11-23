@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 
 from config import settings
-from services.import_sources.base import ImportDraft, ImportSource, register
+from services.import_sources.base import ImportDraft, ImportSource, register, sanitised_draft
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +363,7 @@ class ConfluenceSource(ImportSource):
         web_base = links.get("base") or item.get("_api_base", "")
         xhtml = ((item.get("body") or {}).get("storage") or {}).get("value", "")
         version = (item.get("version") or {}).get("number", "")
-        return ImportDraft(
+        draft = ImportDraft(
             source=self.name,
             external_id=str(item.get("id", "")),
             external_rev=str(version),
@@ -376,6 +376,7 @@ class ConfluenceSource(ImportSource):
                 "type": item.get("type", "page"),
             },
         )
+        return sanitised_draft(draft)
 
     async def ping(self, repo: Any | None = None) -> dict:
         try:

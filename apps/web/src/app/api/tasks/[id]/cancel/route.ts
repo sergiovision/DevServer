@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
-import { parseRouteId } from '@/lib/route-params';
+import {
+  invalidId,
+  parseRouteId,
+  workerError,
+  type RouteContext,
+} from '@/lib/route-utils';
 import { cancelTaskFully } from '@/lib/task-cancel';
-import { workerErrorResponse } from '@/lib/worker-client';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
 
 /**
  * POST /api/tasks/<id>/cancel
@@ -18,9 +18,7 @@ interface RouteContext {
 export async function POST(_request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
   const taskId = parseRouteId(id);
-  if (taskId === null) {
-    return NextResponse.json({ error: 'Invalid task id' }, { status: 400 });
-  }
+  if (taskId === null) return invalidId('task id');
 
   try {
     const taskResult = await query<{ queue_job_id: string | null }>(
@@ -32,7 +30,7 @@ export async function POST(_request: NextRequest, context: RouteContext) {
     }
 
     const outcome = await cancelTaskFully(taskId, taskResult.rows[0].queue_job_id);
-    if (!outcome.ok) return workerErrorResponse(outcome.res, outcome.body);
+    if (!outcome.ok) return workerError(outcome.res, outcome.body);
     if (!outcome.worker_reachable) {
       return NextResponse.json({
         success: true,

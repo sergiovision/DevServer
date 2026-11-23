@@ -2,6 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
+import { jsonError, type RouteContext } from '@/lib/route-utils';
+
+/**
+ * GET /api/logs/<name>?since=<byte-offset>   (name: worker | web)
+ *
+ * Tails a host log file with the byte-offset protocol the Logs page polls
+ * with. `<name>` is a key into an allow-list, never a path, so no caller can
+ * read an arbitrary file.
+ */
 
 export const dynamic = 'force-dynamic';
 
@@ -13,9 +22,8 @@ const ALLOWED: Record<string, string> = {
 const MAX_INITIAL_BYTES = 256 * 1024; // tail last 256KB on first load
 const MAX_APPEND_BYTES = 1024 * 1024; // cap per-poll append
 
-function projectRoot(): string {
-  if (process.env.DEVSERVER_ROOT) return process.env.DEVSERVER_ROOT;
-  // apps/web/.next or apps/web — walk up to repo root
+/** The checkout this server runs from: cwd is apps/web, so walk up two levels. */
+function checkoutRoot(): string {
   return path.resolve(process.cwd(), '..', '..');
 }
 
@@ -28,7 +36,14 @@ async function resolveLogPath(name: string): Promise<string | null> {
 
   if (process.env[envKey]) candidates.push(process.env[envKey] as string);
   if (process.env.DS_LOG_DIR) candidates.push(path.join(process.env.DS_LOG_DIR, filename));
-  candidates.push(path.join(projectRoot(), 'logs', filename));
+  // DEVSERVER_ROOT is the *data* root (worktrees, task logs) and may differ
+  // from the checkout, while scripts/start.sh always writes worker.log and
+  // web.log into the checkout's logs/. Treating DEVSERVER_ROOT as the only
+  // root left the Logs page empty whenever the two diverged, so try both.
+  if (process.env.DEVSERVER_ROOT) {
+    candidates.push(path.join(process.env.DEVSERVER_ROOT, 'logs', filename));
+  }
+  candidates.push(path.join(checkoutRoot(), 'logs', filename));
   candidates.push(path.join(os.tmpdir(), filename));
   candidates.push(path.join('/tmp', filename));
 
@@ -44,13 +59,10 @@ async function resolveLogPath(name: string): Promise<string | null> {
   return candidates[candidates.length - 1] ?? null;
 }
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: Promise<{ name: string }> },
-) {
+export async function GET(req: NextRequest, { params }: RouteContext<{ name: string }>) {
   const { name } = await params;
   if (!(name in ALLOWED)) {
-    return NextResponse.json({ error: 'Unknown log' }, { status: 400 });
+    return jsonError(400, 'Unknown log');
   }
 
   const sinceParam = req.nextUrl.searchParams.get('since');

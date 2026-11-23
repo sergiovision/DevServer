@@ -1,3 +1,12 @@
+/**
+ * The web tier's single PostgreSQL pool and `query()` helper.
+ *
+ * Why it exists: every route and server component shares one bounded pool
+ * (max 20) instead of opening connections ad hoc. `query()` logs slow
+ * statements and converts driver failures into a classified `DatabaseError`
+ * (see `db-errors.ts`) so callers can answer a 503 diagnostic instead of a
+ * blank 500.
+ */
 import { Pool, QueryResult, QueryResultRow } from 'pg';
 import { classifyDbError, DatabaseError } from './db-errors';
 

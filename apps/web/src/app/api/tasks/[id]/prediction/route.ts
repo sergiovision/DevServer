@@ -1,6 +1,13 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { query } from '@/lib/db';
-import { WORKER_URL } from '@/lib/worker-url';
+import { apiErrorResponse } from '@/lib/api-errors';
+import {
+  invalidId,
+  jsonError,
+  parseRouteId,
+  proxyWorker,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 /**
  * GET /api/tasks/<id>/prediction
@@ -10,37 +17,28 @@ import { WORKER_URL } from '@/lib/worker-url';
  * the number comes from (e.g. the repo's recent success rate).
  */
 
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+// The similar-task forecast embeds the task text; the first call loads the
+// embedding model on the worker, which can outlast the default timeout.
+const PREDICTION_TIMEOUT_MS = 60_000;
 
 export async function GET(_request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  const taskId = parseInt(id);
+  const taskId = parseRouteId(id);
+  if (taskId === null) return invalidId('task id');
   try {
     const row = await query<{ task_key: string }>(
       `SELECT task_key FROM tasks WHERE id = $1`,
       [taskId],
     );
     if (row.rows.length === 0) {
-      return NextResponse.json({ error: 'task not found' }, { status: 404 });
+      return jsonError(404, 'task not found');
     }
     const taskKey = row.rows[0].task_key;
 
-    const workerRes = await fetch(
-      `${WORKER_URL}/internal/tasks/${encodeURIComponent(taskKey)}/prediction`,
-      { method: 'GET' },
-    );
-    if (!workerRes.ok) {
-      const detail = await workerRes.json().catch(() => ({}));
-      return NextResponse.json(
-        { error: detail.detail || 'prediction failed' },
-        { status: workerRes.status },
-      );
-    }
-    return NextResponse.json(await workerRes.json());
+    return await proxyWorker(`/internal/tasks/${encodeURIComponent(taskKey)}/prediction`, {
+      timeoutMs: PREDICTION_TIMEOUT_MS,
+    });
   } catch (err) {
-    console.error(`GET /api/tasks/${id}/prediction error:`, err);
-    return NextResponse.json({ error: 'internal server error' }, { status: 500 });
+    return apiErrorResponse(err, `GET /api/tasks/${id}/prediction`);
   }
 }

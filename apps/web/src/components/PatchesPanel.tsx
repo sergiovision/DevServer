@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { CButton, CCard, CCardBody, CCardHeader, CListGroup, CListGroupItem } from '@coreui/react-pro';
+import { EmptyState } from '@/components/EmptyState';
+import { api, errorMessage } from '@/lib/api-client';
 
 interface PatchFile {
   name: string;
@@ -32,12 +34,10 @@ export function PatchesPanel({ taskId, taskStatus }: PatchesPanelProps) {
   const loadPatches = useCallback(async () => {
     setError('');
     try {
-      const res = await fetch(`/api/tasks/${taskId}/patches`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not load patches');
-      setPatches(Array.isArray(data.patches) ? data.patches : []);
+      const data = await api.get<{ patches?: unknown }>(`/api/tasks/${taskId}/patches`);
+      setPatches(Array.isArray(data?.patches) ? (data.patches as PatchFile[]) : []);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load patches');
+      setError(errorMessage(err, 'Could not load patches'));
     }
   }, [taskId]);
 
@@ -57,9 +57,11 @@ export function PatchesPanel({ taskId, taskStatus }: PatchesPanelProps) {
         {error && <p className="text-danger small mb-0">{error}</p>}
         {!error && patches === null && <p className="text-body-secondary small mb-0">Loading…</p>}
         {!error && patches?.length === 0 && (
-          <p className="text-body-secondary small mb-0">
-            No patches yet. They are exported when a run of this task finishes.
-          </p>
+          <EmptyState
+            compact
+            title="No patches yet"
+            hint="They are exported when a run of this task finishes."
+          />
         )}
         {patches && patches.length > 0 && (
           <CListGroup flush>

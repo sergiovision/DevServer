@@ -96,3 +96,19 @@ jobs:
         run: npm run build
         env:
           NEXT_TELEMETRY_DISABLED: 1
+
+  feature-coverage:
+    name: Feature catalogue coverage (non-blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Advisory until the catalogue settles: reports catalogue rows without a
+      # `Feature:` test citation and citations without a row.
+      - name: Feature coverage report
+        run: node scripts/feature-coverage.mjs
+        continue-on-error: true

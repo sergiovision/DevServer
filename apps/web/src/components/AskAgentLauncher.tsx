@@ -1,10 +1,12 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { usePathname } from 'next/navigation';
 import CIcon from '@coreui/icons-react';
 import { cilCommentSquare } from '@coreui/icons';
 import { AskAgentPanel } from './AskAgentPanel';
+import { useAssistantContext } from './AssistantProvider';
+import { useShortcuts } from '@/lib/use-shortcuts';
 
 /**
  * The floating "Ask Agent" button and the drawer it opens.
@@ -15,22 +17,17 @@ import { AskAgentPanel } from './AskAgentPanel';
  *
  * The panel is mounted lazily on first open: its bundle, and its capabilities
  * request, cost nothing to operators who never click.
+ *
+ * Open state lives in AssistantProvider so the command palette can open the
+ * panel too. ⌘/Ctrl+J toggles it; ⌘/Ctrl+K now belongs to the command palette
+ * (which offers "Ask Agent: <query>" as its last row). Escape closing is
+ * handled by the panel itself and is unchanged.
  */
 export function AskAgentLauncher() {
-  const [open, setOpen] = useState(false);
+  const { askAgentOpen: open, setAskAgentOpen: setOpen } = useAssistantContext();
   const pathname = usePathname();
 
-  // ⌘/Ctrl + K is the near-universal "ask something" shortcut.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        setOpen((v) => !v);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  useShortcuts({ 'open-ask-agent': () => setOpen((value) => !value) });
 
   if (pathname === '/setup') return null;
 
@@ -40,9 +37,10 @@ export function AskAgentLauncher() {
       <button
         type="button"
         className={`ask-agent-fab btn btn-primary rounded-circle shadow ${open ? 'is-open' : ''}`}
-        onClick={() => setOpen((v) => !v)}
-        title={open ? 'Close Ask Agent (Esc)' : 'Ask Agent  (⌘/Ctrl + K)'}
+        onClick={() => setOpen((value) => !value)}
+        title={open ? 'Close Ask Agent (Esc)' : 'Ask Agent  (⌘/Ctrl + J)'}
         aria-label="Ask Agent"
+        aria-keyshortcuts="Meta+J Control+J"
         aria-expanded={open}
       >
         <CIcon icon={cilCommentSquare} size="lg" />

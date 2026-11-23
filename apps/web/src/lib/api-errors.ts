@@ -1,3 +1,10 @@
+/**
+ * Error → HTTP response mapping shared by API route handlers.
+ *
+ * Why it exists: DB outages, constraint violations and plain bugs need three
+ * different answers (503 diagnostic, 400 with the constraint, 500). Keeping
+ * the mapping here means every route classifies failures the same way.
+ */
 import { NextResponse } from 'next/server';
 import { isDatabaseError } from './db-errors';
 

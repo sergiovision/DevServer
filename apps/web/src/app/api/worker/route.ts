@@ -5,10 +5,18 @@ import path from 'path';
 import os from 'os';
 import { existsSync, openSync } from 'fs';
 import { query } from '@/lib/db';
+import { callWorker } from '@/lib/route-utils';
+
+/**
+ * GET  /api/worker   → `{ running, status, pid }`
+ * POST /api/worker   body: `{ action: 'start' | 'restart' | 'stop' }`
+ *
+ * Host-mode worker process control for the dashboard (Force Reopen). Not a
+ * relay: it probes the worker over HTTP, then starts / kills the uvicorn
+ * process directly and resets queue state a dead worker left behind.
+ */
 
 const execAsync = promisify(exec);
-
-import { WORKER_URL } from '@/lib/worker-url';
 
 const IS_WIN = process.platform === 'win32';
 
@@ -30,12 +38,8 @@ const WORKER_UVICORN = IS_WIN
   : path.join(WORKER_DIR, '.venv', 'bin', 'uvicorn');
 
 async function isWorkerRunning(): Promise<boolean> {
-  try {
-    const res = await fetch(`${WORKER_URL}/health`, { signal: AbortSignal.timeout(2000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
+  const res = await callWorker('/health', {}, 2000);
+  return res?.ok ?? false;
 }
 
 /**
@@ -135,10 +139,13 @@ export async function GET() {
     }
 
     const [res, pid] = await Promise.all([
-      fetch(`${WORKER_URL}/internal/status`, { signal: AbortSignal.timeout(5000) }),
+      callWorker('/internal/status', {}, 5000),
       getWorkerPid(),
     ]);
-    const status = await res.json();
+    // The health probe passed but the status call did not answer: same
+    // "not running" answer the thrown fetch used to produce.
+    if (!res) return NextResponse.json({ running: false, status: null, pid: null });
+    const status: unknown = await res.json();
     return NextResponse.json({ running: true, status, pid });
   } catch (err) {
     console.error('GET /api/worker error:', err);

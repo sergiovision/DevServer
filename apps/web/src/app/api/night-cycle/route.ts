@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   callWorker,
+  jsonError,
   readWorkerJson,
-  workerErrorResponse,
-  workerUnreachableResponse,
-} from '@/lib/worker-client';
+  workerError,
+  workerUnreachable,
+} from '@/lib/route-utils';
 
 /**
  * GET /api/night-cycle — current night-cycle state from the worker.
@@ -15,7 +16,7 @@ export async function GET() {
   const res = await callWorker('/internal/night-cycle/status', {}, 3000);
   if (res === null) return NextResponse.json({ active: false });
   const body = await readWorkerJson(res);
-  if (!res.ok) return workerErrorResponse(res, body);
+  if (!res.ok) return workerError(res, body);
   return NextResponse.json(body);
 }
 
@@ -30,10 +31,7 @@ export async function POST(request: NextRequest) {
   const raw: unknown = await request.json().catch(() => null);
   const body = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
   if (body.action !== 'start' && body.action !== 'stop') {
-    return NextResponse.json(
-      { error: "action must be 'start' or 'stop'" },
-      { status: 400 },
-    );
+    return jsonError(400, "action must be 'start' or 'stop'");
   }
   const endpoint = body.action;
   const endHour = typeof body.end_hour === 'number' ? body.end_hour : 7;
@@ -52,8 +50,8 @@ export async function POST(request: NextRequest) {
     },
     10_000,
   );
-  if (res === null) return workerUnreachableResponse();
+  if (res === null) return workerUnreachable();
   const data = await readWorkerJson(res);
-  if (!res.ok) return workerErrorResponse(res, data);
+  if (!res.ok) return workerError(res, data);
   return NextResponse.json(data);
 }

@@ -18,7 +18,12 @@ import {
   CProgress,
   CProgressBar,
 } from '@coreui/react-pro';
+import { api, errorMessage, isApiError } from '@/lib/api-client';
 import { DatabaseConfigFields } from './DatabaseConfigFields';
+
+interface EnvResponse {
+  variables?: { key: string; value: string }[];
+}
 
 // ─── Step definitions ──────────────────────────────────────────────────────
 
@@ -226,10 +231,10 @@ export function SetupWizard({ deployMode = 'development' }: { deployMode?: strin
 
   // Load current env values on mount
   useEffect(() => {
-    fetch('/api/env')
-      .then((r) => r.json())
+    api
+      .get<EnvResponse | null>('/api/env')
       .then((data) => {
-        if (data.variables) {
+        if (data?.variables) {
           const vals: Record<string, string> = {};
           for (const v of data.variables) {
             vals[v.key] = v.value;
@@ -256,29 +261,26 @@ export function SetupWizard({ deployMode = 'development' }: { deployMode?: strin
     setError('');
     try {
       // 1. Save all values to .env
-      const res = await fetch('/api/env', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variables: values }),
-      });
-      if (!res.ok) {
-        // The worker explains what it could not write and why; "Failed to save
-        // configuration" on its own sent people looking in the wrong place.
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.detail || body?.error || 'Failed to save configuration');
-      }
+      // The worker explains what it could not write and why ("Failed to save
+      // configuration" on its own sent people looking in the wrong place), and
+      // ApiError.message already carries that explanation.
+      await api.put('/api/env', { variables: values });
 
-      // 2. Apply config to running worker
-      await fetch('/api/env/apply', { method: 'POST' });
+      // 2. Apply config to running worker. Its answer is deliberately ignored;
+      // only a network failure aborts.
+      await api.post('/api/env/apply').catch((err: unknown) => {
+        if (isApiError(err) && err.isNetworkError) throw err;
+      });
 
       // 3. Mark setup as completed (DB + cookie)
-      const complete = await fetch('/api/setup/complete', { method: 'POST' });
-      if (!complete.ok) throw new Error('Failed to mark setup as completed');
+      await api.post('/api/setup/complete').catch(() => {
+        throw new Error('Failed to mark setup as completed');
+      });
 
       // 4. Redirect to dashboard
       window.location.href = '/';
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Setup failed');
+      setError(errorMessage(e, 'Setup failed'));
     } finally {
       setSaving(false);
     }
@@ -536,7 +538,8 @@ export function SetupWizard({ deployMode = 'development' }: { deployMode?: strin
           <button
             className="btn btn-link btn-sm text-body-secondary text-decoration-none"
             onClick={async () => {
-              await fetch('/api/setup/complete', { method: 'POST' });
+              // Fire-and-forget: the redirect runs whatever the call answered.
+              await api.post('/api/setup/complete').catch(() => undefined);
               window.location.href = '/';
             }}
           >

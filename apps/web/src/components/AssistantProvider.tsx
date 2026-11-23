@@ -6,6 +6,7 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { usePathname } from 'next/navigation';
@@ -22,6 +23,12 @@ import type { PageContext } from '@/lib/assistant-client';
  * - **Registered** — a page that knows more calls `useAssistantPageContext`
  *   with the entity on screen (task key and status, repo name, …), so
  *   "why is this stuck?" can be answered about *that* task.
+ *
+ * It also owns whether the Ask Agent panel is open, so surfaces other than
+ * the floating button (⌘J, the command palette's "Ask Agent: <query>" row)
+ * can open it. `openAskAgent(prompt)` parks the prompt; the panel takes it
+ * once with `takePendingPrompt()` when it mounts. Both additions are optional
+ * to consumers — nothing that ignores them changes behaviour.
  */
 
 interface AssistantContextValue {
@@ -30,6 +37,18 @@ interface AssistantContextValue {
   repoId: number | null;
   setEntity: (entity: PageContext['entity'] | null, title?: string) => void;
   setRepoId: (id: number | null) => void;
+  /** Whether the Ask Agent drawer is open. */
+  askAgentOpen: boolean;
+  setAskAgentOpen: (open: boolean | ((previous: boolean) => boolean)) => void;
+  /** Open the drawer, optionally with a question to prefill. */
+  openAskAgent: (prompt?: string) => void;
+  /** Return and clear the prompt passed to `openAskAgent` (once). */
+  takePendingPrompt: () => string | null;
+  /**
+   * Bumped whenever `openAskAgent` parks a prompt, so an already-open panel
+   * can pick it up: `useEffect(() => { … takePendingPrompt() … }, [version])`.
+   */
+  pendingPromptVersion: number;
 }
 
 const AssistantCtx = createContext<AssistantContextValue | null>(null);
@@ -46,6 +65,11 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
   const [entity, setEntityState] = useState<PageContext['entity'] | null>(null);
   const [title, setTitle] = useState<string | undefined>(undefined);
   const [repoId, setRepoId] = useState<number | null>(null);
+  const [askAgentOpen, setAskAgentOpen] = useState(false);
+  // A ref, not state: the prompt is a one-shot handoff and must not re-render
+  // (or re-fill) the panel after it has been consumed.
+  const pendingPromptRef = useRef<string | null>(null);
+  const [pendingPromptVersion, setPendingPromptVersion] = useState(0);
 
   // Entity context belongs to one screen. Clearing it on navigation prevents
   // the panel from confidently answering about the task you just left.
@@ -63,6 +87,19 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const openAskAgent = useCallback((prompt?: string) => {
+    const trimmed = prompt?.trim();
+    pendingPromptRef.current = trimmed ? trimmed : null;
+    if (trimmed) setPendingPromptVersion((version) => version + 1);
+    setAskAgentOpen(true);
+  }, []);
+
+  const takePendingPrompt = useCallback(() => {
+    const prompt = pendingPromptRef.current;
+    pendingPromptRef.current = null;
+    return prompt;
+  }, []);
+
   const value = useMemo<AssistantContextValue>(
     () => ({
       page: {
@@ -74,8 +111,23 @@ export function AssistantProvider({ children }: { children: React.ReactNode }) {
       repoId,
       setEntity,
       setRepoId,
+      askAgentOpen,
+      setAskAgentOpen,
+      openAskAgent,
+      takePendingPrompt,
+      pendingPromptVersion,
     }),
-    [pathname, title, entity, repoId, setEntity],
+    [
+      pathname,
+      title,
+      entity,
+      repoId,
+      setEntity,
+      askAgentOpen,
+      openAskAgent,
+      takePendingPrompt,
+      pendingPromptVersion,
+    ],
   );
 
   return <AssistantCtx.Provider value={value}>{children}</AssistantCtx.Provider>;
@@ -93,6 +145,11 @@ export function useAssistantContext(): AssistantContextValue {
     repoId: null,
     setEntity: () => {},
     setRepoId: () => {},
+    askAgentOpen: false,
+    setAskAgentOpen: () => {},
+    openAskAgent: () => {},
+    takePendingPrompt: () => null,
+    pendingPromptVersion: 0,
   };
 }
 

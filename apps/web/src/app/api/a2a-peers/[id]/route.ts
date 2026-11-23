@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
-import { parseRouteId } from '@/lib/route-params';
+import { invalidId, jsonError, parseRouteId, type RouteContext } from '@/lib/route-utils';
 import { PEER_EDITABLE_FIELDS, validatePeerFields } from '@/lib/a2a/peer-validation';
 
 /**
@@ -15,17 +15,11 @@ import { PEER_EDITABLE_FIELDS, validatePeerFields } from '@/lib/a2a/peer-validat
  * and exactly one moment it is visible.
  */
 
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
-
 export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
     const { id } = await context.params;
     const peerId = parseRouteId(id);
-    if (peerId === null) {
-      return NextResponse.json({ error: 'invalid id' }, { status: 400 });
-    }
+    if (peerId === null) return invalidId();
 
     // Validated by the shared peer validator (lib/a2a/peer-validation.ts) so a
     // malformed field is a 400 with a reason, not a database error. `slug` is
@@ -33,7 +27,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
     // has already created, so changing it would orphan that history.
     const checked = validatePeerFields(await request.json().catch(() => null));
     if (!checked.ok) {
-      return NextResponse.json({ error: checked.error }, { status: 400 });
+      return jsonError(400, checked.error);
     }
     const body = checked.values;
 
@@ -47,7 +41,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       }
     }
     if (sets.length === 0) {
-      return NextResponse.json({ error: 'No valid fields to update' }, { status: 400 });
+      return jsonError(400, 'No valid fields to update');
     }
     sets.push('updated_at = NOW()');
     values.push(peerId);
@@ -63,7 +57,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       values,
     );
     if (res.rows.length === 0) {
-      return NextResponse.json({ error: 'peer not found' }, { status: 404 });
+      return jsonError(404, 'peer not found');
     }
     return NextResponse.json({ peer: res.rows[0] });
   } catch (err) {
@@ -75,14 +69,12 @@ export async function DELETE(_request: NextRequest, context: RouteContext) {
   try {
     const { id } = await context.params;
     const peerId = parseRouteId(id);
-    if (peerId === null) {
-      return NextResponse.json({ error: 'invalid id' }, { status: 400 });
-    }
+    if (peerId === null) return invalidId();
     // Tasks the peer created are intentionally left in place — they are real
     // work with real history. Only the credential is revoked.
     const res = await query(`DELETE FROM a2a_peers WHERE id = $1 RETURNING id`, [peerId]);
     if (res.rows.length === 0) {
-      return NextResponse.json({ error: 'peer not found' }, { status: 404 });
+      return jsonError(404, 'peer not found');
     }
     return NextResponse.json({ success: true });
   } catch (err) {

@@ -28,8 +28,10 @@ import {
   CTableHeaderCell,
   CTableRow,
 } from '@coreui/react-pro';
+import { api, errorMessage } from '@/lib/api-client';
 import type { PublicWebhookTrigger } from '@/lib/webhooks/triggers';
 import { PRIORITY_LABELS, type TaskPriority } from '@/lib/types';
+import { EmptyState } from '@/components/EmptyState';
 
 interface NamedRow {
   id: number;
@@ -116,28 +118,20 @@ export function WebhookTriggerList({ triggers, repos, templates }: WebhookTrigge
     setSaving(true);
     setFormError('');
     try {
-      const res = await fetch('/api/webhook-triggers', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: form.name,
-          repo_id: Number(form.repo_id),
-          template_id: form.template_id ? Number(form.template_id) : null,
-          secret: form.secret,
-          title_template: form.title_template,
-          description_template: form.description_template,
-          task_key_prefix: form.task_key_prefix,
-          priority: Number(form.priority),
-        }),
+      await api.post('/api/webhook-triggers', {
+        name: form.name,
+        repo_id: Number(form.repo_id),
+        template_id: form.template_id ? Number(form.template_id) : null,
+        secret: form.secret,
+        title_template: form.title_template,
+        description_template: form.description_template,
+        task_key_prefix: form.task_key_prefix,
+        priority: Number(form.priority),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Could not create the trigger');
-      }
       setModalVisible(false);
       router.refresh();
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Could not create the trigger');
+      setFormError(errorMessage(err, 'Could not create the trigger'));
     } finally {
       setSaving(false);
     }
@@ -145,14 +139,10 @@ export function WebhookTriggerList({ triggers, repos, templates }: WebhookTrigge
 
   const setEnabled = async (trigger: PublicWebhookTrigger, enabled: boolean) => {
     setListError('');
-    const res = await fetch(`/api/webhook-triggers/${trigger.id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setListError(data.error || 'Could not update the trigger');
+    try {
+      await api.patch(`/api/webhook-triggers/${trigger.id}`, { enabled });
+    } catch (err) {
+      setListError(errorMessage(err, 'Could not update the trigger'));
     }
     router.refresh();
   };
@@ -160,10 +150,10 @@ export function WebhookTriggerList({ triggers, repos, templates }: WebhookTrigge
   const handleDelete = async (trigger: PublicWebhookTrigger) => {
     if (!confirm(`Delete webhook "${trigger.name}"? Callers using its URL will get 404.`)) return;
     setListError('');
-    const res = await fetch(`/api/webhook-triggers/${trigger.id}`, { method: 'DELETE' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setListError(data.error || 'Could not delete the trigger');
+    try {
+      await api.delete(`/api/webhook-triggers/${trigger.id}`);
+    } catch (err) {
+      setListError(errorMessage(err, 'Could not delete the trigger'));
     }
     router.refresh();
   };
@@ -180,13 +170,10 @@ export function WebhookTriggerList({ triggers, repos, templates }: WebhookTrigge
         <CCardBody className="p-0">
           {listError && <CAlert color="danger" className="m-3 py-2">{listError}</CAlert>}
           {triggers.length === 0 ? (
-            <div className="p-4 text-center text-body-secondary">
-              <p className="mb-2">No webhooks yet.</p>
-              <p className="mb-0">
-                A webhook gives an external system (CI, an issue tracker, a chat bot) a
-                signed URL that queues a task on one of your repositories.
-              </p>
-            </div>
+            <EmptyState
+              title="No webhooks yet"
+              hint="A webhook gives an external system (CI, an issue tracker, a chat bot) a signed URL that queues a task on one of your repositories."
+            />
           ) : (
             <CTable hover responsive className="mb-0">
               <CTableHead>

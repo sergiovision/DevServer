@@ -1,13 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-url';
 import { workerHeaders } from '@/lib/assistant-proxy';
+import { callWorker, type RouteContext } from '@/lib/route-utils';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
 
 /**
  * Drop a conversation's worker-side session ("New chat").
@@ -21,16 +17,17 @@ interface RouteContext {
  */
 export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
-  try {
-    const res = await fetch(
-      `${WORKER_URL}/internal/assistant/sessions/${encodeURIComponent(id)}/cancel`,
-      { method: 'POST', headers: workerHeaders(), cache: 'no-store', signal: request.signal },
-    );
-    if (!res.ok) return NextResponse.json({ ok: false, existed: false });
-    return NextResponse.json(await res.json());
-  } catch {
-    // Worker down, or the user closed the panel mid-request. Either way the
-    // local transcript has already been cleared; nothing to report.
-    return NextResponse.json({ ok: false, existed: false });
-  }
+  // `[id]` is the client's opaque conversation id, so it is only URL-encoded.
+  // The browser's signal replaces callWorker's default timeout: closing the
+  // panel aborts the call.
+  const res = await callWorker(
+    `/internal/assistant/sessions/${encodeURIComponent(id)}/cancel`,
+    { method: 'POST', headers: workerHeaders(), signal: request.signal },
+  );
+  // Worker down, or the user closed the panel mid-request (`res` is null), or
+  // an unreadable body. Either way the local transcript has already been
+  // cleared; nothing to report.
+  if (!res || !res.ok) return NextResponse.json({ ok: false, existed: false });
+  const body: unknown = await res.json().catch(() => null);
+  return NextResponse.json(body ?? { ok: false, existed: false });
 }

@@ -1,6 +1,19 @@
+/**
+ * Single-task REST: read (with runs), partial update, delete.
+ *
+ * PATCH is an allow-list update; `task_type` is deliberately absent (immutable
+ * after creation). `post_completion_action` goes through the shared validator
+ * and is written as JSONB, so a malformed follow-up is a 400 here rather than
+ * a surprise in the worker.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import {
+  parsePostCompletionAction,
+  selfReferenceError,
+  toJsonbParam,
+} from '@/lib/post-completion-action';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -81,6 +94,28 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         sets.push(`${key} = $${paramIndex++}`);
         values.push(body[key]);
       }
+    }
+
+    if (body.post_completion_action !== undefined) {
+      const parsed = parsePostCompletionAction(body.post_completion_action);
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error }, { status: 400 });
+      }
+      const selfError = selfReferenceError(parsed.value, taskId);
+      if (selfError) {
+        return NextResponse.json({ error: selfError }, { status: 400 });
+      }
+      if (parsed.value?.kind === 'task') {
+        const target = await query('SELECT 1 FROM tasks WHERE id = $1', [parsed.value.task_id]);
+        if (target.rows.length === 0) {
+          return NextResponse.json(
+            { error: `post_completion_action.task_id ${parsed.value.task_id} does not exist` },
+            { status: 400 },
+          );
+        }
+      }
+      sets.push(`post_completion_action = $${paramIndex++}::jsonb`);
+      values.push(toJsonbParam(parsed.value));
     }
 
     if (sets.length === 0) {

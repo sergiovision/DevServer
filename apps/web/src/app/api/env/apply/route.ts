@@ -1,14 +1,11 @@
-import { NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-url';
+import { proxyWorker } from '@/lib/route-utils';
 
+/**
+ * POST /api/env/apply
+ *
+ * Reload the running worker's settings from `.env`, so a saved change takes
+ * effect without a restart. A pure relay of /internal/env/apply.
+ */
 export async function POST() {
-  try {
-    const res = await fetch(`${WORKER_URL}/internal/env/apply`, { method: 'POST' });
-    const data = await res.json();
-    if (!res.ok) return NextResponse.json(data, { status: res.status });
-    return NextResponse.json(data);
-  } catch (err) {
-    console.error('POST /api/env/apply error:', err);
-    return NextResponse.json({ error: 'Failed to apply config' }, { status: 502 });
-  }
+  return proxyWorker('/internal/env/apply', { method: 'POST' });
 }

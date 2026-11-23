@@ -6,6 +6,14 @@ import { CButton, CSpinner } from '@coreui/react-pro';
 import { IdeaTree, type IdeaNode } from './IdeaTree';
 import { IdeaEditor } from './IdeaEditor';
 import { ImportModal } from './ImportModal';
+import { EmptyState } from '@/components/EmptyState';
+import { api, errorMessage, isApiError, type ApiError } from '@/lib/api-client';
+
+// The goal/plan actions word "the route said no" ("… failed: <reason>")
+// differently from "the request never completed" ("… error: <reason>").
+function isHttpFailure(err: unknown): err is ApiError {
+  return isApiError(err) && !err.isNetworkError;
+}
 
 export type NodeType = 'goal' | 'subtask' | 'leaf' | null;
 export type NodeStatus =
@@ -65,9 +73,7 @@ export function IdeasView() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/ideas', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setIdeas(await res.json());
+      setIdeas(await api.get<Idea[]>('/api/ideas', { cache: 'no-store' }));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -139,12 +145,7 @@ export function IdeasView() {
           : cur,
       );
       try {
-        const res = await fetch(`/api/ideas/${draggedId}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ parent_id: targetId }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        await api.patch(`/api/ideas/${draggedId}`, { parent_id: targetId });
       } catch {
         // Roll back on failure.
         setIdeas(prev);
@@ -163,13 +164,12 @@ export function IdeasView() {
       const defaultTitle = kind === 'folder' ? 'New Folder' : 'New Idea';
       const title = window.prompt(`${kind === 'folder' ? 'Folder' : 'Idea'} name:`, defaultTitle);
       if (!title) return;
-      const res = await fetch('/api/ideas', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ parent_id: parentId, kind, title }),
-      });
-      if (res.ok) {
-        const created: Idea = await res.json();
+      // A failed create is silently dropped, as before: the tree simply
+      // doesn't change.
+      const created = await api
+        .post<Idea>('/api/ideas', { parent_id: parentId, kind, title })
+        .catch(() => null);
+      if (created) {
         await load();
         setSelectedId(created.id);
       }
@@ -180,12 +180,11 @@ export function IdeasView() {
   const saveSelected = useCallback(
     async (patch: Partial<Pick<Idea, 'title' | 'content'>>) => {
       if (!selected) return;
-      const res = await fetch(`/api/ideas/${selected.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      if (res.ok) await load();
+      const saved = await api.patch(`/api/ideas/${selected.id}`, patch).then(
+        () => true,
+        () => false,
+      );
+      if (saved) await load();
     },
     [selected, load],
   );
@@ -194,8 +193,11 @@ export function IdeasView() {
     if (!selected) return;
     const label = selected.kind === 'folder' ? 'folder and all contents' : 'idea';
     if (!window.confirm(`Delete this ${label}?`)) return;
-    const res = await fetch(`/api/ideas/${selected.id}`, { method: 'DELETE' });
-    if (res.ok) {
+    const deleted = await api.delete(`/api/ideas/${selected.id}`).then(
+      () => true,
+      () => false,
+    );
+    if (deleted) {
       setSelectedId(null);
       await load();
     }
@@ -222,20 +224,17 @@ export function IdeasView() {
 
     setConvertingPlan(true);
     try {
-      const res = await fetch('/api/ideas/generate-plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_name: projectName, description: desc }),
+      const plan = await api.post<{ plan_key: string }>('/api/ideas/generate-plan', {
+        project_name: projectName,
+        description: desc,
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        alert(`Plan generation failed: ${data?.error || res.statusText}`);
-        return;
-      }
-      const plan = await res.json();
       alert(`Plan saved: ${plan.plan_key}`);
     } catch (e) {
-      alert(`Plan generation error: ${e instanceof Error ? e.message : String(e)}`);
+      alert(
+        isHttpFailure(e)
+          ? `Plan generation failed: ${e.message}`
+          : `Plan generation error: ${errorMessage(e, String(e))}`,
+      );
     } finally {
       setConvertingPlan(false);
     }
@@ -246,16 +245,10 @@ export function IdeasView() {
     if (!selected || busy) return;
     setBusy(true);
     try {
-      const res = await fetch(`/api/goals/${selected.id}/expand`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        alert(`Expand failed: ${data?.error || res.statusText}`);
-        return;
-      }
+      const data = await api.post<{ outcome?: string; task_id?: number | null } | null>(
+        `/api/goals/${selected.id}/expand`,
+        {},
+      );
       await load();
       if (data?.outcome === 'leaf') {
         alert(
@@ -265,7 +258,11 @@ export function IdeasView() {
         );
       }
     } catch (e) {
-      alert(`Expand error: ${e instanceof Error ? e.message : String(e)}`);
+      alert(
+        isHttpFailure(e)
+          ? `Expand failed: ${e.message}`
+          : `Expand error: ${errorMessage(e, String(e))}`,
+      );
     } finally {
       setBusy(false);
     }
@@ -275,16 +272,15 @@ export function IdeasView() {
     if (!selected || busy) return;
     setBusy(true);
     try {
-      const res = await fetch(`/api/goals/${selected.id}/rollup`, { method: 'POST' });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) {
-        alert(`Rollup not ready: ${data?.error || res.statusText}`);
-        return;
-      }
+      const data = await api.post<{ status: string; score: number }>(`/api/goals/${selected.id}/rollup`);
       await load();
       alert(`Rolled up: ${data.status} (score ${data.score}).`);
     } catch (e) {
-      alert(`Rollup error: ${e instanceof Error ? e.message : String(e)}`);
+      alert(
+        isHttpFailure(e)
+          ? `Rollup not ready: ${e.message}`
+          : `Rollup error: ${errorMessage(e, String(e))}`,
+      );
     } finally {
       setBusy(false);
     }
@@ -336,9 +332,11 @@ export function IdeasView() {
           <div className="col-md-4">
             <div className="border rounded p-2" style={{ minHeight: 400 }}>
               {tree.length === 0 ? (
-                <p className="text-body-secondary small mb-0">
-                  No ideas yet. Click &ldquo;+ New Folder&rdquo; or &ldquo;+ New Idea&rdquo; to start.
-                </p>
+                <EmptyState
+                  compact
+                  title="No ideas yet"
+                  hint={<>Click &ldquo;+ New Folder&rdquo; or &ldquo;+ New Idea&rdquo; to start.</>}
+                />
               ) : (
                 <IdeaTree
                   nodes={tree}

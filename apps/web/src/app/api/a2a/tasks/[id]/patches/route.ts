@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { peerWorkerError, resolvePeerTask } from '@/lib/a2a/peer-task';
-import { callWorker, readWorkerJson, workerUnreachableResponse } from '@/lib/worker-client';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+import {
+  callWorker,
+  jsonError,
+  readWorkerJson,
+  workerUnreachable,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 /**
  * GET /api/a2a/tasks/<id>/patches     Authorization: Bearer <peer token>
@@ -12,6 +14,11 @@ interface RouteContext {
  * Peer-scoped list of the `.patch` files a patch-mode task exported:
  * `{ patches: [{ name, size_bytes }] }`. This is the URL the `patches`
  * artifact hands out (lib/a2a/mapping.ts).
+ *
+ * The `[id]` segment is parsed by `resolvePeerTask`, which answers a malformed
+ * id with the same 404 as a foreign one, so a peer cannot probe ids. Errors
+ * stay generic (no worker detail, no DB diagnostics) because the caller is
+ * external.
  */
 export async function GET(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
@@ -22,7 +29,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const workerRes = await callWorker(
       `/internal/tasks/${encodeURIComponent(resolved.taskKey)}/patches`,
     );
-    if (workerRes === null) return workerUnreachableResponse();
+    if (workerRes === null) return workerUnreachable();
     const body = await readWorkerJson(workerRes);
     if (!workerRes.ok) return peerWorkerError(workerRes);
     return NextResponse.json(
@@ -31,6 +38,6 @@ export async function GET(request: NextRequest, context: RouteContext) {
     );
   } catch (err) {
     console.error(`GET /api/a2a/tasks/${id}/patches error:`, err);
-    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+    return jsonError(500, 'Internal error');
   }
 }

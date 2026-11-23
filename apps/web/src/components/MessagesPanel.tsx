@@ -10,6 +10,8 @@ import {
   CFormTextarea,
   CSpinner,
 } from '@coreui/react-pro';
+import { EmptyState } from '@/components/EmptyState';
+import { api, errorMessage } from '@/lib/api-client';
 
 interface TaskMessage {
   id: number;
@@ -62,9 +64,8 @@ export function MessagesPanel({ taskId, taskKey }: MessagesPanelProps) {
     if (inFlight.current) return; // a slow worker must not stack requests
     inFlight.current = true;
     try {
-      const res = await fetch(`/api/tasks/${taskId}/messages?limit=100`);
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) setMessages(Array.isArray(data.messages) ? data.messages : []);
+      const data = await api.get<{ messages?: unknown }>(`/api/tasks/${taskId}/messages?limit=100`);
+      setMessages(Array.isArray(data?.messages) ? (data.messages as TaskMessage[]) : []);
     } catch (err) {
       console.error('load messages failed', err);
     } finally {
@@ -96,22 +97,19 @@ export function MessagesPanel({ taskId, taskKey }: MessagesPanelProps) {
     setError('');
     setNotice('');
     try {
-      const res = await fetch(`/api/tasks/${taskId}/messages/as-operator`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body: draft, kind: 'request' }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not send the message');
+      const data = await api.post<{ live?: boolean } | null>(
+        `/api/tasks/${taskId}/messages/as-operator`,
+        { body: draft, kind: 'request' },
+      );
       setDraft('');
       setNotice(
-        data.live
+        data?.live
           ? 'Delivered. The agent will read it on its next inbox check.'
           : 'Delivered to the inbox. The agent is not running, so it will read it when the task runs again.',
       );
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not send the message');
+      setError(errorMessage(err, 'Could not send the message'));
     } finally {
       setSending(false);
     }
@@ -138,10 +136,10 @@ export function MessagesPanel({ taskId, taskKey }: MessagesPanelProps) {
               <CSpinner size="sm" />
             </div>
           ) : messages.length === 0 ? (
-            <div className="text-body-secondary small text-center py-3">
-              No messages yet. Agents can message each other and you; replies you
-              send here land in this task&apos;s inbox.
-            </div>
+            <EmptyState
+              title="No messages yet"
+              hint={<>Agents can message each other and you; replies you send here land in this task&apos;s inbox.</>}
+            />
           ) : (
             messages.map((m) => {
               const mine = m.from_task_key === OPERATOR;

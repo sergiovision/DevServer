@@ -1,27 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiErrorResponse } from '@/lib/api-errors';
-import { parseRouteId } from '@/lib/route-params';
 import { findTaskKey } from '@/lib/tasks';
 import {
   callWorker,
+  invalidId,
+  jsonError,
+  parseRouteId,
   readWorkerJson,
-  workerErrorResponse,
-  workerUnreachableResponse,
-} from '@/lib/worker-client';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+  workerError,
+  workerUnreachable,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 /** Resolve the route's task id to its task key, or an error response. */
 async function resolveTaskKey(rawId: string): Promise<string | NextResponse> {
   const taskId = parseRouteId(rawId);
-  if (taskId === null) {
-    return NextResponse.json({ error: 'Invalid task id' }, { status: 400 });
-  }
+  if (taskId === null) return invalidId('task id');
   const taskKey = await findTaskKey(taskId);
   if (taskKey === null) {
-    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    return jsonError(404, 'Task not found');
   }
   return taskKey;
 }
@@ -43,10 +40,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const workerRes = await callWorker(
       `/internal/tasks/${encodeURIComponent(taskKey)}/messages/thread?limit=${limit}`,
     );
-    if (workerRes === null) return workerUnreachableResponse();
+    if (workerRes === null) return workerUnreachable();
 
     const body = await readWorkerJson(workerRes);
-    if (!workerRes.ok) return workerErrorResponse(workerRes, body);
+    if (!workerRes.ok) return workerError(workerRes, body);
     return NextResponse.json({ messages: Array.isArray(body.messages) ? body.messages : [] });
   } catch (err) {
     return apiErrorResponse(err, `GET /api/tasks/${id}/messages`);
@@ -66,10 +63,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
   const toTaskKey = payload?.to_task_key;
   const messageBody = payload?.body;
   if (typeof toTaskKey !== 'string' || !toTaskKey.trim()) {
-    return NextResponse.json({ error: 'to_task_key is required' }, { status: 400 });
+    return jsonError(400, 'to_task_key is required');
   }
   if (typeof messageBody !== 'string' || !messageBody.trim()) {
-    return NextResponse.json({ error: 'body is required' }, { status: 400 });
+    return jsonError(400, 'body is required');
   }
 
   try {
@@ -95,10 +92,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
         }),
       },
     );
-    if (workerRes === null) return workerUnreachableResponse();
+    if (workerRes === null) return workerUnreachable();
 
     const body = await readWorkerJson(workerRes);
-    if (!workerRes.ok) return workerErrorResponse(workerRes, body);
+    if (!workerRes.ok) return workerError(workerRes, body);
     return NextResponse.json({ message: body.message ?? null }, { status: 201 });
   } catch (err) {
     return apiErrorResponse(err, `POST /api/tasks/${id}/messages`);

@@ -47,12 +47,12 @@ _GIT_FLOW_ICONS = {
 _MD_SPECIAL = re.compile(r"([_*`\[])")
 
 
-def _md(value: object) -> str:
+def _escape_markdown(value: object) -> str:
     """Escape a value placed in plain (non-entity) Markdown text."""
     return _MD_SPECIAL.sub(r"\\\1", str(value))
 
 
-def _in(value: object, delim: str) -> str:
+def _strip_delimiter(value: object, delim: str) -> str:
     """Make a value safe inside a ``delim``-delimited entity (``*``, ``_``, `` ` ``)."""
     return str(value).replace(delim, "")
 
@@ -62,12 +62,12 @@ def format_task_start(
 ) -> str:
     return "\n".join(
         [
-            f"\U0001f527 *Starting: {_in(task_key, '*')}*",
-            f"_{_in(title, '_')}_",
+            f"\U0001f527 *Starting: {_strip_delimiter(task_key, '*')}*",
+            f"_{_strip_delimiter(title, '_')}_",
             "",
-            f"\U0001f4e6 Repo: `{_in(repo_name, '`')}`",
-            f"\U0001f916 Agent: {_md(vendor)}/{_md(model)}",
-            f"\U0001f3af Mode: {_md(mode)}",
+            f"\U0001f4e6 Repo: `{_strip_delimiter(repo_name, '`')}`",
+            f"\U0001f916 Agent: {_escape_markdown(vendor)}/{_escape_markdown(model)}",
+            f"\U0001f3af Mode: {_escape_markdown(mode)}",
         ]
     )
 
@@ -75,14 +75,14 @@ def format_task_start(
 def _git_flow_line(git_flow: str, pr_url: str | None) -> str:
     icon = _GIT_FLOW_ICONS.get(git_flow, "")
     if git_flow == "branch":
-        return f"{icon} PR: {_md(pr_url) if pr_url else 'push failed'}"
+        return f"{icon} PR: {_escape_markdown(pr_url) if pr_url else 'push failed'}"
     if git_flow == "commit":
         return f"{icon} Committed directly"
     if git_flow == "patch":
         return f"{icon} Patch generated"
     if git_flow == "untracked":
         return f"{icon} Untracked changes left in local folder"
-    return f"Git flow: {_md(git_flow)}" if git_flow else ""
+    return f"Git flow: {_escape_markdown(git_flow)}" if git_flow else ""
 
 
 def format_task_success(
@@ -97,7 +97,7 @@ def format_task_success(
     repo_name: str,
 ) -> str:
     duration_min = (duration_ms or 0) / 1000 / 60
-    lines = [f"✅ *{_in(task_key, '*')}* completed", ""]
+    lines = [f"✅ *{_strip_delimiter(task_key, '*')}* completed", ""]
     flow = _git_flow_line(git_flow, pr_url)
     if flow:
         lines += [flow, ""]
@@ -105,7 +105,7 @@ def format_task_success(
         f"⏱ Duration: {duration_min:.1f}m",
         f"\U0001f504 Attempts: {attempts} | Turns: {turns}",
         f"\U0001f4b0 Cost: ${cost:.4f}",
-        f"\U0001f4e6 Repo: `{_in(repo_name, '`')}`",
+        f"\U0001f4e6 Repo: `{_strip_delimiter(repo_name, '`')}`",
     ]
     return "\n".join(lines)
 
@@ -115,9 +115,9 @@ def format_task_failed(
 ) -> str:
     excerpt = (error_context or "").strip()[:400].replace("```", "'''")
     lines = [
-        f"❌ *{_in(task_key, '*')}* FAILED",
+        f"❌ *{_strip_delimiter(task_key, '*')}* FAILED",
         "",
-        f"\U0001f4e6 Repo: `{_in(repo_name, '`')}`",
+        f"\U0001f4e6 Repo: `{_strip_delimiter(repo_name, '`')}`",
         f"\U0001f504 Attempts: {attempts} | Cost: ${cost:.4f}",
     ]
     if excerpt:
@@ -136,11 +136,11 @@ def format_vendor_failover(
 ) -> str:
     return "\n".join(
         [
-            f"\U0001f504 *Vendor Failover: {_in(task_key, '*')}*",
+            f"\U0001f504 *Vendor Failover: {_strip_delimiter(task_key, '*')}*",
             "",
-            f"\U0001f4e6 Repo: `{_in(repo_name, '`')}`",
-            f"❌ Primary: {_md(from_vendor)}/{_md(from_model)}",
-            f"✅ Failover: {_md(to_vendor)}/{_md(to_model)}",
+            f"\U0001f4e6 Repo: `{_strip_delimiter(repo_name, '`')}`",
+            f"❌ Primary: {_escape_markdown(from_vendor)}/{_escape_markdown(from_model)}",
+            f"✅ Failover: {_escape_markdown(to_vendor)}/{_escape_markdown(to_model)}",
             "",
             "_Primary vendor exhausted all retries — switching to the backup vendor._",
         ]
@@ -162,13 +162,13 @@ def format_budget_warning(
     wall_line = f"⏱ Wall: {wall_s:.0f}s" + (f" / {max_wall}s" if max_wall else "")
     return "\n".join(
         [
-            f"⚠️ *Budget Warning: {_in(task_key, '*')}*",
+            f"⚠️ *Budget Warning: {_strip_delimiter(task_key, '*')}*",
             "",
-            f"\U0001f4e6 Repo: `{_in(repo_name, '`')}`",
+            f"\U0001f4e6 Repo: `{_strip_delimiter(repo_name, '`')}`",
             cost_line,
             wall_line,
             "",
-            f"_{_in(reason, '_')}_",
+            f"_{_strip_delimiter(reason, '_')}_",
         ]
     )
 
@@ -179,11 +179,11 @@ def format_budget_exceeded(
     wall_s = (cum_wall_ms or 0) / 1000
     return "\n".join(
         [
-            f"\U0001f6d1 *Budget Exceeded: {_in(task_key, '*')}*",
+            f"\U0001f6d1 *Budget Exceeded: {_strip_delimiter(task_key, '*')}*",
             "",
-            f"\U0001f4e6 Repo: `{_in(repo_name, '`')}`",
+            f"\U0001f4e6 Repo: `{_strip_delimiter(repo_name, '`')}`",
             f"\U0001f4b0 Cost: ${cum_cost:.4f} | Wall: {wall_s:.0f}s",
-            f"_{_in(reason, '_')}_",
+            f"_{_strip_delimiter(reason, '_')}_",
             "",
             "_Task has been blocked. Increase the budget or continue manually._",
         ]
@@ -191,11 +191,11 @@ def format_budget_exceeded(
 
 
 def format_preflight_blocked(*, task_key: str, violations: list[dict]) -> str:
-    lines = [f"\U0001f6d1 *Preflight Blocked: {_in(task_key, '*')}*", ""]
+    lines = [f"\U0001f6d1 *Preflight Blocked: {_strip_delimiter(task_key, '*')}*", ""]
     for v in violations[:5]:
         icon = "\U0001f534" if v.get("severity", "hard") == "hard" else "\U0001f7e1"
         lines.append(
-            f"{icon} *{_in(v.get('kind', 'unknown'), '*')}*: {_md((v.get('detail') or '')[:150])}"
+            f"{icon} *{_strip_delimiter(v.get('kind', 'unknown'), '*')}*: {_escape_markdown((v.get('detail') or '')[:150])}"
         )
     if len(violations) > 5:
         lines.append(f"_...and {len(violations) - 5} more violations_")
@@ -208,10 +208,15 @@ def format_operator_message(
     excerpt = body.strip()
     if len(excerpt) > 600:
         excerpt = excerpt[:600] + "…"
-    lines = [f"✉️ *Message from {_in(from_task_key, '*')}* ({_md(kind)})"]
+    lines = [f"✉️ *Message from {_strip_delimiter(from_task_key, '*')}* ({_escape_markdown(kind)})"]
     if subject:
-        lines.append(f"*{_in(subject[:200], '*')}*")
-    lines += ["", _md(excerpt), "", f"_Reply with_ `/reply {_in(from_task_key, '`')} <message>`"]
+        lines.append(f"*{_strip_delimiter(subject[:200], '*')}*")
+    lines += [
+        "",
+        _escape_markdown(excerpt),
+        "",
+        f"_Reply with_ `/reply {_strip_delimiter(from_task_key, '`')} <message>`",
+    ]
     return "\n".join(lines)
 
 
@@ -219,10 +224,15 @@ def format_plan_card(*, task_key: str, plan: dict) -> str:
     summary = str(plan.get("summary") or "(no summary)")
     files = list(plan.get("files_to_touch") or [])
     steps = list(plan.get("steps") or [])
-    lines = [f"\U0001f4cb *Plan: {_in(task_key, '*')}*", "", f"*Summary:* {_md(summary[:300])}", ""]
+    lines = [
+        f"\U0001f4cb *Plan: {_strip_delimiter(task_key, '*')}*",
+        "",
+        f"*Summary:* {_escape_markdown(summary[:300])}",
+        "",
+    ]
     if files:
         lines.append(f"*Files ({len(files)}):*")
-        lines += [f"  • `{_in(f, '`')}`" for f in files[:10]]
+        lines += [f"  • `{_strip_delimiter(f, '`')}`" for f in files[:10]]
         if len(files) > 10:
             lines.append(f"  _...and {len(files) - 10} more_")
         lines.append("")
@@ -230,7 +240,7 @@ def format_plan_card(*, task_key: str, plan: dict) -> str:
         lines.append(f"*Steps ({len(steps)}):*")
         for i, step in enumerate(steps[:6], 1):
             step_text = step if isinstance(step, str) else step.get("description", str(step))
-            lines.append(f"  {i}. {_md(str(step_text)[:100])}")
+            lines.append(f"  {i}. {_escape_markdown(str(step_text)[:100])}")
         if len(steps) > 6:
             lines.append(f"  _...and {len(steps) - 6} more_")
         lines.append("")
@@ -438,6 +448,6 @@ async def handle_plan_callback(
         icon = "✅" if action == "approve" else "❌"
         await edit_message(
             message_id,
-            f"{icon} *Plan {verb}: {_in(task_key, '*')}*\n"
+            f"{icon} *Plan {verb}: {_strip_delimiter(task_key, '*')}*\n"
             f"_{verb.capitalize()} at {now.strftime('%H:%M UTC')}_",
         )

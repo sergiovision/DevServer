@@ -324,6 +324,25 @@ async def _with_heartbeat(
             await task
 
 
+def fold_transcript_into_first_turn(history: list[tuple[str, str]], message: str) -> str:
+    """Prefix *message* with an earlier transcript for an agent turn with no session.
+
+    The chat engine takes ``history`` natively; the agent engine only sees one
+    user turn, so a conversation reopened from browser history would lose its
+    context. Empty turns are dropped; with nothing left, *message* is unchanged.
+    """
+    turns = [(role, content.strip()) for role, content in history if (content or "").strip()]
+    if not turns:
+        return message
+    lines = ["Earlier in this conversation (for context):", ""]
+    for role, content in turns:
+        lines.append(f"{'Operator' if role == 'user' else 'Assistant'}: {content}")
+        lines.append("")
+    lines.append("Current question:")
+    lines.append(message)
+    return "\n".join(lines)
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -362,9 +381,20 @@ async def assistant_chat_stream(body: AssistantChatRequest, request: Request):
             yield {"type": "notice", "text": notice}
 
         if engine == "agent":
+            # A reopened browser-side conversation has no CLI session yet; the
+            # agent engine would otherwise start blind, so the first turn
+            # carries the earlier transcript. Later turns resume the session.
+            user_text = (
+                body.message
+                if session.cli_session_id
+                else fold_transcript_into_first_turn(
+                    [(m.role, m.content) for m in body.history[-_MAX_HISTORY_TURNS:]],
+                    body.message,
+                )
+            )
             async for event in assistant_agent.stream_agent_turn(
                 session=session,
-                user_text=body.message,
+                user_text=user_text,
                 system_prompt=system_prompt,
                 vendor=vendor,
                 model=model,

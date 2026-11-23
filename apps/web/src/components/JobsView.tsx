@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   CSmartTable,
   CBadge,
@@ -8,6 +8,8 @@ import {
   CSpinner,
 } from '@coreui/react-pro';
 import { asScopedColumns, asTableItems } from '@/lib/smart-table';
+import { api, errorMessage } from '@/lib/api-client';
+import { useResource } from '@/lib/use-async';
 
 interface Job {
   name: string;
@@ -37,37 +39,21 @@ function formatDate(iso: string | null): string {
 }
 
 export function JobsView() {
-  const [jobs, setJobs] = useState<Job[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const res = await fetch('/api/jobs', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as Job[];
-      setJobs(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    load();
-    const id = setInterval(load, 3000);
-    return () => clearInterval(id);
-  }, [load]);
+  // `/api/jobs` is force-dynamic (served no-store), so no client cache option is needed.
+  const resource = useResource<Job[]>((signal) => api.get<Job[]>('/api/jobs', { signal }), [], {
+    pollMs: 3000,
+  });
+  const jobs = resource.data ?? null;
+  const error = resource.error ? errorMessage(resource.error) : null;
+  const load = resource.reload;
 
   const run = useCallback(
     async (name: string) => {
       setBusy(name);
       try {
-        await fetch('/api/jobs/run', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        });
+        await api.post('/api/jobs/run', { name }).catch(() => undefined);
         await load();
       } finally {
         setBusy(null);
@@ -80,11 +66,7 @@ export function JobsView() {
     async (name: string) => {
       setBusy(name);
       try {
-        await fetch('/api/jobs/stop', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-        });
+        await api.post('/api/jobs/stop', { name }).catch(() => undefined);
         await load();
       } finally {
         setBusy(null);

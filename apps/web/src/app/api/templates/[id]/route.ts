@@ -1,6 +1,11 @@
+/**
+ * One task template: read, partial update (allow-listed columns plus the
+ * validated JSONB `post_completion_action`), delete.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import { query } from '@/lib/db';
 import { apiErrorResponse } from '@/lib/api-errors';
+import { parsePostCompletionAction, toJsonbParam } from '@/lib/post-completion-action';
 
 interface RouteContext {
   params: Promise<{ id: string }>;
@@ -40,6 +45,15 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
         sets.push(`${key} = $${paramIndex++}`);
         values.push(body[key]);
       }
+    }
+
+    if (body.post_completion_action !== undefined) {
+      const parsed = parsePostCompletionAction(body.post_completion_action);
+      if (!parsed.ok) {
+        return NextResponse.json({ error: parsed.error }, { status: 400 });
+      }
+      sets.push(`post_completion_action = $${paramIndex++}::jsonb`);
+      values.push(toJsonbParam(parsed.value));
     }
 
     if (sets.length === 0) {

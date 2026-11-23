@@ -23,7 +23,17 @@ import { query } from '@/lib/db';
 import { enqueueStoredTask } from '@/lib/tasks';
 import type { Task } from '@/lib/types';
 import { apiErrorResponse } from '@/lib/api-errors';
-import { WORKER_URL } from '@/lib/worker-url';
+import type { InjectionSanitisedPayload } from '@/lib/injection-ingress';
+import { recordInjectionEvent } from '@/lib/injection-ingress-db';
+import {
+  callWorker,
+  readWorkerJson,
+  workerError,
+  workerUnreachable,
+} from '@/lib/route-utils';
+
+// Fetching and converting a batch of pages talks to Confluence once per page.
+const DRAFT_FETCH_TIMEOUT_MS = 120_000;
 
 interface Draft {
   source: string;
@@ -33,6 +43,18 @@ interface Draft {
   markdown: string;
   scope: string;
   source_url: string;
+  /** Set by the worker's `sanitised_draft` when the page text had findings. */
+  metadata?: { injection_scan?: Omit<InjectionSanitisedPayload, 'source'> };
+}
+
+/**
+ * The `injection_sanitised` event for an imported task. The worker already
+ * stripped the text (so it is not rescanned here); this only surfaces what it
+ * found on the task timeline, like every other ingress.
+ */
+function injectionEventFor(draft: Draft): InjectionSanitisedPayload | null {
+  const scan = draft.metadata?.injection_scan;
+  return scan ? { source: 'import', ...scan } : null;
 }
 
 interface ImportResult {
@@ -85,25 +107,22 @@ export async function POST(request: NextRequest) {
     // 1. Batch-fetch normalised drafts (fetch + XHTML→Markdown) from the worker.
     let drafts: Draft[] = [];
     let fetchErrors: { external_id: string; error: string }[] = [];
-    try {
-      const res = await fetch(`${WORKER_URL}/internal/import/confluence/import`, {
+    const res = await callWorker(
+      '/internal/import/confluence/import',
+      {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids, repo_id }),
-        cache: 'no-store',
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        return NextResponse.json(
-          { error: data?.detail || `worker returned ${res.status}` },
-          { status: res.status },
-        );
-      }
-      drafts = data.drafts || [];
-      fetchErrors = data.errors || [];
-    } catch {
-      return NextResponse.json({ error: 'worker unreachable' }, { status: 502 });
-    }
+      },
+      DRAFT_FETCH_TIMEOUT_MS,
+    );
+    if (!res) return workerUnreachable();
+    const data = await readWorkerJson(res);
+    if (!res.ok) return workerError(res, data);
+    drafts = Array.isArray(data.drafts) ? (data.drafts as Draft[]) : [];
+    fetchErrors = Array.isArray(data.errors)
+      ? (data.errors as { external_id: string; error: string }[])
+      : [];
 
     // 2. Resolve each draft against the external_imports ledger.
     const results: ImportResult[] = [];
@@ -144,6 +163,7 @@ export async function POST(request: NextRequest) {
             `UPDATE tasks SET title = $1, description = $2, updated_at = NOW() WHERE id = $3`,
             [draft.title, taskDescription(draft), existing.target_id],
           );
+          await recordInjectionEvent(existing.target_id as number, injectionEventFor(draft));
         } else {
           await query(
             `UPDATE ideas SET title = $1, content = $2, updated_at = NOW() WHERE id = $3`,
@@ -187,6 +207,7 @@ export async function POST(request: NextRequest) {
         );
         const storedTask = inserted.rows[0];
         targetId = storedTask.id;
+        await recordInjectionEvent(targetId, injectionEventFor(draft));
 
         if (task.enqueue !== false && storedTask.status === 'pending') {
           await enqueueStoredTask(storedTask);

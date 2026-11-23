@@ -1,27 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiErrorResponse } from '@/lib/api-errors';
-import { parseRouteId } from '@/lib/route-params';
 import { findTaskKey } from '@/lib/tasks';
 import {
   callWorker,
+  invalidId,
+  jsonError,
+  parseRouteId,
   readWorkerJson,
-  workerErrorResponse,
-  workerUnreachableResponse,
-} from '@/lib/worker-client';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+  workerError,
+  workerUnreachable,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 /** Resolve the route's task id to the worker's notes URL, or an error response. */
 async function notesPath(rawId: string): Promise<string | NextResponse> {
   const taskId = parseRouteId(rawId);
-  if (taskId === null) {
-    return NextResponse.json({ error: 'Invalid task id' }, { status: 400 });
-  }
+  if (taskId === null) return invalidId('task id');
   const taskKey = await findTaskKey(taskId);
   if (taskKey === null) {
-    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    return jsonError(404, 'Task not found');
   }
   return `/internal/tasks/${encodeURIComponent(taskKey)}/notes`;
 }
@@ -39,10 +36,10 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     if (path instanceof NextResponse) return path;
 
     const workerRes = await callWorker(path);
-    if (workerRes === null) return workerUnreachableResponse();
+    if (workerRes === null) return workerUnreachable();
 
     const body = await readWorkerJson(workerRes);
-    if (!workerRes.ok) return workerErrorResponse(workerRes, body);
+    if (!workerRes.ok) return workerError(workerRes, body);
     return NextResponse.json({ notes: Array.isArray(body.notes) ? body.notes : [] });
   } catch (err) {
     return apiErrorResponse(err, `GET /api/tasks/${id}/notes`);
@@ -61,7 +58,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
   const payload: unknown = await request.json().catch(() => null);
   const noteBody = (payload as { body?: unknown } | null)?.body;
   if (typeof noteBody !== 'string' || !noteBody.trim()) {
-    return NextResponse.json({ error: 'body is required' }, { status: 400 });
+    return jsonError(400, 'body is required');
   }
 
   try {
@@ -73,10 +70,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ body: noteBody.trim() }),
     });
-    if (workerRes === null) return workerUnreachableResponse();
+    if (workerRes === null) return workerUnreachable();
 
     const body = await readWorkerJson(workerRes);
-    if (!workerRes.ok) return workerErrorResponse(workerRes, body);
+    if (!workerRes.ok) return workerError(workerRes, body);
     return NextResponse.json(
       { id: body.id, will_be_delivered: body.will_be_delivered === true },
       { status: 201 },

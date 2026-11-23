@@ -20,6 +20,7 @@ from services import (
     corpus,
     git_ops,
     plan_gate,
+    post_completion,
     side_effect_gate,
     skills,
     telemetry,
@@ -206,6 +207,9 @@ async def finalise(ctx: TaskContext, *, success: bool) -> None:
     """Save unfinished work and leave the checkout ready for the next task."""
     telemetry.end_task_span(ctx.task.id, success=success)
     ctx.log.finished(ctx.task.key, success=success)
+    # The terminal status is already written. Never raises; the follow-up
+    # itself (if one is configured) runs in the background.
+    await post_completion.after_completion(ctx.task.id)
     if not ctx.worktree_path:
         return  # failed before the checkout existed
 

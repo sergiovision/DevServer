@@ -22,6 +22,7 @@ import {
   vendorOptions,
 } from '@/lib/agent-vendors';
 import { useAgentRegistry } from '@/lib/use-agent-registry';
+import { api, isApiError } from '@/lib/api-client';
 import { ModelCombobox } from './ModelCombobox';
 
 interface SettingsFormProps {
@@ -125,13 +126,7 @@ export function SettingsForm({ settings: initial }: SettingsFormProps) {
         ['corpus_auto_index', draft.corpus_auto_index],
       ];
       await Promise.all(
-        pairs.map(([key, value]) =>
-          fetch('/api/settings', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ key, value }),
-          }),
-        ),
+        pairs.map(([key, value]) => api.put('/api/settings', { key, value })),
       );
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
@@ -323,9 +318,9 @@ function ConfluenceSettingsCard() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/env', { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await api.get<{ variables?: { key: string; value: string }[] }>('/api/env', {
+          cache: 'no-store',
+        });
         if (cancelled) return;
         const vars: { key: string; value: string }[] = data.variables || [];
         const val = (k: string) => vars.find((v) => v.key === k)?.value || '';
@@ -346,23 +341,18 @@ function ConfluenceSettingsCard() {
     setSaved(false);
     setError('');
     try {
-      const res = await fetch('/api/env', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          variables: {
-            CONFLUENCE_URL: url.trim(),
-            CONFLUENCE_USERNAME: username.trim(),
-            CONFLUENCE_API_TOKEN: token.trim(),
-          },
-        }),
+      await api.put('/api/env', {
+        variables: {
+          CONFLUENCE_URL: url.trim(),
+          CONFLUENCE_USERNAME: username.trim(),
+          CONFLUENCE_API_TOKEN: token.trim(),
+        },
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       // Writing .env is not enough — the running worker holds the settings
       // singleton in memory. Reload it so the new credentials take effect
       // immediately (otherwise ping/import keep seeing "not configured"
       // until the next worker restart).
-      await fetch('/api/env/apply', { method: 'POST' }).catch(() => {});
+      await api.post('/api/env/apply').catch(() => {});
       setSaved(true);
       setTimeout(() => setSaved(false), 3000);
     } catch {
@@ -376,10 +366,21 @@ function ConfluenceSettingsCard() {
     setPinging(true);
     setPing(null);
     try {
-      const res = await fetch('/api/import/confluence/ping', { cache: 'no-store' });
-      setPing(await res.json());
-    } catch {
-      setPing({ ok: false, error: 'worker unreachable' });
+      setPing(await api.get<{ ok: boolean; error?: string }>('/api/import/confluence/ping', { cache: 'no-store' }));
+    } catch (err) {
+      // The route relays the probe body verbatim with a non-2xx status, and
+      // that body is what the alert shows. ApiError keeps it as `detail`: the
+      // whole `{ok: false, error}` object, or just the string when the worker
+      // answered FastAPI's `{detail}` (which has no `error`, hence "unknown").
+      if (isApiError(err) && !err.isNetworkError) {
+        setPing(
+          err.detail && typeof err.detail === 'object'
+            ? (err.detail as { ok: boolean; error?: string })
+            : { ok: false },
+        );
+      } else {
+        setPing({ ok: false, error: 'worker unreachable' });
+      }
     } finally {
       setPinging(false);
     }

@@ -1,29 +1,20 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { CRow, CCol, CWidgetStatsF } from '@coreui/react-pro';
 import CIcon from '@coreui/icons-react';
 import { cilMediaPlay, cilClock, cilCheckAlt, cilXCircle, cilMediaPause } from '@coreui/icons';
 import type { QueueStatsResponse } from '@/lib/types';
+import { api } from '@/lib/api-client';
+import { useResource } from '@/lib/use-async';
 
 export function QueueStats() {
-  const [stats, setStats] = useState<QueueStatsResponse | null>(null);
-
-  useEffect(() => {
-    async function fetchStats() {
-      try {
-        const res = await fetch('/api/queue');
-        if (res.ok) {
-          setStats(await res.json());
-        }
-      } catch {
-        // ignore
-      }
-    }
-    fetchStats();
-    const interval = setInterval(fetchStats, 5000);
-    return () => clearInterval(interval);
-  }, []);
+  // A failed poll keeps the last stats on screen.
+  const { data: stats } = useResource<QueueStatsResponse | null>(
+    (signal) => api.get<QueueStatsResponse | null>('/api/queue', { signal }),
+    [],
+    { pollMs: 5000 },
+  );
 
   if (!stats) return null;
 

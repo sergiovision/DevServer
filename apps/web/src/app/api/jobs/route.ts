@@ -1,18 +1,25 @@
 import { NextResponse } from 'next/server';
-import { WORKER_URL } from '@/lib/worker-url';
+import { callWorker, jsonError, workerErrorMessage, workerUnreachable } from '@/lib/route-utils';
 
 export const dynamic = 'force-dynamic';
 
+/**
+ * GET /api/jobs
+ *
+ * The worker scheduler's jobs and their state. The worker answers a JSON
+ * array, which `proxyWorker` (object bodies only) cannot relay, so this route
+ * reads the body itself.
+ */
 export async function GET() {
-  try {
-    const res = await fetch(`${WORKER_URL}/internal/jobs`, { cache: 'no-store' });
-    if (!res.ok) {
-      return NextResponse.json({ error: 'Failed to fetch jobs' }, { status: res.status });
-    }
-    const jobs = await res.json();
-    return NextResponse.json(jobs);
-  } catch (err) {
-    console.error('GET /api/jobs error:', err);
-    return NextResponse.json({ error: 'Worker unreachable' }, { status: 502 });
+  const res = await callWorker('/internal/jobs');
+  if (!res) return workerUnreachable();
+  const data: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    const body =
+      data && typeof data === 'object' && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : {};
+    return jsonError(res.status, workerErrorMessage(body, res.status));
   }
+  return NextResponse.json(data);
 }

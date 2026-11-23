@@ -1,5 +1,11 @@
 'use client';
 
+/**
+ * Task templates: table plus a create/edit modal. A template pre-fills the
+ * task form, including its optional post-completion action (edited as a draft
+ * and validated on save by `lib/post-completion-action.ts`).
+ */
+
 import React, { useCallback, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -32,6 +38,16 @@ import type { TaskTemplate, GitFlow, ClaudeMode, AgentVendor, TaskType } from '@
 import { TASK_TYPES, taskTypeEntry, taskTypeLabel, TASK_TYPE_BADGE } from '@/lib/task-types';
 import { VendorModelPicker } from './VendorModelPicker';
 import { MaxTurnsInput } from './MaxTurnsInput';
+import { PostCompletionActionSelect } from './PostCompletionActionSelect';
+import { api, errorMessage } from '@/lib/api-client';
+import {
+  EMPTY_POST_COMPLETION_DRAFT,
+  actionToDraft,
+  describePostCompletionAction,
+  draftToAction,
+  parsePostCompletionAction,
+  type PostCompletionDraft,
+} from '@/lib/post-completion-action';
 
 interface TemplateListProps {
   templates: TaskTemplate[];
@@ -50,6 +66,7 @@ const EMPTY_FORM = {
   backup_model: '',
   max_turns: 50 as number | null,
   skip_verify: false,
+  post_completion: EMPTY_POST_COMPLETION_DRAFT as PostCompletionDraft,
 };
 
 type FormData = typeof EMPTY_FORM;
@@ -68,7 +85,14 @@ function templateToForm(t: TaskTemplate): FormData {
     backup_model: t.backup_model ?? '',
     max_turns: t.max_turns ?? 50,
     skip_verify: t.skip_verify,
+    post_completion: actionToDraft(t.post_completion_action ?? null),
   };
+}
+
+/** Table cell text for a template's follow-up; an unreadable value shows as none. */
+function postCompletionSummary(t: TaskTemplate): string {
+  const parsed = parsePostCompletionAction(t.post_completion_action ?? null);
+  return describePostCompletionAction(parsed.ok ? parsed.value : null);
 }
 
 export function TemplateList({ templates }: TemplateListProps) {
@@ -95,13 +119,18 @@ export function TemplateList({ templates }: TemplateListProps) {
 
   const handleDelete = useCallback(async (t: TaskTemplate) => {
     if (!confirm(`Delete template "${t.name}"?`)) return;
-    await fetch(`/api/templates/${t.id}`, { method: 'DELETE' });
+    await api.delete(`/api/templates/${t.id}`).catch(() => undefined);
     router.refresh();
   }, [router]);
 
   const handleSave = useCallback(async () => {
     if (!form.name.trim()) {
       setError('Name is required');
+      return;
+    }
+    const postCompletionAction = draftToAction(form.post_completion);
+    if (!postCompletionAction.ok) {
+      setError(postCompletionAction.error);
       return;
     }
     setSaving(true);
@@ -120,23 +149,16 @@ export function TemplateList({ templates }: TemplateListProps) {
         backup_model: form.backup_model.trim() || null,
         max_turns: form.max_turns,
         skip_verify: form.skip_verify,
+        post_completion_action: postCompletionAction.value,
       };
 
       const url = editingId ? `/api/templates/${editingId}` : '/api/templates';
-      const method = editingId ? 'PATCH' : 'POST';
-      const res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.error || 'Save failed');
-      }
+      if (editingId) await api.patch(url, body);
+      else await api.post(url, body);
       setModalVisible(false);
       router.refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Save failed');
+      setError(errorMessage(err, 'Save failed'));
     } finally {
       setSaving(false);
     }
@@ -175,6 +197,7 @@ export function TemplateList({ templates }: TemplateListProps) {
                   <CTableHeaderCell>Vendor / Model</CTableHeaderCell>
                   <CTableHeaderCell>Billing</CTableHeaderCell>
                   <CTableHeaderCell>Turns</CTableHeaderCell>
+                  <CTableHeaderCell>On completion</CTableHeaderCell>
                   <CTableHeaderCell style={{ width: 120 }}>Actions</CTableHeaderCell>
                 </CTableRow>
               </CTableHead>
@@ -203,6 +226,9 @@ export function TemplateList({ templates }: TemplateListProps) {
                     </CTableDataCell>
                     <CTableDataCell>{BILLING_LABELS[t.claude_mode] ?? t.claude_mode}</CTableDataCell>
                     <CTableDataCell>{t.max_turns ?? 'Unlimited'}</CTableDataCell>
+                    <CTableDataCell>
+                      <small>{postCompletionSummary(t)}</small>
+                    </CTableDataCell>
                     <CTableDataCell>
                       <div className="d-flex gap-1">
                         <CButton color="primary" variant="outline" size="sm" onClick={() => openEdit(t)}>
@@ -338,6 +364,17 @@ export function TemplateList({ templates }: TemplateListProps) {
               />
             </div>
           )}
+
+          <div className="mb-3">
+            <CFormLabel>When a task from this template finishes</CFormLabel>
+            <PostCompletionActionSelect
+              value={form.post_completion}
+              onChange={(next) => setForm((prev) => ({ ...prev, post_completion: next }))}
+            />
+            <small className="text-body-secondary">
+              Copied into every task created from this template.
+            </small>
+          </div>
         </CModalBody>
         <CModalFooter>
           <CButton color="secondary" variant="outline" onClick={() => setModalVisible(false)}>

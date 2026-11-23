@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
+// Cockpit tokens override globals — must stay after it.
+import './cockpit.css';
 import { AppShell } from '@/components/AppShell';
 import { ThemeProvider } from '@/components/ThemeProvider';
 import { NotificationProvider } from '@/components/NotificationProvider';

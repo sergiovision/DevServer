@@ -1,17 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { apiErrorResponse } from '@/lib/api-errors';
 import { query } from '@/lib/db';
-import { parseRouteId } from '@/lib/route-params';
 import {
   callWorker,
+  invalidId,
+  jsonError,
+  parseRouteId,
   readWorkerJson,
-  workerErrorResponse,
-  workerUnreachableResponse,
-} from '@/lib/worker-client';
-
-interface RouteContext {
-  params: Promise<{ id: string }>;
-}
+  workerError,
+  workerUnreachable,
+  type RouteContext,
+} from '@/lib/route-utils';
 
 const KINDS = new Set(['request', 'response', 'note', 'handoff']);
 /** Statuses in which an agent is live and polls its inbox between steps. */
@@ -28,14 +27,12 @@ const LIVE_STATUSES = new Set(['running', 'verifying']);
 export async function POST(request: NextRequest, context: RouteContext) {
   const { id } = await context.params;
   const taskId = parseRouteId(id);
-  if (taskId === null) {
-    return NextResponse.json({ error: 'Invalid task id' }, { status: 400 });
-  }
+  if (taskId === null) return invalidId('task id');
 
   const payload = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   const messageBody = payload?.body;
   if (typeof messageBody !== 'string' || !messageBody.trim()) {
-    return NextResponse.json({ error: 'body is required' }, { status: 400 });
+    return jsonError(400, 'body is required');
   }
   const kind = typeof payload?.kind === 'string' && KINDS.has(payload.kind) ? payload.kind : 'request';
 
@@ -46,7 +43,7 @@ export async function POST(request: NextRequest, context: RouteContext) {
     );
     const task = result.rows[0];
     if (!task) {
-      return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+      return jsonError(404, 'Task not found');
     }
 
     // The operator lane is separate from the per-task agent lane so a task
@@ -64,10 +61,10 @@ export async function POST(request: NextRequest, context: RouteContext) {
         kind,
       }),
     });
-    if (workerRes === null) return workerUnreachableResponse();
+    if (workerRes === null) return workerUnreachable();
 
     const body = await readWorkerJson(workerRes);
-    if (!workerRes.ok) return workerErrorResponse(workerRes, body);
+    if (!workerRes.ok) return workerError(workerRes, body);
     return NextResponse.json(
       { message: body.message ?? null, live: LIVE_STATUSES.has(task.status) },
       { status: 201 },

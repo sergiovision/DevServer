@@ -10,6 +10,7 @@ import {
   CFormSelect,
   CSpinner,
 } from '@coreui/react-pro';
+import { api, errorMessage } from '@/lib/api-client';
 
 interface NightCycleState {
   active: boolean;
@@ -41,8 +42,7 @@ export function NightCyclePanel() {
     const p = (async () => {
       await null; // let `inFlight.current = p` land before `finally` can clear it
       try {
-        const res = await fetch('/api/night-cycle');
-        if (res.ok) setState(await res.json());
+        setState(await api.get<NightCycleState>('/api/night-cycle'));
       } catch {
       } finally {
         inFlight.current = null;
@@ -71,20 +71,10 @@ export function NightCyclePanel() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/night-cycle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, end_hour: endHour }),
-      });
-      if (!res.ok) {
-        const data = await res.json().catch(() => null);
-        const msg = data && (data.error || data.detail);
-        setError(
-          typeof msg === 'string' && msg ? msg : `Night cycle ${action} failed (HTTP ${res.status})`,
-        );
-      }
+      await api.post('/api/night-cycle', { action, end_hour: endHour });
     } catch (e) {
-      setError(e instanceof Error ? e.message : `Night cycle ${action} failed`);
+      // ApiError.message is the route's `error` / `detail`.
+      setError(errorMessage(e, `Night cycle ${action} failed`));
     } finally {
       await fetchStatus(true);
       setLoading(false);
